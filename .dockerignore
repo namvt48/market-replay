@@ -1,0 +1,23 @@
+# Keep the build context small — see Dockerfile for what each stage
+# actually COPYs; everything else here is irrelevant to either build.
+.git
+.omo
+.impeccable
+.ruff_cache
+bin/
+data/
+
+# Frontend build artifacts / deps — reinstalled and rebuilt in web-build
+web/node_modules/
+web/dist/
+web/artifacts/
+web/vendor/*/node_modules/
+
+# Python pipeline — not part of the app image (docs: ingest is out of scope)
+pipeline/.venv/
+**/__pycache__/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/

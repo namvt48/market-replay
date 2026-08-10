@@ -1,0 +1,35 @@
+name: market-replay
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: market-replay:latest
+    restart: unless-stopped
+    # Runs as the host uid/gid (1000:1000, owner of ./data) instead of the
+    # image's built-in "replay" user (uid 100) — the bind-mounted app.db is
+    # host-owned with no group/other write bit, so a UID mismatch here
+    # causes "attempt to write a readonly database" on every startup.
+    user: "1000:1000"
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      DATA_DIR: /srv/replay/data
+      DB_PATH: /srv/replay/data/app.db
+    volumes:
+      # Bind-mounts the existing ./data (meta/symbols.json, bin/*.bin,
+      # app.db) so the container serves the same dataset as local dev.
+      # Registry.NewRegistry fails fast at startup if meta/symbols.json is
+      # missing, so this directory must be populated before first run.
+      - ./data:/srv/replay/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    # New .bin files land on disk via rsync/copy, then a reload picks them
+    # up without downtime (main.go's SIGHUP handler) — no restart needed:
+    #   docker compose kill -s HUP app

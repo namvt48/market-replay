@@ -1,0 +1,31 @@
+# Economic calendar sample shard — SYNTHETIC placeholder rows, not real data.
+#
+# Install by copying into the data directory the server reads:
+#     mkdir -p data/econ && cp pipeline/econ.sample.jsonl data/econ/2026.jsonl
+# Shard however you like (2024.jsonl, 2025.jsonl, …); every *.jsonl in
+# data/econ is merged, and SIGHUP reloads them alongside the bar files.
+#
+# Full field reference:  go doc market-replay/internal/econ
+#
+# Required: id (unique across all shards), ts (epoch seconds UTC, the release
+# time), country, title, importance (low|medium|high).
+# Optional: currency, forecast, previous, actual, announcedTs, source.
+#
+# Values stay strings on purpose — real releases read "0.3%", "215K",
+# "3.75%-4.00%" — and `actual` is withheld from clients until the replay
+# cursor reaches ts, so a trader cannot read a number before it printed.
+#
+# Blank lines and #-comments are ignored. Unknown field names are rejected
+# rather than skipped, so a typo fails the load instead of silently
+# downgrading an event.
+{"id":"sample-us-ism-2026-08-03","ts":1785765600,"country":"US","currency":"USD","title":"ISM Manufacturing PMI","importance":"medium","forecast":"51.2","previous":"50.8","actual":"51.0","source":"sample"}
+{"id":"sample-us-jolts-2026-08-04","ts":1785852000,"country":"US","currency":"USD","title":"JOLTS Job Openings","importance":"low","forecast":"7.4M","previous":"7.5M","actual":"7.6M","source":"sample"}
+{"id":"sample-us-adp-2026-08-05","ts":1785932100,"country":"US","currency":"USD","title":"ADP Employment Change","importance":"medium","forecast":"110K","previous":"95K","actual":"120K","source":"sample"}
+{"id":"sample-eu-ecb-2026-08-06","ts":1786018500,"country":"EU","currency":"EUR","title":"ECB Rate Decision","importance":"high","forecast":"2.25%","previous":"2.25%","actual":"2.25%","source":"sample"}
+{"id":"sample-us-nfp-2026-08-07","ts":1786105800,"country":"US","currency":"USD","title":"Nonfarm Payrolls","importance":"high","forecast":"165K","previous":"147K","actual":"185K","source":"sample"}
+{"id":"sample-us-unemployment-2026-08-07","ts":1786105800,"country":"US","currency":"USD","title":"Unemployment Rate","importance":"high","forecast":"4.2%","previous":"4.1%","actual":"4.3%","source":"sample"}
+{"id":"sample-us-cpi-2026-08-12","ts":1786537800,"country":"US","currency":"USD","title":"CPI m/m","importance":"high","forecast":"0.2%","previous":"0.3%","actual":"0.4%","source":"sample"}
+# announcedTs marks a release that was NOT on the published schedule. It stays
+# hidden entirely until the cursor reaches announcedTs, because its very
+# existence would otherwise tell the trader an emergency meeting was coming.
+{"id":"sample-us-unscheduled-2026-08-10","ts":1786384800,"country":"US","currency":"USD","title":"Unscheduled Rate Decision","importance":"high","previous":"2.50%","actual":"-50bp","announcedTs":1786212000,"source":"sample"}

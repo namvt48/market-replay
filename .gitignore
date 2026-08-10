@@ -1,0 +1,32 @@
+# Go
+/bin/
+
+# Frontend (web/) — dist is a build artifact; `make build` regenerates it
+# before the Go embed step, so it must never be relied on as committed.
+web/node_modules/
+web/dist/
+web/*.local
+
+# Python pipeline — .venv is a regenerable virtualenv (deps: databento_dbn,
+# zstandard, pyarrow, pandas, pytz — no requirements.txt/uv.lock yet).
+pipeline/.venv/
+**/__pycache__/
+.ruff_cache/
+
+# Data — entirely pipeline-produced (raw archive, canonical parquet,
+# compiled serving binaries, SQLite runtime state) or server-generated.
+# The docs' own deploy flow moves data/bin via rsync, never git —
+# committing hundreds of MB of binary market data here would be a mistake
+# regardless of that convention.
+/data/
+
+# Editors / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+.omo/
+.claude/
+.archcore/
+.impeccable/

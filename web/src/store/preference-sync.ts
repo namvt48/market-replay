@@ -1,0 +1,122 @@
+import { fetchPreferences, putPreference } from '../api/preferences'
+
+/**
+ * The workspace settings that follow the user rather than the browser.
+ *
+ * Every one of these used to live only in localStorage, so a different
+ * browser, a cleared site, or a second machine started from defaults —
+ * while the far smaller watchlist was already stored server-side. They are
+ * listed explicitly rather than mirroring every localStorage key, so an
+ * incidental key can never start syncing by accident.
+ */
+export const SYNCED_PREFERENCE_KEYS = [
+  'market-replay:chart-pane-settings',
+  'market-replay:chart-layout',
+  'market-replay:saved-chart-layouts',
+  'market-replay:timeframe-preferences',
+  'market-replay:drawing-favorites:v1',
+  'market-replay:drawing-templates:v1',
+  'replay:eval',
+  'replay:eval:accounts',
+] as const
+
+const SYNCED = new Set<string>(SYNCED_PREFERENCE_KEYS)
+const PUSH_DEBOUNCE_MS = 400
+const HYDRATE_TIMEOUT_MS = 1_200
+
+export interface PreferenceStorage {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+}
+
+function browserStorage(): PreferenceStorage | null {
+  try {
+    return typeof window === 'undefined' ? null : window.localStorage
+  } catch {
+    // Storage can throw outright when the browser blocks site data.
+    return null
+  }
+}
+
+/**
+ * localStorage that mirrors writes to the backend.
+ *
+ * Local first, always: the write that the UI depends on completes
+ * synchronously, and the network round trip is a debounced afterthought. If
+ * the backend is unreachable the workspace keeps working exactly as it did
+ * before it had one — which is the behaviour PRODUCT.md asks for when
+ * persistence is offline. The trade is that a settings change made while
+ * offline is not carried to another machine; it is not lost locally.
+ */
+class SyncedPreferenceStorage implements PreferenceStorage {
+  private readonly local: PreferenceStorage | null
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  constructor(local: PreferenceStorage | null = browserStorage()) {
+    this.local = local
+  }
+
+  getItem(key: string): string | null { return this.local?.getItem(key) ?? null }
+
+  setItem(key: string, value: string): void {
+    this.local?.setItem(key, value)
+    if (!SYNCED.has(key)) return
+    this.schedulePush(key, value)
+  }
+
+  removeItem(key: string): void {
+    this.local?.removeItem(key)
+    if (!SYNCED.has(key)) return
+    // Nothing to push: the next hydrate simply finds no remote value. A
+    // dedicated delete would race the debounced write it is cancelling.
+    const pending = this.timers.get(key)
+    if (pending) {
+      clearTimeout(pending)
+      this.timers.delete(key)
+    }
+  }
+
+  /** Writes land in bursts (dragging a colour picker, resizing panes); only the last one matters. */
+  private schedulePush(key: string, value: string): void {
+    const pending = this.timers.get(key)
+    if (pending) clearTimeout(pending)
+    this.timers.set(key, setTimeout(() => {
+      this.timers.delete(key)
+      void putPreference(key, value).catch(() => undefined)
+    }, PUSH_DEBOUNCE_MS))
+  }
+}
+
+export const preferenceStorage: PreferenceStorage = new SyncedPreferenceStorage()
+
+/**
+ * Pulls stored settings into localStorage before any store reads them.
+ *
+ * Must run before the setting stores are imported — they read their value
+ * at construction — which is why main.tsx awaits this and then imports the
+ * app. Bounded by a timeout and never rejects: a missing or slow backend
+ * delays the workspace, it does not stop it.
+ */
+export async function hydratePreferences(storage: PreferenceStorage | null = browserStorage()): Promise<void> {
+  if (!storage) return
+  try {
+    const remote = await withTimeout(fetchPreferences(), HYDRATE_TIMEOUT_MS)
+    for (const [key, payload] of Object.entries(remote)) {
+      if (!SYNCED.has(key)) continue
+      storage.setItem(key, payload)
+    }
+  } catch {
+    // Keep whatever this browser already had.
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('preference hydrate timed out')), ms)
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error) => { clearTimeout(timer); reject(error) },
+    )
+  })
+}

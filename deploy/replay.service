@@ -1,0 +1,22 @@
+[Unit]
+Description=market-replay backend
+After=network.target
+
+[Service]
+Type=simple
+User=replay
+Group=replay
+WorkingDirectory=/srv/replay
+Environment=HTTP_ADDR=127.0.0.1:8080
+Environment=DATA_DIR=/srv/replay/data
+Environment=DB_PATH=/srv/replay/data/app.db
+ExecStart=/srv/replay/replay-server
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/replay/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

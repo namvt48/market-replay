@@ -1,0 +1,6 @@
+# Replace replay.example.com with the real domain before deploying.
+# Auto-TLS via Caddy's default ACME config — no manual cert management.
+replay.example.com {
+	reverse_proxy 127.0.0.1:8080
+	encode gzip
+}

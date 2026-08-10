@@ -1,0 +1,279 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --text-ui-meta: 0.6875rem;
+  --text-ui-meta--line-height: 1rem;
+  --text-ui-body: 0.75rem;
+  --text-ui-body--line-height: 1.125rem;
+  --text-ui-control: 0.8125rem;
+  --text-ui-control--line-height: 1.25rem;
+  --text-ui-title: 0.875rem;
+  --text-ui-title--line-height: 1.25rem;
+  --color-surface-0: #131722;
+  --color-surface-1: #1e222d;
+  --color-surface-2: #252934;
+  --color-surface-3: #2a2e39;
+  --color-chart: #131722;
+  --color-line: #2a2e39;
+  --color-line-strong: #434651;
+  --color-ink: #d1d4dc;
+  --color-muted: #a3a6af;
+  --color-dim: #898c96;
+  --color-active: #2962ff;
+  --color-active-bright: #5b8cff;
+  --color-profit: #089981;
+  --color-profit-bright: #22ab94;
+  --color-loss: #f23645;
+  --color-loss-bright: #ff5563;
+  --radius-control: 4px;
+  --radius-panel: 6px;
+  --shadow-overlay: 0 12px 32px rgba(0, 0, 0, 0.38);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  overflow: hidden;
+  color-scheme: dark;
+  background: #131722;
+  font-family: "Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.125rem;
+  letter-spacing: 0.005em;
+  font-feature-settings: "tnum" 1, "ss01" 1;
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+select,
+input {
+  font-family: inherit;
+  letter-spacing: inherit;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid #2962ff;
+  outline-offset: 2px;
+}
+
+@layer components {
+  .order-quantity-editor {
+    position: absolute;
+    z-index: 40;
+    width: 202px;
+    border: 1px solid #434651;
+    border-radius: 6px;
+    background: #1e222d;
+    padding: 12px;
+    color: #d1d4dc;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 38%);
+  }
+
+  .order-quantity-editor__label {
+    display: grid;
+    gap: 6px;
+    color: #a3a6af;
+    font-size: 12px;
+  }
+
+  .order-quantity-editor__input {
+    height: 34px;
+    width: 100%;
+    border: 1px solid #2962ff;
+    border-radius: 4px;
+    background: #131722;
+    padding-inline: 10px;
+    color: #d1d4dc;
+    font-family: "JetBrains Mono Variable", monospace;
+    font-size: 13px;
+  }
+
+  .order-quantity-editor__grid {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .order-quantity-editor__button {
+    min-height: 30px;
+    border: 1px solid #434651;
+    border-radius: 4px;
+    background: #252934;
+    color: #d1d4dc;
+    font-size: 12px;
+  }
+
+  .order-quantity-editor__button:hover {
+    border-color: #787b86;
+    background: #2a2e39;
+  }
+}
+
+::selection {
+  color: #ffffff;
+  background: #2962ff;
+}
+
+* {
+  scrollbar-color: #434651 #1e222d;
+  scrollbar-width: thin;
+}
+
+@utility tool-button {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 4px;
+  color: #a3a6af;
+  transition: color 120ms ease-out, background-color 120ms ease-out;
+  &:hover { color: #d1d4dc; background-color: #2a2e39; }
+  &[aria-pressed="true"] { color: #ffffff; background-color: #2962ff; }
+  @media (pointer: coarse) { width: 2.75rem; height: 2.75rem; }
+}
+
+@utility drawing-toolbar {
+  width: 2.5rem;
+  @media (pointer: coarse) { width: 3.25rem; }
+}
+
+@utility trade-button {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 5px;
+  padding-inline: 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  transition: background-color 120ms ease-out;
+  & kbd { font-family: "JetBrains Mono Variable", monospace; font-size: 0.6875rem; line-height: 1rem; opacity: 0.72; }
+}
+
+@utility secondary-button {
+  display: inline-flex;
+  min-height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid #434651;
+  border-radius: 5px;
+  background: #252934;
+  padding-inline: 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  color: #d1d4dc;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out;
+  &:hover:not(:disabled) { border-color: #787b86; background: #2a2e39; }
+  &:disabled { cursor: not-allowed; opacity: 0.35; }
+  & kbd { font-family: "JetBrains Mono Variable", monospace; font-size: 0.6875rem; line-height: 1rem; color: #898c96; }
+}
+
+@utility primary-button {
+  display: inline-flex;
+  min-height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: #2962ff;
+  padding-inline: 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  color: #ffffff;
+  transition: background-color 120ms ease-out;
+  &:hover:not(:disabled) { background: #1e53e5; }
+  &:disabled { cursor: not-allowed; opacity: 0.4; }
+}
+
+@utility field-label {
+  display: grid;
+  gap: 0.375rem;
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  color: #a3a6af;
+}
+
+@utility field-input {
+  min-height: 2.25rem;
+  border: 1px solid #2a2e39;
+  border-radius: 5px;
+  background: #131722;
+  padding-inline: 0.625rem;
+  font-family: "JetBrains Mono Variable", monospace;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+  color: #d1d4dc;
+  outline: none;
+  &:focus { border-color: #2962ff; }
+  &::placeholder { color: #787b86; }
+}
+
+@utility field {
+  min-height: 2.25rem;
+  border: 1px solid #2a2e39;
+  border-radius: 4px;
+  background: #131722;
+  color: #d1d4dc;
+  outline: none;
+  &:focus { border-color: #2962ff; }
+  &::placeholder { color: #787b86; }
+}
+
+@utility replay-icon-button {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 4px;
+  color: #a3a6af;
+  transition: color 100ms ease-out, background-color 100ms ease-out, transform 100ms ease-out;
+  &:hover { color: #d1d4dc; background: #252934; }
+  &:active { transform: translateY(1px); }
+}
+
+@layer utilities {
+  .font-mono {
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1, "zero" 1;
+  }
+}
+
+@keyframes replay-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+@utility animate-replay-pulse {
+  animation: replay-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

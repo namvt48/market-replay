@@ -1,0 +1,667 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { BarFrame } from '../api/binary-frame'
+import type { ClosedTrade, ReplaySession, SymbolMeta } from '../api/types'
+import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, OrderLineAction, ReplaySelectionState, ViewportDemand } from './chart-adapter'
+import { aggregateRange } from './aggregate'
+import { DEFAULT_CHART_PANE_SETTINGS } from './chart-settings-store'
+import { HoverBarStore } from './hover-bar-store'
+import { ReplayEngine } from './replay-engine'
+import { EVAL_PRESETS } from '../eval/rules'
+import { getEvalState } from '../store/eval-store'
+import type { ViewportDataClient } from './viewport-data'
+
+const engineMocks = vi.hoisted(() => ({
+  stepCalls: vi.fn(),
+  fetchBarsAt: vi.fn(),
+  fetchCalendar: vi.fn(),
+  fetchTrades: vi.fn().mockResolvedValue([]),
+  putTrades: vi.fn().mockResolvedValue([]),
+  fetchDrawings: vi.fn().mockResolvedValue([]),
+  createSession: vi.fn().mockResolvedValue('session-1'),
+  patchSession: vi.fn().mockResolvedValue(undefined),
+}))
+const apiData = vi.hoisted(() => ({
+  symbol: { symbol: 'NQ', name: 'Nasdaq', kind: 'future', tickSize: 0.25, pointValue: 20, currency: 'USD', priceDecimals: 2, sessionTz: 'America/New_York', rollRule: '', commissionPerSide: 0, defaultSlippageTicks: 0, ranges: { '1m': { from: 0, to: 300 } } } as SymbolMeta,
+  frame: { count: 5, tickNum: 1, tickDen: 4, ts: new Uint32Array([0, 60, 120, 180, 240]), open: new Int32Array([400, 401, 402, 403, 404]), high: new Int32Array([404, 405, 406, 407, 408]), low: new Int32Array([396, 397, 398, 399, 400]), close: new Int32Array([402, 403, 404, 405, 406]), volume: new Uint32Array([10, 10, 10, 10, 10]) } as BarFrame,
+}))
+const displayBars = Array.from({ length: 5 }, (_, index) => ({
+  time: index * 60,
+  open: (400 + index) * 0.25,
+  high: (404 + index) * 0.25,
+  low: (396 + index) * 0.25,
+  close: (402 + index) * 0.25,
+  volume: 10,
+}))
+
+vi.mock('../api/client', () => ({
+  fetchSymbols: vi.fn().mockResolvedValue([apiData.symbol]), fetchBarsAt: engineMocks.fetchBarsAt,
+  fetchCalendar: engineMocks.fetchCalendar,
+  fetchSessions: vi.fn().mockResolvedValue([]), fetchTrades: engineMocks.fetchTrades,
+  createSession: engineMocks.createSession, fetchDrawings: engineMocks.fetchDrawings,
+  patchSession: engineMocks.patchSession, upsertDrawings: vi.fn().mockResolvedValue(undefined), putTrades: engineMocks.putTrades,
+}))
+
+vi.mock('../fill-engine/engine', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../fill-engine/engine')>()
+  return {
+    ...original,
+    stepFillEngine: (state: Parameters<typeof original.stepFillEngine>[0], bar: Parameters<typeof original.stepFillEngine>[1]): ReturnType<typeof original.stepFillEngine> => {
+      engineMocks.stepCalls()
+      return original.stepFillEngine(state, bar)
+    },
+  }
+})
+
+function adapter(drawings: object[] = []) {
+  const init = vi.fn().mockResolvedValue(undefined)
+  const pushBars = vi.fn()
+  const setHistory = vi.fn()
+  const loadDrawings = vi.fn()
+  const setTradeMarkers = vi.fn()
+  const setOrderLines = vi.fn()
+  const setDrawingTool = vi.fn()
+  const focusTime = vi.fn()
+  let drawingChanged = (_drawingId?: string): void => undefined
+  let viewportDemand = (_demand: ViewportDemand): void => undefined
+  let crosshairSync = (_state: ChartCrosshairSync | null): void => undefined
+  let viewportSync = (_state: ChartViewportSync): void => undefined
+  let replayBarSelect = (_timestamp: number): void => undefined
+  let chartOrder = (_side: 'buy' | 'sell', _type: 'limit' | 'stop', _price: number): void => undefined
+  let orderAction = (_action: OrderLineAction): void => undefined
+  let orderMove = (_id: string, _price: number): void => undefined
+  let orderDragStart = (_id: string): void => undefined
+  const setReplaySelection = vi.fn()
+  const value = {
+    init, setHistory, pushBar: vi.fn(), pushBars, truncateTo: vi.fn(), setSpacerTimes: vi.fn(),
+    applyAppearance: vi.fn(), setDisplayTimezone: vi.fn(), onHoveredBar: vi.fn(), onViewportDemand: vi.fn((handler: typeof viewportDemand) => { viewportDemand = handler }),
+    onCrosshairSync: vi.fn((handler: typeof crosshairSync) => { crosshairSync = handler }), setCrosshairSync: vi.fn(),
+    onViewportSync: vi.fn((handler: typeof viewportSync) => { viewportSync = handler }), setViewportSync: vi.fn(),
+    setReplaySelection, onReplayBarSelect: vi.fn((handler: typeof replayBarSelect) => { replayBarSelect = handler }), setTradeMarkers, setOrderLines,
+    onOrderLineMove: vi.fn((handler: typeof orderMove) => { orderMove = handler }),
+    onOrderLineDragStart: vi.fn((handler: typeof orderDragStart) => { orderDragStart = handler }),
+    onOrderLineAction: vi.fn((handler: typeof orderAction) => { orderAction = handler }),
+    onChartOrder: vi.fn((handler: typeof chartOrder) => { chartOrder = handler }), drawingTools: vi.fn().mockReturnValue([]), setDrawingTool, deselectDrawing: vi.fn(),
+    deleteSelectedDrawing: vi.fn(), deleteAllDrawings: vi.fn(), updateSelectedDrawing: vi.fn(), setNextDrawingAppearance: vi.fn(),
+    getDrawings: vi.fn().mockReturnValue(drawings), loadDrawings, onDrawingsChanged: vi.fn((handler: (drawingId?: string) => void) => { drawingChanged = handler }), onDrawingSelection: vi.fn(),
+    onDrawingEditRequest: vi.fn(), onDrawingToolChanged: vi.fn(), visibleRange: vi.fn().mockReturnValue({ from: 0, to: 0 }), destroy: vi.fn(),
+    focusTime, resetView: vi.fn(),
+  }
+  return {
+    value: value as ChartAdapter, init, setHistory, pushBars, loadDrawings, setTradeMarkers, setOrderLines, setDrawingTool, setReplaySelection, focusTime,
+    fireDrawingChanged: (drawingId?: string) => drawingChanged(drawingId),
+    fireViewportDemand: (demand: ViewportDemand) => viewportDemand(demand),
+    fireCrosshairSync: (state: ChartCrosshairSync | null) => crosshairSync(state),
+    fireViewportSync: (state: ChartViewportSync) => viewportSync(state),
+    fireReplayBarSelect: (timestamp: number) => replayBarSelect(timestamp),
+    fireChartOrder: (side: 'buy' | 'sell', type: 'limit' | 'stop', price: number) => chartOrder(side, type, price),
+    fireOrderAction: (action: OrderLineAction) => orderAction(action),
+    fireOrderMove: (id: string, price: number) => orderMove(id, price),
+    fireOrderDragStart: (id: string) => orderDragStart(id),
+  }
+}
+
+beforeEach(() => {
+  getEvalState().abandon()
+  engineMocks.fetchDrawings.mockReset()
+  engineMocks.fetchDrawings.mockResolvedValue([])
+  engineMocks.createSession.mockClear()
+  engineMocks.patchSession.mockClear()
+  engineMocks.putTrades.mockClear()
+  engineMocks.fetchTrades.mockReset()
+  engineMocks.fetchTrades.mockResolvedValue([])
+  engineMocks.fetchBarsAt.mockReset()
+  engineMocks.fetchBarsAt.mockResolvedValue(apiData.frame)
+  engineMocks.fetchCalendar.mockReset()
+  engineMocks.fetchCalendar.mockResolvedValue([{ date: '1970-01-01', firstTs: 0, lastTs: 240, bars: 5 }])
+})
+
+describe('ReplayEngine multi-view invariant', () => {
+  it('keeps drawing-tool ownership on a pane activated before its adapter finishes registering', async () => {
+    const engine = new ReplayEngine()
+    const first = adapter()
+    const intended = adapter()
+
+    engine.activateChartView('pane-b')
+    await engine.registerChartView('pane-a', document.createElement('div'), first.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), intended.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    first.setDrawingTool.mockClear()
+    intended.setDrawingTool.mockClear()
+
+    engine.setDrawingTool('rectangle')
+
+    expect(intended.setDrawingTool).toHaveBeenCalledWith('rectangle')
+    expect(first.setDrawingTool).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('rebuilds only the selected pane when its ETH/RTH filter changes', async () => {
+    const engine = new ReplayEngine()
+    const first = adapter()
+    const second = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), first.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), second.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    first.setHistory.mockClear()
+    second.setHistory.mockClear()
+
+    engine.updateChartViewSettings('pane-a', { ...DEFAULT_CHART_PANE_SETTINGS, marketSession: 'rth' })
+
+    expect(first.setHistory).toHaveBeenLastCalledWith([], { preserveViewport: false, resetView: true })
+    expect(second.setHistory).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('boots an evaluation at its selected instrument/time and enforces forward-only controls', async () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 120, 'America/New_York')
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    expect(engine.getSnapshot()).toMatchObject({ symbol: expect.objectContaining({ symbol: 'NQ' }), cursorTs: 120, replayMode: 'active', replayStartTs: 120 })
+    engine.stepForward()
+    expect(engine.getSnapshot().cursorTs).toBe(180)
+    engine.stepBack()
+    expect(engine.getSnapshot().cursorTs).toBe(180)
+    await engine.seek(0)
+    expect(engine.getSnapshot().cursorTs).toBe(180)
+    engine.beginReplaySelection()
+    expect(engine.getSnapshot().replayMode).toBe('selecting')
+    view.fireReplayBarSelect(0)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 180, replayStartTs: 180 })
+    engine.exitReplay()
+    expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', replayStartTs: 180 })
+    engine.destroy()
+  })
+
+  it('moves from bar selection to an active replay marker and can exit cleanly', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    view.setReplaySelection.mockClear()
+    expect(engine.getSnapshot()).toMatchObject({ sessionId: null, sessionStatus: null })
+    expect(engineMocks.createSession).not.toHaveBeenCalled()
+    engine.placeMarket('buy')
+    expect(engine.getSnapshot().fill?.orders).toHaveLength(0)
+
+    engine.beginReplaySelection({ createSession: true })
+    expect(engine.getSnapshot().replayMode).toBe('selecting')
+    expect(view.setReplaySelection).toHaveBeenLastCalledWith({ mode: 'selecting' } satisfies ReplaySelectionState)
+
+    view.fireReplayBarSelect(120)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 120, replayStartTs: 120, sessionId: 'session-1', sessionStatus: 'active' })
+    expect(engineMocks.createSession).toHaveBeenCalledOnce()
+    engine.placeMarket('buy')
+    expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
+    expect(view.setReplaySelection).toHaveBeenLastCalledWith({ mode: 'active', timestamp: 120 } satisfies ReplaySelectionState)
+
+    engine.exitReplay()
+    expect(engine.getSnapshot()).toMatchObject({ replayMode: 'inactive', replayStartTs: null, sessionStatus: 'paused' })
+    expect(view.setReplaySelection).toHaveBeenLastCalledWith({ mode: 'inactive' } satisfies ReplaySelectionState)
+    await vi.waitFor(() => expect(engineMocks.patchSession).toHaveBeenCalledWith('session-1', expect.objectContaining({ status: 'paused' })))
+    engine.destroy()
+  })
+
+  it('keeps ordinary replay temporary while still allowing paper trades', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    engine.beginReplaySelection()
+    view.fireReplayBarSelect(120)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    expect(engine.getSnapshot()).toMatchObject({ sessionId: null, sessionStatus: null })
+    expect(engineMocks.createSession).not.toHaveBeenCalled()
+    engine.placeMarket('buy')
+    expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
+    engine.exitReplay()
+    expect(engine.getSnapshot().replayMode).toBe('inactive')
+    expect(engineMocks.patchSession).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('restores a saved journal and focuses the most recent trade without moving its checkpoint', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    const session: ReplaySession = {
+      id: 'saved-session', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
+      equityCents: 1_000_000, status: 'paused', config: {}, createdAt: 0, updatedAt: 240,
+    }
+    const trade: ClosedTrade = {
+      id: 'trade-1', sessionId: session.id, symbol: 'NQ', side: 'long', qty: 1,
+      entryTs: 60, entryPriceTicks: 400, exitTs: 120, exitPriceTicks: 404,
+      realizedCents: 500, feesCents: 0, mfeTicks: 8, maeTicks: 2, rMultiple: 2, createdAt: 120,
+    }
+    engineMocks.fetchTrades.mockResolvedValueOnce([trade])
+
+    await engine.resumeSession(session)
+
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, sessionId: session.id, sessionStatus: 'active' })
+    expect(engine.getSnapshot().fill?.trades).toHaveLength(1)
+    expect(view.focusTime).toHaveBeenCalledWith(120)
+    engine.destroy()
+  })
+
+  it('opens a journal without trades on the nearest timestamp in the data calendar', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    const session: ReplaySession = {
+      id: 'empty-session', symbol: 'NQ', tf: '1m', startTs: 150, cursorTs: 300,
+      equityCents: 1_000_000, status: 'paused', config: {}, createdAt: 150, updatedAt: 300,
+    }
+    engineMocks.fetchCalendar.mockResolvedValueOnce([
+      { date: '1970-01-01', firstTs: 0, lastTs: 120, bars: 3 },
+      { date: '1970-01-02', firstTs: 240, lastTs: 240, bars: 1 },
+    ])
+
+    await engine.resumeSession(session)
+
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, sessionId: session.id, sessionStatus: 'active' })
+    expect(view.focusTime).toHaveBeenCalledWith(240)
+    expect(engineMocks.fetchCalendar).toHaveBeenCalledWith('NQ', '1m', 0, 300)
+    engine.destroy()
+  })
+
+  it('opens an evaluation without trades on the next available data timestamp', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    getEvalState().createEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 150, 'America/New_York')
+    getEvalState().activateEvaluation()
+    engineMocks.fetchCalendar.mockResolvedValueOnce([
+      { date: '1970-01-01', firstTs: 0, lastTs: 120, bars: 3 },
+      { date: '1970-01-02', firstTs: 240, lastTs: 240, bars: 1 },
+    ])
+
+    await engine.syncEvaluationSession()
+
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, replayMode: 'active', replayStartTs: 150 })
+    expect(view.focusTime).toHaveBeenCalledWith(240)
+    engine.destroy()
+  })
+
+  // Regression: step-back used to call rebuildSimulation(), which built a
+  // fresh engine and replayed bars without the user's orders — orders are
+  // not derivable from bars. One press of the back button therefore emptied
+  // the journal, the position and the equity, while the stored journal kept
+  // them, and the two never agreed again.
+  it('keeps trades that closed before the bar it steps back to', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.beginReplaySelection({ createSession: true })
+    view.fireReplayBarSelect(0)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    engine.placeMarket('buy')
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.position).not.toBeNull()
+    engine.flatten()
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.trades).toHaveLength(1)
+    const equityAtExit = engine.getSnapshot().fill?.equityCents
+
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.trades).toHaveLength(1)
+
+    // Back onto the exit bar: the trade is still in the past, so it stays.
+    engine.stepBack()
+    const afterBack = engine.getSnapshot()
+    expect(afterBack.fill?.trades).toHaveLength(1)
+    expect(afterBack.stats.trades).toBe(1)
+    expect(afterBack.fill?.equityCents).toBe(equityAtExit)
+    expect(afterBack.error).toBeNull()
+    engine.destroy()
+  })
+
+  it('unwinds the journal and tells the backend when it steps back past the exit', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    // Persisting a journal needs a session, so this selection opts in.
+    engine.beginReplaySelection({ createSession: true })
+    view.fireReplayBarSelect(0)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    engine.placeMarket('buy')
+    engine.stepForward()
+    engine.flatten()
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.trades).toHaveLength(1)
+    await vi.waitFor(() => expect(engineMocks.putTrades).toHaveBeenCalledWith('session-1', expect.arrayContaining([expect.objectContaining({ realizedCents: expect.any(Number) })])), { timeout: 3_000 })
+
+    // Rewind to before the fill: the trade has not happened yet, so both the
+    // panel and the stored journal must drop it.
+    engine.stepBack()
+    engine.stepBack()
+    expect(engine.getSnapshot().fill?.trades).toHaveLength(0)
+    expect(engine.getSnapshot().fill?.position).toBeNull()
+    await vi.waitFor(() => expect(engineMocks.putTrades).toHaveBeenLastCalledWith('session-1', []), { timeout: 3_000 })
+    engine.destroy()
+  })
+
+  it('keeps a chart order as a draft until confirm and creates a contingent bracket', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.beginReplaySelection({ createSession: true })
+    view.fireReplayBarSelect(120)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    view.fireChartOrder('buy', 'limit', 100)
+    expect(engine.getSnapshot().fill?.orders).toEqual([])
+    expect(view.setOrderLines).toHaveBeenLastCalledWith(expect.arrayContaining([
+      expect.objectContaining({ id: 'ticket-entry', stage: 'draft', label: 'Buy Limit', showControls: true }),
+    ]))
+
+    view.fireOrderAction({ type: 'quantity', qty: 2 })
+    view.fireOrderAction({ type: 'toggle-take-profit' })
+    view.fireOrderAction({ type: 'toggle-stop-loss' })
+    view.fireOrderMove('ticket-take-profit', 110)
+    view.fireOrderAction({ type: 'confirm' })
+
+    expect(engine.getSnapshot().fill?.orders.map((order) => ({ role: order.role, qty: order.qty, active: order.active }))).toEqual([
+      { role: 'entry', qty: 2, active: true },
+      { role: 'stopLoss', qty: 2, active: false },
+      { role: 'takeProfit', qty: 2, active: false },
+    ])
+    expect(view.setOrderLines).toHaveBeenLastCalledWith(expect.arrayContaining([
+      expect.objectContaining({ stage: 'working', label: 'Buy Limit' }),
+      expect.objectContaining({ stage: 'working', label: 'Take Profit' }),
+      expect.objectContaining({ stage: 'working', label: 'Stop Loss' }),
+    ]))
+
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(2)
+    expect(engine.getSnapshot().fill?.orders.every((order) => order.active)).toBe(true)
+    expect(view.setOrderLines).toHaveBeenLastCalledWith(expect.arrayContaining([
+      expect.objectContaining({ id: 'position', stage: 'position', qty: 2, label: expect.stringContaining('USD') }),
+      expect.objectContaining({ stage: 'working', label: 'Take Profit' }),
+      expect.objectContaining({ stage: 'working', label: 'Stop Loss' }),
+    ]))
+    engine.destroy()
+  })
+
+  it('clears an invalid order notification after 20 seconds', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.beginReplaySelection({ createSession: true })
+    view.fireReplayBarSelect(120)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    view.fireChartOrder('buy', 'limit', 100)
+    view.fireOrderAction({ type: 'toggle-stop-loss' })
+    view.fireOrderMove('ticket-stop-loss', 101)
+    vi.useFakeTimers()
+    try {
+      view.fireOrderAction({ type: 'confirm' })
+      expect(engine.getSnapshot().error).toBe('Stop loss must be below the entry price')
+
+      vi.advanceTimersByTime(19_999)
+      expect(engine.getSnapshot().error).toBe('Stop loss must be below the entry price')
+      vi.advanceTimersByTime(1)
+      expect(engine.getSnapshot().error).toBeNull()
+    } finally {
+      engine.destroy()
+      vi.useRealTimers()
+    }
+  })
+
+  it('preserves the manual chart viewport when replay is stepped backward', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.stepForward()
+    view.setHistory.mockClear()
+
+    engine.stepBack()
+
+    expect(view.setHistory).toHaveBeenLastCalledWith(expect.any(Array), { preserveViewport: true, resetView: false })
+    engine.destroy()
+  })
+
+  it('starts replay on the first real raw bar inside a selected display candle', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1d', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    const fetchedFrame: BarFrame = {
+      count: 3,
+      tickNum: 1,
+      tickDen: 4,
+      ts: new Uint32Array([900, 1_020, 1_080]),
+      open: new Int32Array([400, 401, 402]),
+      high: new Int32Array([404, 405, 406]),
+      low: new Int32Array([396, 397, 398]),
+      close: new Int32Array([402, 403, 404]),
+      volume: new Uint32Array([10, 10, 10]),
+    }
+    engineMocks.fetchBarsAt.mockResolvedValueOnce(fetchedFrame)
+
+    engine.beginReplaySelection({ createSession: true })
+    view.fireReplayBarSelect(1_000)
+
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 1_020, replayStartTs: 1_020 })
+    expect(engineMocks.createSession).toHaveBeenLastCalledWith('NQ', '1d', 1_020)
+    engine.destroy()
+  })
+
+  it('hydrates a sparse large-timeframe startup with one bounded display page', async () => {
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1d', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    expect(load).toHaveBeenCalledWith(expect.objectContaining({
+      visibleTimeframe: '1d', pageBars: 240, direction: 'before', maxTs: 0,
+    }), expect.any(AbortSignal))
+    const history = view.setHistory.mock.calls.at(-1)?.[0] as Array<{ time: number }>
+    expect(history).toEqual([expect.objectContaining({ time: 0 })])
+    engine.destroy()
+  })
+
+  it('coalesces rapid timeframe requests to the latest value without rebuilding the chart shell', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    view.init.mockClear()
+    view.setHistory.mockClear()
+    engineMocks.fetchDrawings.mockClear()
+
+    engine.requestChartViewTimeframe('pane-a', '5m')
+    engine.requestChartViewTimeframe('pane-a', '15m')
+    engine.requestChartViewTimeframe('pane-a', '1h')
+
+    await vi.waitFor(() => expect(view.setHistory).toHaveBeenCalledTimes(1))
+    expect(view.init).not.toHaveBeenCalled()
+    expect(engine.getSnapshot().timeframe).toBe('1h')
+    expect(engineMocks.fetchDrawings).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('aborts an in-flight timeframe page so an older response cannot overwrite the latest TF', async () => {
+    const pending: Array<{
+      timeframe: string
+      signal: AbortSignal
+      resolve: (page: { bars: typeof displayBars; hasMore: boolean }) => void
+    }> = []
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    view.setHistory.mockClear()
+    load.mockClear()
+    load.mockImplementation((request, signal) => new Promise((resolve) => {
+      pending.push({ timeframe: request.visibleTimeframe, signal, resolve })
+    }))
+
+    const first = engine.setChartViewTimeframe('pane-a', '5m')
+    await vi.waitFor(() => expect(pending).toHaveLength(1))
+    const second = engine.setChartViewTimeframe('pane-a', '15m')
+    await vi.waitFor(() => expect(pending).toHaveLength(2))
+    expect(pending[0]?.signal.aborted).toBe(true)
+    pending[1]?.resolve({ bars: displayBars, hasMore: false })
+    await second
+    pending[0]?.resolve({ bars: displayBars, hasMore: false })
+    await first
+
+    expect(engine.getSnapshot().timeframe).toBe('15m')
+    expect(view.setHistory).toHaveBeenCalledTimes(1)
+    engine.destroy()
+  })
+
+  it('steps the fill engine once per raw bar while broadcasting to four panes', async () => {
+    const engine = new ReplayEngine()
+    const adapters = [adapter(), adapter(), adapter(), adapter()]
+    for (let index = 0; index < adapters.length; index += 1) {
+      await engine.registerChartView(`pane-${index + 1}`, document.createElement('div'), adapters[index].value, `${index + 1}m`, DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    }
+    const before = engineMocks.stepCalls.mock.calls.length
+    adapters.forEach(({ setTradeMarkers, setOrderLines }) => { setTradeMarkers.mockClear(); setOrderLines.mockClear() })
+    engine.stepForward()
+    expect(engineMocks.stepCalls.mock.calls.length - before).toBe(1)
+    expect(adapters.every(({ pushBars }) => pushBars.mock.calls.length === 1)).toBe(true)
+    expect(adapters.every(({ setTradeMarkers, setOrderLines }) => setTradeMarkers.mock.calls.length === 0 && setOrderLines.mock.calls.length === 0)).toBe(true)
+    expect(engine.getSnapshot().cursorTs).toBe(60)
+    engine.destroy()
+  })
+
+  it('wires crosshair and epoch viewport synchronization between registered panes', async () => {
+    const engine = new ReplayEngine()
+    const source = adapter()
+    const target = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), source.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), target.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    const viewport = { time: { from: 0, to: 240 } }
+
+    source.fireCrosshairSync({ time: 120, price: 101.25 })
+    source.fireViewportSync(viewport)
+
+    expect(target.value.setCrosshairSync).toHaveBeenCalledWith({ time: 0, price: 101.25 })
+    expect(target.value.setViewportSync).toHaveBeenCalledWith(viewport)
+    expect(source.value.setCrosshairSync).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('projects one symbol-level drawing document to every pane across timeframes', async () => {
+    const drawing = { id: 'shared-1', type: 'trend-line', anchors: [{ time: 60, price: 100 }], style: {}, options: {} }
+    const engine = new ReplayEngine()
+    const first = adapter([drawing])
+    const second = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), first.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), second.value, '15m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    second.loadDrawings.mockClear()
+    first.fireDrawingChanged('shared-1')
+    expect(second.loadDrawings).toHaveBeenCalledWith([drawing])
+    engine.destroy()
+  })
+
+  it('never projects bars beyond the replay cursor across seek, rewind, and restored views', async () => {
+    const engine = new ReplayEngine()
+    const first = adapter()
+    const second = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), first.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), second.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    const expectHistoriesWithinCursor = (): void => {
+      const cursor = engine.getSnapshot().cursorTs
+      for (const view of [first, second]) {
+        const history = view.setHistory.mock.calls.at(-1)?.[0] as Array<{ time: number }> | undefined
+        expect(history?.every((bar) => bar.time <= cursor)).toBe(true)
+      }
+    }
+
+    expectHistoriesWithinCursor()
+    engine.stepForward()
+    expect(first.pushBars.mock.calls.at(-1)?.[0].every((bar: { time: number }) => bar.time <= engine.getSnapshot().cursorTs)).toBe(true)
+    await engine.seek(180)
+    expectHistoriesWithinCursor()
+    engine.stepBack()
+    expectHistoriesWithinCursor()
+
+    const restored = adapter()
+    await engine.registerChartView('pane-restored', document.createElement('div'), restored.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    const restoredHistory = restored.setHistory.mock.calls.at(-1)?.[0] as Array<{ time: number }>
+    expect(restoredHistory.every((bar) => bar.time <= engine.getSnapshot().cursorTs)).toBe(true)
+    engine.destroy()
+  })
+
+  it('filters drawings created after the cursor while in replay mode', async () => {
+    const known = { id: 'known', bucket: 'global:NQ', symbol: 'NQ', anchorTs: 0, createdAtCursor: 0, createdTf: '1m', payload: JSON.stringify({ id: 'known', type: 'trend-line', anchors: [], style: {}, options: {} }), deleted: false, updatedAt: 0 }
+    const future = { ...known, id: 'future', createdAtCursor: 120, payload: JSON.stringify({ id: 'future', type: 'trend-line', anchors: [], style: {}, options: {} }) }
+    engineMocks.fetchDrawings.mockImplementation(async (bucket: string) => bucket.startsWith('global:') ? [known, future] : [])
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    expect(view.loadDrawings.mock.calls.at(-1)?.[0].map((drawing: { id: string }) => drawing.id)).toEqual(['known'])
+    engine.destroy()
+  })
+
+  it('loads a requested viewport page through the BE-ready client without revealing future bars', async () => {
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    load.mockClear()
+    await engine.seek(180)
+    view.setHistory.mockClear()
+
+    view.fireViewportDemand({ direction: 'after', anchorTs: 60 })
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(view.setHistory).toHaveBeenCalled())
+
+    const history = view.setHistory.mock.calls.at(-1)?.[0] as Array<{ time: number }>
+    expect(history.every((bar) => bar.time <= 180)).toBe(true)
+    expect(view.setHistory.mock.calls.at(-1)?.[1]).toEqual({ preserveViewport: true })
+    engine.destroy()
+  })
+
+  it('does not request after the current forming weekly bucket while idle', async () => {
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1w', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    load.mockClear()
+    const lastBar = engine.getSnapshot().lastBar
+    if (!lastBar) throw new Error('expected replay cursor bar')
+    const currentBucket = aggregateRange([lastBar], '1w', apiData.symbol, apiData.symbol.tickSize)[0]?.time ?? 0
+
+    view.fireViewportDemand({ direction: 'after', anchorTs: currentBucket })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(load).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('aborts a stale viewport request when pan direction changes', async () => {
+    const pending: Array<{ direction: ViewportDemand['direction']; signal: AbortSignal; resolve: (page: { bars: typeof displayBars; hasMore: boolean }) => void }> = []
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    load.mockClear()
+    load.mockImplementation((request, signal) => new Promise((resolve) => {
+      pending.push({ direction: request.direction, signal, resolve })
+    }))
+    await engine.seek(180)
+    view.setHistory.mockClear()
+
+    view.fireViewportDemand({ direction: 'before', anchorTs: 60 })
+    await vi.waitFor(() => expect(pending).toHaveLength(1))
+    view.fireViewportDemand({ direction: 'after', anchorTs: 60 })
+    await vi.waitFor(() => expect(pending).toHaveLength(2))
+
+    expect(pending[0]?.signal.aborted).toBe(true)
+    pending[1]?.resolve({ bars: displayBars, hasMore: false })
+    await vi.waitFor(() => expect(view.setHistory).toHaveBeenCalledTimes(1))
+    pending[0]?.resolve({ bars: displayBars, hasMore: false })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(view.setHistory).toHaveBeenCalledTimes(1)
+    engine.destroy()
+  })
+})
