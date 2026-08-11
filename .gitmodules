@@ -1,0 +1,3 @@
+[submodule "web/vendor/lightweight-charts-drawing"]
+	path = web/vendor/lightweight-charts-drawing
+	url = git@github.com:namvt48/lightweight-charts-drawing.git
