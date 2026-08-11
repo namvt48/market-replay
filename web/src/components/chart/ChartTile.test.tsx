@@ -21,7 +21,7 @@ const replayMocks = vi.hoisted(() => ({
   updateChartViewSettings: vi.fn(),
   activateChartView: vi.fn(),
   resetChartView: vi.fn(),
-  selectSymbol: vi.fn(),
+  requestChartViewSymbol: vi.fn(),
 }))
 
 vi.mock('../../replay/use-replay', () => ({
@@ -30,11 +30,11 @@ vi.mock('../../replay/use-replay', () => ({
 }))
 vi.mock('../../replay/replay-engine', () => ({ replayEngine: replayMocks }))
 vi.mock('../../replay/lwc-adapter', () => ({ LwcAdapter: class {} }))
-vi.mock('./DrawingToolbar', () => ({ DrawingToolbar: ({ disabled }: { disabled?: boolean }) => <nav aria-label="Drawing tools" data-disabled={disabled} /> }))
 vi.mock('./OhlcLegend', () => ({ OhlcLegend: () => null }))
 
 const pane: ChartPaneState = {
   id: 'pane-1',
+  symbol: 'NQ',
   timeframe: '1m',
   settings: DEFAULT_CHART_PANE_SETTINGS,
 }
@@ -44,17 +44,17 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('ChartTile drawing rail', () => {
-  it('keeps the drawing rail mounted on the active chart while market data loads', () => {
-    render(<ChartTile pane={pane} active removable={false} onActivate={() => undefined} onRemove={() => undefined} onTimeframeChange={() => undefined} onSettingsChange={() => undefined} />)
+describe('ChartTile chart shell', () => {
+  it('leaves drawing controls to the workspace while market data loads', () => {
+    render(<ChartTile pane={pane} active removable={false} maximized={false} onActivate={() => undefined} onToggleMaximize={() => undefined} onRemove={() => undefined} onSymbolChange={() => undefined} onTimeframeChange={() => undefined} onSettingsChange={() => undefined} />)
 
-    expect(screen.getByRole('navigation', { name: 'Drawing tools' })).toHaveAttribute('data-disabled', 'true')
+    expect(screen.queryByRole('navigation', { name: 'Drawing tools' })).not.toBeInTheDocument()
     expect(screen.getByText('Loading market data…')).toBeInTheDocument()
   })
 
   it('offers Reset chart view from the chart context menu', async () => {
     const user = userEvent.setup()
-    render(<ChartTile pane={pane} active removable={false} onActivate={() => undefined} onRemove={() => undefined} onTimeframeChange={() => undefined} onSettingsChange={() => undefined} />)
+    render(<ChartTile pane={pane} active removable={false} maximized={false} onActivate={() => undefined} onToggleMaximize={() => undefined} onRemove={() => undefined} onSymbolChange={() => undefined} onTimeframeChange={() => undefined} onSettingsChange={() => undefined} />)
 
     fireEvent.contextMenu(screen.getByRole('region', { name: '1m market chart, active' }), { clientX: 240, clientY: 180 })
     await user.click(screen.getByRole('menuitem', { name: 'Reset chart view' }))
@@ -65,30 +65,17 @@ describe('ChartTile drawing rail', () => {
 
   it('opens symbol and timeframe selection from the chart identity button', async () => {
     const user = userEvent.setup()
+    const onSymbolChange = vi.fn()
     const onTimeframeChange = vi.fn()
-    render(<ChartTile pane={pane} active removable={false} onActivate={() => undefined} onRemove={() => undefined} onTimeframeChange={onTimeframeChange} onSettingsChange={() => undefined} />)
+    render(<ChartTile pane={pane} active removable={false} maximized={false} onActivate={() => undefined} onToggleMaximize={() => undefined} onRemove={() => undefined} onSymbolChange={onSymbolChange} onTimeframeChange={onTimeframeChange} onSettingsChange={() => undefined} />)
 
     await user.click(screen.getByRole('button', { name: 'NQ 1m chart symbol and timeframe' }))
     await user.selectOptions(screen.getByRole('combobox', { name: 'Chart symbol' }), 'ES')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Chart timeframe' }), '5m')
 
-    expect(replayMocks.selectSymbol).toHaveBeenCalledWith('ES')
+    expect(onSymbolChange).toHaveBeenCalledWith('ES')
+    expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-1', 'ES')
     expect(onTimeframeChange).toHaveBeenCalledWith('5m')
     expect(screen.queryByRole('dialog', { name: 'Chart symbol and timeframe' })).not.toBeInTheDocument()
-  })
-
-  it('switches the pane between ETH and RTH from the chart header', async () => {
-    const user = userEvent.setup()
-    const onSettingsChange = vi.fn()
-    render(<ChartTile pane={pane} active removable={false} onActivate={() => undefined} onRemove={() => undefined} onTimeframeChange={() => undefined} onSettingsChange={onSettingsChange} />)
-
-    const toggle = screen.getByRole('button', { name: 'Market session ETH: show regular trading hours only' })
-    expect(toggle).toHaveTextContent('ETH')
-    expect(toggle).toHaveAttribute('aria-pressed', 'false')
-    await user.click(toggle)
-
-    const expected = { ...DEFAULT_CHART_PANE_SETTINGS, marketSession: 'rth' as const }
-    expect(onSettingsChange).toHaveBeenCalledWith(expected)
-    expect(replayMocks.updateChartViewSettings).toHaveBeenCalledWith('pane-1', expected)
   })
 })

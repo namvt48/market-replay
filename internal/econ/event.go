@@ -32,7 +32,9 @@
 //   - country      required. ISO 3166 alpha-2 ("US", "JP") or a region
 //     ("EU", "GB").
 //   - title        required, as the calendar should display it ("CPI m/m").
-//   - importance   required: "low", "medium" or "high".
+//   - importance   required: "none", "low", "medium" or "high". "none"
+//     preserves holidays and non-economic calendar rows without pretending
+//     they carry low market impact.
 //   - currency     optional, the currency the release moves ("USD").
 //   - forecast     optional, consensus before the release.
 //   - previous     optional, the prior period's figure.
@@ -58,15 +60,17 @@ import (
 
 // Importance levels, ordered.
 const (
+	ImportanceNone   = "none"
 	ImportanceLow    = "low"
 	ImportanceMedium = "medium"
 	ImportanceHigh   = "high"
 )
 
 var importanceRank = map[string]int{
-	ImportanceLow:    0,
-	ImportanceMedium: 1,
-	ImportanceHigh:   2,
+	ImportanceNone:   0,
+	ImportanceLow:    1,
+	ImportanceMedium: 2,
+	ImportanceHigh:   3,
 }
 
 func validImportance(value string) bool {
@@ -162,7 +166,7 @@ func (e Event) validate() error {
 	case strings.TrimSpace(e.Title) == "":
 		return fmt.Errorf("title is required")
 	case !validImportance(e.Importance):
-		return fmt.Errorf("importance must be low, medium or high, got %q", e.Importance)
+		return fmt.Errorf("importance must be none, low, medium or high, got %q", e.Importance)
 	case e.AnnouncedTs < 0:
 		return fmt.Errorf("announcedTs must not be negative, got %d", e.AnnouncedTs)
 	case e.AnnouncedTs > e.Ts:

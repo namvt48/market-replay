@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { chartWorkspaceStateSchema } from './layout-storage'
+import { parseChartWorkspaceState } from './layout-storage'
 import type { ChartWorkspaceState } from './types'
 import { preferenceStorage } from '../store/preference-sync'
 
@@ -8,7 +8,7 @@ const savedLayoutSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1).max(40),
   updatedAt: z.number().int().nonnegative(),
-  state: chartWorkspaceStateSchema,
+  state: z.unknown(),
 })
 const savedLayoutsSchema = z.array(savedLayoutSchema)
 
@@ -24,7 +24,8 @@ interface LayoutStorage extends Pick<Storage, 'getItem' | 'setItem'> {}
 export function loadSavedLayouts(storage: Pick<Storage, 'getItem'> = preferenceStorage): SavedChartLayout[] {
   try {
     const raw = storage.getItem(STORAGE_KEY)
-    return raw ? savedLayoutsSchema.parse(JSON.parse(raw)) : []
+    if (!raw) return []
+    return savedLayoutsSchema.parse(JSON.parse(raw)).map((layout) => ({ ...layout, state: parseChartWorkspaceState(layout.state) }))
   } catch {
     return []
   }

@@ -1,5 +1,5 @@
 import { Columns2, Grid2X2, LayoutDashboard, LayoutPanelTop, Minus, Plus, Rows2, Rows3, Save, Trash2 } from 'lucide-react'
-import { useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
 import { paneIds } from '../../chart-workspace/layout-presets'
 import { deleteSavedLayout, loadSavedLayouts, saveNamedLayout, type SavedChartLayout } from '../../chart-workspace/saved-layouts'
@@ -14,7 +14,11 @@ const PRESETS: Array<{ id: LayoutPreset; label: string; icon: typeof LayoutPanel
   { id: '4', label: '4 charts', icon: Grid2X2 },
 ]
 
-export function LayoutMenu() {
+interface LayoutMenuProps {
+  openRequest?: number
+}
+
+export function LayoutMenu({ openRequest = 0 }: LayoutMenuProps) {
   const { state, dispatch, setPreset, loadLayout } = useChartWorkspace()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
@@ -24,6 +28,12 @@ export function LayoutMenu() {
   const triggerRef = useRef<HTMLButtonElement>(null)
   const ids = paneIds(state.root)
   const nextPreset: LayoutPreset = ids.length === 1 ? '2v' : ids.length === 2 ? '3' : '4'
+
+  useEffect(() => {
+    if (openRequest <= 0) return
+    setSaved(loadSavedLayouts())
+    setOpen(true)
+  }, [openRequest])
 
   useDismissableLayer({
     open,

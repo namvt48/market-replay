@@ -1,6 +1,6 @@
 import { ArrowRight, RotateCcw, X } from 'lucide-react'
 import { useEffect, useRef } from 'react'
-import type { EvalConfig, EvalRuntime, EvalStatus } from '../../eval/rules'
+import type { EvalConfig, EvalRuntime, EvalStatus, PayoutRecord } from '../../eval/rules'
 
 const fmt$ = (n: number): string =>
   new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n)
@@ -12,7 +12,9 @@ interface EvalResultCardProps {
   runtime: EvalRuntime
   status: EvalStatus
   endingEquity: number
+  payoutHistory?: readonly PayoutRecord[]
   onRetry: () => void
+  onGoVerification?: () => void
   onGoFunded: () => void
   onAbandon: () => void
   onClose: () => void
@@ -25,7 +27,9 @@ export function EvalResultCard({
   runtime,
   status,
   endingEquity,
+  payoutHistory = [],
   onRetry,
+  onGoVerification,
   onGoFunded,
   onAbandon,
   onClose,
@@ -33,6 +37,8 @@ export function EvalResultCard({
   const dialogRef = useRef<HTMLDivElement>(null)
   const onCloseRef = useRef(onClose)
   const passed = verdict === 'passed'
+  const funded = config.phase === 'funded'
+  const verificationNext = passed && config.phase !== 'verification' && config.verificationProfitTarget > 0 && onGoVerification
   onCloseRef.current = onClose
 
   useEffect(() => {
@@ -115,7 +121,7 @@ export function EvalResultCard({
           id="eval-result-title"
           className={`text-[22px] font-bold leading-tight ${passed ? 'text-profit-bright' : 'text-loss-bright'}`}
         >
-          {passed ? 'EVALUATION PASSED' : 'EVALUATION FAILED'}
+          {passed ? (config.phase === 'verification' ? 'VERIFICATION PASSED' : 'EVALUATION PASSED') : funded ? 'FUNDED ACCOUNT FAILED' : 'EVALUATION FAILED'}
         </h2>
         <p id="eval-result-description" className="mt-1.5 text-ui-body text-muted">{reason}</p>
 
@@ -128,11 +134,28 @@ export function EvalResultCard({
           ))}
         </dl>
 
+        {payoutHistory.length > 0 ? (
+          <section className="mt-4 border-y border-line py-3" aria-labelledby="result-payout-history">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 id="result-payout-history" className="text-ui-body font-medium text-ink">Payout history</h3>
+              <span className="font-mono text-ui-meta text-muted">{payoutHistory.length} taken</span>
+            </div>
+            <ul className="mt-2 divide-y divide-line">
+              {[...payoutHistory].reverse().slice(0, 3).map((payout) => (
+                <li key={payout.id} className="flex justify-between gap-3 py-1.5 text-ui-meta">
+                  <span className="text-muted">Payout #{payout.payoutNumber} · {payout.profitSplit}% split</span>
+                  <span className="font-mono text-profit-bright">{fmt$(payout.traderAmount)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         <div className="mt-5 flex flex-col gap-2">
           {passed ? (
             <>
-              <button type="button" onClick={onGoFunded} className="primary-button min-h-11 w-full gap-2 sm:min-h-9">
-                Claim funded account <ArrowRight size={14} />
+              <button type="button" onClick={verificationNext ? onGoVerification : onGoFunded} className="primary-button min-h-11 w-full gap-2 sm:min-h-9">
+                {verificationNext ? 'Continue to verification' : 'Claim funded account'} <ArrowRight size={14} />
               </button>
               <button type="button" onClick={startFresh} className="secondary-button min-h-11 w-full sm:min-h-9">
                 Start new evaluation

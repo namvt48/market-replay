@@ -54,7 +54,19 @@ const appearanceSchema = z.object({
   fibonacciLevels: z.array(fibonacciLevelSchema).length(FIBONACCI_LEVEL_SLOT_COUNT).default(() => normalizeFibonacciLevels(undefined)),
   fibonacciExtend: z.boolean().default(DEFAULT_DRAWING_METADATA.fibonacciExtend),
   fibonacciLevelDecimals: z.number().int().min(0).max(8).default(DEFAULT_DRAWING_METADATA.fibonacciLevelDecimals),
-  fibonacciLabelPosition: z.enum(['left', 'right']).default(DEFAULT_DRAWING_METADATA.fibonacciLabelPosition),
+  fibonacciLabelPosition: z.enum(['left', 'center', 'right']).default(DEFAULT_DRAWING_METADATA.fibonacciLabelPosition),
+  fibonacciLabelVerticalPosition: z.enum(['top', 'middle', 'bottom']).default(DEFAULT_DRAWING_METADATA.fibonacciLabelVerticalPosition),
+  fibonacciReverse: z.boolean().default(DEFAULT_DRAWING_METADATA.fibonacciReverse),
+  fibonacciPrices: z.boolean().default(DEFAULT_DRAWING_METADATA.fibonacciPrices),
+  fibonacciLevelLabels: z.boolean().default(DEFAULT_DRAWING_METADATA.fibonacciLevelLabels),
+  fibonacciLevelFormat: z.enum(['values', 'percents']).default(DEFAULT_DRAWING_METADATA.fibonacciLevelFormat),
+  fibonacciTextVisible: z.boolean().default(DEFAULT_DRAWING_METADATA.fibonacciTextVisible),
+  rectangleMiddleLine: z.boolean().default(DEFAULT_DRAWING_METADATA.rectangleMiddleLine),
+  rectangleMiddleLineColor: hexColorSchema.default(DEFAULT_DRAWING_METADATA.rectangleMiddleLineColor),
+  rectangleMiddleLineOpacity: z.number().min(0).max(1).default(DEFAULT_DRAWING_METADATA.rectangleMiddleLineOpacity),
+  rectangleMiddleLineWidth: z.number().min(1).max(8).default(DEFAULT_DRAWING_METADATA.rectangleMiddleLineWidth),
+  rectangleMiddleLineStyle: z.enum(['solid', 'dashed', 'dotted']).default(DEFAULT_DRAWING_METADATA.rectangleMiddleLineStyle),
+  fibonacciDiagonalLine: z.boolean().default(DEFAULT_DRAWING_METADATA.fibonacciDiagonalLine),
 })
 
 const drawingTemplateSchema = z.object({

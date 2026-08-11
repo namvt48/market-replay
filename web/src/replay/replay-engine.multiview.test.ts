@@ -1,17 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BarFrame } from '../api/binary-frame'
 import type { ClosedTrade, ReplaySession, SymbolMeta } from '../api/types'
-import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, OrderLineAction, ReplaySelectionState, ViewportDemand } from './chart-adapter'
+import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, OrderLineAction, ReplaySelectionState, TradeMarker, ViewportDemand } from './chart-adapter'
 import { aggregateRange } from './aggregate'
 import { DEFAULT_CHART_PANE_SETTINGS } from './chart-settings-store'
 import { HoverBarStore } from './hover-bar-store'
 import { ReplayEngine } from './replay-engine'
 import { EVAL_PRESETS } from '../eval/rules'
-import { getEvalState } from '../store/eval-store'
+import { getEvalState, loadEvalAccounts, useEvalStore } from '../store/eval-store'
 import type { ViewportDataClient } from './viewport-data'
 
 const engineMocks = vi.hoisted(() => ({
   stepCalls: vi.fn(),
+  fetchSymbols: vi.fn(),
   fetchBarsAt: vi.fn(),
   fetchCalendar: vi.fn(),
   fetchTrades: vi.fn().mockResolvedValue([]),
@@ -34,7 +35,7 @@ const displayBars = Array.from({ length: 5 }, (_, index) => ({
 }))
 
 vi.mock('../api/client', () => ({
-  fetchSymbols: vi.fn().mockResolvedValue([apiData.symbol]), fetchBarsAt: engineMocks.fetchBarsAt,
+  fetchSymbols: engineMocks.fetchSymbols, fetchBarsAt: engineMocks.fetchBarsAt,
   fetchCalendar: engineMocks.fetchCalendar,
   fetchSessions: vi.fn().mockResolvedValue([]), fetchTrades: engineMocks.fetchTrades,
   createSession: engineMocks.createSession, fetchDrawings: engineMocks.fetchDrawings,
@@ -54,10 +55,13 @@ vi.mock('../fill-engine/engine', async (importOriginal) => {
 
 function adapter(drawings: object[] = []) {
   const init = vi.fn().mockResolvedValue(undefined)
+  const setSymbol = vi.fn()
   const pushBars = vi.fn()
   const setHistory = vi.fn()
   const loadDrawings = vi.fn()
   const setTradeMarkers = vi.fn()
+  const setEconomicEventMarkers = vi.fn()
+  const setTradeConnections = vi.fn()
   const setOrderLines = vi.fn()
   const setDrawingTool = vi.fn()
   const focusTime = vi.fn()
@@ -72,22 +76,24 @@ function adapter(drawings: object[] = []) {
   let orderDragStart = (_id: string): void => undefined
   const setReplaySelection = vi.fn()
   const value = {
-    init, setHistory, pushBar: vi.fn(), pushBars, truncateTo: vi.fn(), setSpacerTimes: vi.fn(),
+    init, setSymbol, setHistory, pushBar: vi.fn(), pushBars, truncateTo: vi.fn(), setSpacerTimes: vi.fn(),
     applyAppearance: vi.fn(), setDisplayTimezone: vi.fn(), onHoveredBar: vi.fn(), onViewportDemand: vi.fn((handler: typeof viewportDemand) => { viewportDemand = handler }),
     onCrosshairSync: vi.fn((handler: typeof crosshairSync) => { crosshairSync = handler }), setCrosshairSync: vi.fn(),
     onViewportSync: vi.fn((handler: typeof viewportSync) => { viewportSync = handler }), setViewportSync: vi.fn(),
-    setReplaySelection, onReplayBarSelect: vi.fn((handler: typeof replayBarSelect) => { replayBarSelect = handler }), setTradeMarkers, setOrderLines,
+    setReplaySelection, onReplayBarSelect: vi.fn((handler: typeof replayBarSelect) => { replayBarSelect = handler }), setTradeMarkers, setEconomicEventMarkers, setTradeConnections, setOrderLines,
     onOrderLineMove: vi.fn((handler: typeof orderMove) => { orderMove = handler }),
     onOrderLineDragStart: vi.fn((handler: typeof orderDragStart) => { orderDragStart = handler }),
     onOrderLineAction: vi.fn((handler: typeof orderAction) => { orderAction = handler }),
     onChartOrder: vi.fn((handler: typeof chartOrder) => { chartOrder = handler }), drawingTools: vi.fn().mockReturnValue([]), setDrawingTool, deselectDrawing: vi.fn(),
     deleteSelectedDrawing: vi.fn(), deleteAllDrawings: vi.fn(), updateSelectedDrawing: vi.fn(), setNextDrawingAppearance: vi.fn(),
+    copySelectedDrawing: vi.fn().mockReturnValue(null), pasteDrawing: vi.fn(), undoDrawing: vi.fn().mockReturnValue(false), redoDrawing: vi.fn().mockReturnValue(false),
+    nudgeSelectedDrawing: vi.fn().mockReturnValue(false), toggleDrawingsVisibility: vi.fn(),
     getDrawings: vi.fn().mockReturnValue(drawings), loadDrawings, onDrawingsChanged: vi.fn((handler: (drawingId?: string) => void) => { drawingChanged = handler }), onDrawingSelection: vi.fn(),
     onDrawingEditRequest: vi.fn(), onDrawingToolChanged: vi.fn(), visibleRange: vi.fn().mockReturnValue({ from: 0, to: 0 }), destroy: vi.fn(),
-    focusTime, resetView: vi.fn(),
+    focusTime, panView: vi.fn(), zoomView: vi.fn(), toggleInvertScale: vi.fn(), togglePriceScaleMode: vi.fn(), takeSnapshot: vi.fn(), resetView: vi.fn(),
   }
   return {
-    value: value as ChartAdapter, init, setHistory, pushBars, loadDrawings, setTradeMarkers, setOrderLines, setDrawingTool, setReplaySelection, focusTime,
+    value: value as ChartAdapter, init, setSymbol, setHistory, pushBars, loadDrawings, setTradeMarkers, setTradeConnections, setOrderLines, setDrawingTool, setReplaySelection, focusTime,
     fireDrawingChanged: (drawingId?: string) => drawingChanged(drawingId),
     fireViewportDemand: (demand: ViewportDemand) => viewportDemand(demand),
     fireCrosshairSync: (state: ChartCrosshairSync | null) => crosshairSync(state),
@@ -101,7 +107,10 @@ function adapter(drawings: object[] = []) {
 }
 
 beforeEach(() => {
+  localStorage.clear()
   getEvalState().abandon()
+  engineMocks.fetchSymbols.mockReset()
+  engineMocks.fetchSymbols.mockResolvedValue([apiData.symbol])
   engineMocks.fetchDrawings.mockReset()
   engineMocks.fetchDrawings.mockResolvedValue([])
   engineMocks.createSession.mockClear()
@@ -116,6 +125,39 @@ beforeEach(() => {
 })
 
 describe('ReplayEngine multi-view invariant', () => {
+  it('surfaces why trading shortcuts cannot place orders before bar replay is active', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    expect(engine.getSnapshot().replayMode).toBe('inactive')
+
+    engine.placeMarket('buy')
+    expect(engine.getSnapshot().error).toBe('Start bar replay before placing orders')
+
+    engine.placePendingAtLast('sell', 'limit')
+    expect(engine.getSnapshot().error).toBe('Start bar replay before placing orders')
+    engine.destroy()
+  })
+
+  it('steps the canonical 1-minute replay source by the selected interval', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.beginReplaySelection()
+    view.fireReplayBarSelect(0)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    expect(engine.getSnapshot()).toMatchObject({ speed: 1, stepTimeframe: '1m', cursorTs: 0 })
+    engine.setSpeed(16)
+    engine.setStepTimeframe('3m')
+    engine.stepForward()
+    expect(engine.getSnapshot()).toMatchObject({ speed: 16, stepTimeframe: '3m', cursorTs: 180 })
+
+    engine.stepBack()
+    expect(engine.getSnapshot().cursorTs).toBe(0)
+    engine.destroy()
+  })
+
   it('keeps drawing-tool ownership on a pane activated before its adapter finishes registering', async () => {
     const engine = new ReplayEngine()
     const first = adapter()
@@ -134,23 +176,31 @@ describe('ReplayEngine multi-view invariant', () => {
     engine.destroy()
   })
 
-  it('rebuilds only the selected pane when its ETH/RTH filter changes', async () => {
+  it('rebuilds every pane and restores trading overlays when the shared ETH/RTH session changes', async () => {
     const engine = new ReplayEngine()
     const first = adapter()
     const second = adapter()
     await engine.registerChartView('pane-a', document.createElement('div'), first.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
-    await engine.registerChartView('pane-b', document.createElement('div'), second.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), second.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     first.setHistory.mockClear()
     second.setHistory.mockClear()
+    first.setOrderLines.mockClear()
+    second.setOrderLines.mockClear()
+    first.setTradeMarkers.mockClear()
+    second.setTradeMarkers.mockClear()
 
-    engine.updateChartViewSettings('pane-a', { ...DEFAULT_CHART_PANE_SETTINGS, marketSession: 'rth' })
+    engine.setMarketSession('rth')
 
     expect(first.setHistory).toHaveBeenLastCalledWith([], { preserveViewport: false, resetView: true })
-    expect(second.setHistory).not.toHaveBeenCalled()
+    expect(second.setHistory).toHaveBeenLastCalledWith([], { preserveViewport: false, resetView: true })
+    expect(first.setOrderLines).toHaveBeenCalledOnce()
+    expect(second.setOrderLines).toHaveBeenCalledOnce()
+    expect(first.setTradeMarkers).toHaveBeenCalledOnce()
+    expect(second.setTradeMarkers).toHaveBeenCalledOnce()
     engine.destroy()
   })
 
-  it('boots an evaluation at its selected instrument/time and enforces forward-only controls', async () => {
+  it('boots an evaluation at its selected instrument/time with forward-only replay navigation', async () => {
     getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 120, 'America/New_York')
     const engine = new ReplayEngine()
     const view = adapter()
@@ -161,15 +211,92 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot().cursorTs).toBe(180)
     engine.stepBack()
     expect(engine.getSnapshot().cursorTs).toBe(180)
-    await engine.seek(0)
+    await engine.seek(60)
     expect(engine.getSnapshot().cursorTs).toBe(180)
+    await engine.seek(240)
+    expect(engine.getSnapshot().cursorTs).toBe(240)
     engine.beginReplaySelection()
-    expect(engine.getSnapshot().replayMode).toBe('selecting')
-    view.fireReplayBarSelect(0)
-    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
-    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 180, replayStartTs: 180 })
+    expect(engine.getSnapshot().replayMode).toBe('active')
+    view.fireReplayBarSelect(60)
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, replayMode: 'active', replayStartTs: 120 })
     engine.exitReplay()
-    expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', replayStartTs: 180 })
+    expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', replayStartTs: 120 })
+    engine.destroy()
+  })
+
+  it('applies the evaluation contract limit to quantity and open exposure', async () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[2], 'NQ', '1970-01-01', 120, 'America/New_York')
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    engine.setQty(100)
+    expect(engine.getSnapshot().qty).toBe(6)
+    expect(engine.getSnapshot().fill?.config.maxContracts).toBe(6)
+    engine.placeMarket('buy')
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(6)
+
+    engine.placeMarket('buy')
+    expect(engine.getSnapshot().error).toBe('Position size cannot exceed 6 contracts')
+    expect(engine.getSnapshot().fill?.orders).toEqual([])
+
+    engine.setQty(1)
+    engine.placeMarket('sell')
+    expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
+    engine.destroy()
+  })
+
+  it('blocks evaluation rewinds and re-anchors accounting only on forward reposition', async () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 120, 'America/New_York')
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.stepForward()
+    expect(getEvalState().needsFillRebase).toBe(false)
+
+    engine.stepBack()
+    expect(engine.getSnapshot().cursorTs).toBe(180)
+    expect(getEvalState().needsFillRebase).toBe(false)
+
+    await engine.seek(240)
+    expect(getEvalState().needsFillRebase).toBe(true)
+    const snapshot = engine.getSnapshot()
+    if (!snapshot.fill) throw new Error('expected fill state at the replay cursor')
+    getEvalState().tick({ cursorTs: snapshot.cursorTs, fill: snapshot.fill })
+    expect(getEvalState()).toMatchObject({ phase: 'running', needsFillRebase: false, lastCursorTs: snapshot.cursorTs })
+    engine.destroy()
+  })
+
+  it('projects saved eval trades onto the chart when the replayed fill has none', async () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 120, 'America/New_York')
+    useEvalStore.setState({
+      trades: [{
+        id: 'eval-trade-1',
+        symbol: 'NQ',
+        side: 'long',
+        qty: 1,
+        entryTime: 120,
+        entryPriceTicks: 400,
+        exitTime: 180,
+        exitPriceTicks: 408,
+        realizedCents: 4000,
+        mfeTicks: 8,
+        maeTicks: 0,
+      }],
+    })
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    const lastMarkers = view.setTradeMarkers.mock.calls.at(-1)?.[0] as TradeMarker[] | undefined
+    expect(lastMarkers).toEqual([
+      { time: 120, price: 100, text: '+1 @ 100.00', color: '#089981', shape: 'arrowUp' },
+      { time: 180, price: 102, text: '-1 @ 102.00', color: '#089981', shape: 'circle' },
+    ])
+    expect(view.setTradeConnections).toHaveBeenLastCalledWith([
+      { entryTime: 120, entryPrice: 100, exitTime: 180, exitPrice: 102 },
+    ])
     engine.destroy()
   })
 
@@ -192,13 +319,64 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 120, replayStartTs: 120, sessionId: 'session-1', sessionStatus: 'active' })
     expect(engineMocks.createSession).toHaveBeenCalledOnce()
     engine.placeMarket('buy')
+    engine.stepForward()
+    engine.flatten()
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.trades).toHaveLength(1)
+    engine.placeMarket('buy')
     expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
     expect(view.setReplaySelection).toHaveBeenLastCalledWith({ mode: 'active', timestamp: 120 } satisfies ReplaySelectionState)
 
-    engine.exitReplay()
-    expect(engine.getSnapshot()).toMatchObject({ replayMode: 'inactive', replayStartTs: null, sessionStatus: 'paused' })
+    await engine.pauseReplaySession()
+
+    expect(engine.getSnapshot()).toMatchObject({
+      cursorTs: 240,
+      replayMode: 'inactive',
+      replayStartTs: null,
+      sessionId: null,
+      sessionStatus: null,
+    })
+    expect(engine.getSnapshot().fill?.orders).toEqual([])
+    expect(engine.getSnapshot().fill?.trades).toEqual([])
     expect(view.setReplaySelection).toHaveBeenLastCalledWith({ mode: 'inactive' } satisfies ReplaySelectionState)
-    await vi.waitFor(() => expect(engineMocks.patchSession).toHaveBeenCalledWith('session-1', expect.objectContaining({ status: 'paused' })))
+    expect(engineMocks.patchSession).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      status: 'paused',
+      config: expect.objectContaining({ fill: expect.objectContaining({ orders: [] }) }),
+    }))
+    expect(engineMocks.putTrades).toHaveBeenCalledWith('session-1', [expect.objectContaining({
+      sessionId: 'session-1',
+      entryTs: 180,
+      exitTs: 240,
+    })])
+    expect(view.setTradeMarkers).toHaveBeenLastCalledWith([])
+    expect(view.setTradeConnections).toHaveBeenLastCalledWith([])
+    engine.destroy()
+  })
+
+  it('saves evaluation data, cancels its orders, and returns the chart to latest on exit', async () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 120, 'America/New_York')
+    const accountId = getEvalState().accountId
+    useEvalStore.setState({
+      trades: [{ id: 'eval-trade', symbol: 'NQ', side: 'long', qty: 1, entryTime: 120, exitTime: 180, entryPriceTicks: 400, exitPriceTicks: 404, realizedCents: 500 }],
+      lastCursorTs: 180,
+    })
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.placeMarket('buy')
+    expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
+
+    await engine.exitEvaluation()
+
+    expect(getEvalState().phase).toBe('idle')
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, replayMode: 'inactive', playing: false })
+    expect(engine.getSnapshot().fill?.orders).toEqual([])
+    expect(engine.getSnapshot().fill?.trades).toEqual([])
+    expect(loadEvalAccounts().find((account) => account.accountId === accountId)?.trades).toEqual([
+      expect.objectContaining({ id: 'eval-trade', entryTime: 120, exitTime: 180 }),
+    ])
+    expect(view.setTradeMarkers).toHaveBeenLastCalledWith([])
+    expect(view.setTradeConnections).toHaveBeenLastCalledWith([])
     engine.destroy()
   })
 
@@ -216,7 +394,8 @@ describe('ReplayEngine multi-view invariant', () => {
     engine.placeMarket('buy')
     expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
     engine.exitReplay()
-    expect(engine.getSnapshot().replayMode).toBe('inactive')
+    await vi.waitFor(() => expect(engine.getSnapshot()).toMatchObject({ replayMode: 'inactive', cursorTs: 240 }))
+    expect(engine.getSnapshot().fill?.orders).toEqual([])
     expect(engineMocks.patchSession).not.toHaveBeenCalled()
     engine.destroy()
   })
@@ -241,6 +420,41 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, sessionId: session.id, sessionStatus: 'active' })
     expect(engine.getSnapshot().fill?.trades).toHaveLength(1)
     expect(view.focusTime).toHaveBeenCalledWith(120)
+    engine.destroy()
+  })
+
+  it('renders filled executions as signed contracts at their grouped fill prices', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    const session: ReplaySession = {
+      id: 'signed-marker-session', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
+      equityCents: 1_000_000, status: 'paused', config: {}, createdAt: 0, updatedAt: 240,
+    }
+    const trade: ClosedTrade = {
+      id: 'trade-short', sessionId: session.id, symbol: 'NQ', side: 'short', qty: 5,
+      entryTs: 60, entryPriceTicks: 115_104, exitTs: 120, exitPriceTicks: 114_349,
+      realizedCents: 18_875_000, feesCents: 0, mfeTicks: 755, maeTicks: 0, rMultiple: 2, createdAt: 120,
+    }
+    const longTrade: ClosedTrade = {
+      id: 'trade-long', sessionId: session.id, symbol: 'NQ', side: 'long', qty: 2,
+      entryTs: 120, entryPriceTicks: 112_000, exitTs: 180, exitPriceTicks: 112_400,
+      realizedCents: 20_000, feesCents: 0, mfeTicks: 400, maeTicks: 0, rMultiple: 2, createdAt: 180,
+    }
+    engineMocks.fetchTrades.mockResolvedValueOnce([trade, longTrade])
+
+    await engine.resumeSession(session)
+
+    expect(view.setTradeMarkers).toHaveBeenLastCalledWith([
+      { time: 60, price: 28_776, text: '-5 @ 28,776.00', color: '#f23645', shape: 'arrowDown' },
+      { time: 120, price: 28_587.25, text: '+5 @ 28,587.25', color: '#f23645', shape: 'circle' },
+      { time: 120, price: 28_000, text: '+2 @ 28,000.00', color: '#089981', shape: 'arrowUp' },
+      { time: 180, price: 28_100, text: '-2 @ 28,100.00', color: '#089981', shape: 'circle' },
+    ])
+    expect(view.setTradeConnections).toHaveBeenLastCalledWith([
+      { entryTime: 60, entryPrice: 28_776, exitTime: 120, exitPrice: 28_587.25 },
+      { entryTime: 120, entryPrice: 28_000, exitTime: 180, exitPrice: 28_100 },
+    ])
     engine.destroy()
   })
 
@@ -280,6 +494,24 @@ describe('ReplayEngine multi-view invariant', () => {
 
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, replayMode: 'active', replayStartTs: 150 })
     expect(view.focusTime).toHaveBeenCalledWith(240)
+    engine.destroy()
+  })
+
+  it('resumes an evaluation at the locked start date from its last exit cursor', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    getEvalState().createEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 60, 'America/New_York')
+    getEvalState().activateEvaluation()
+    useEvalStore.setState({ lastCursorTs: 180 })
+
+    await engine.syncEvaluationSession()
+
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 180, replayMode: 'active', replayStartTs: 60 })
+    engine.stepBack()
+    expect(engine.getSnapshot().cursorTs).toBe(180)
+    engine.stepForward()
+    expect(engine.getSnapshot().cursorTs).toBe(240)
     engine.destroy()
   })
 
@@ -464,6 +696,88 @@ describe('ReplayEngine multi-view invariant', () => {
     engine.destroy()
   })
 
+  it('changes one pane symbol without rebuilding sibling panes or the replay stream', async () => {
+    const es: SymbolMeta = { ...apiData.symbol, symbol: 'ES', name: 'E-mini S&P' }
+    engineMocks.fetchSymbols.mockResolvedValueOnce([apiData.symbol, es])
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const first = adapter()
+    const sibling = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), first.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), sibling.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    first.setHistory.mockClear()
+    sibling.setHistory.mockClear()
+
+    await engine.setChartViewSymbol('pane-a', 'ES')
+
+    expect(first.setSymbol).toHaveBeenCalledWith(expect.objectContaining({ symbol: 'ES' }))
+    expect(first.setHistory).toHaveBeenCalledOnce()
+    expect(sibling.setSymbol).not.toHaveBeenCalled()
+    expect(sibling.setHistory).not.toHaveBeenCalled()
+    expect(engine.getSnapshot().symbol?.symbol).toBe('NQ')
+    engine.destroy()
+  })
+
+  it('rewinds and advances an alternate-symbol pane on the shared replay cursor', async () => {
+    const es: SymbolMeta = { ...apiData.symbol, symbol: 'ES', name: 'E-mini S&P' }
+    engineMocks.fetchSymbols.mockResolvedValueOnce([apiData.symbol, es])
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const esView = adapter()
+    const nqView = adapter()
+    await engine.registerChartView('pane-es', document.createElement('div'), esView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-nq', document.createElement('div'), nqView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.seek(240)
+    await engine.setChartViewSymbol('pane-es', 'ES')
+    esView.setHistory.mockClear()
+    esView.pushBars.mockClear()
+
+    await engine.seek(120)
+
+    const rewoundHistory = esView.setHistory.mock.calls.at(-1)?.[0] as Array<{ time: number }> | undefined
+    expect(rewoundHistory?.every((bar) => bar.time <= 120)).toBe(true)
+    engine.stepForward()
+    expect(esView.pushBars.mock.calls.at(-1)?.[0]).toEqual([expect.objectContaining({ time: 180 })])
+    engine.destroy()
+  })
+
+  it('routes evaluation trading to the active alternate-symbol pane', async () => {
+    const es: SymbolMeta = { ...apiData.symbol, symbol: 'ES', name: 'E-mini S&P' }
+    engineMocks.fetchSymbols.mockResolvedValueOnce([apiData.symbol, es])
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 0, 'America/New_York')
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const nqView = adapter()
+    const esView = adapter()
+    await engine.registerChartView('pane-nq', document.createElement('div'), nqView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-es', document.createElement('div'), esView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    expect(engine.getSnapshot().symbols.map((symbol) => symbol.symbol)).toContain('ES')
+    await engine.setChartViewSymbol('pane-es', 'ES')
+    expect(esView.setSymbol).toHaveBeenLastCalledWith(expect.objectContaining({ symbol: 'ES' }))
+    engine.activateChartView('pane-es')
+    expect(engine.getSnapshot().activeSymbol?.symbol).toBe('ES')
+    expect(engine.getSnapshot().fill?.config.symbol).toBe('ES')
+
+    engine.placeMarket('buy')
+    engine.stepForward()
+
+    expect(engine.getSnapshot().fill?.config.symbol).toBe('ES')
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(1)
+
+    engine.activateChartView('pane-nq')
+    expect(engine.getSnapshot().fill?.config.symbol).toBe('NQ')
+    expect(engine.getSnapshot().fill?.position).toBeNull()
+    engine.placeMarket('buy')
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(1)
+
+    engine.activateChartView('pane-es')
+    expect(engine.getSnapshot().fill?.config.symbol).toBe('ES')
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(1)
+    expect(engine.getSnapshot().evalFill).not.toBeNull()
+    engine.destroy()
+  })
+
   it('coalesces rapid timeframe requests to the latest value without rebuilding the chart shell', async () => {
     const engine = new ReplayEngine()
     const view = adapter()
@@ -544,6 +858,41 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(target.value.setCrosshairSync).toHaveBeenCalledWith({ time: 0, price: 101.25 })
     expect(target.value.setViewportSync).toHaveBeenCalledWith(viewport)
     expect(source.value.setCrosshairSync).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('gates crosshair and date-range broadcasts independently at the view handlers', async () => {
+    const engine = new ReplayEngine()
+    const source = adapter()
+    const target = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), source.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), target.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    const crosshair = { time: 120, price: 101.25 }
+    const viewport = { time: { from: 0, to: 240 } }
+
+    engine.setSyncFlags({ crosshair: false, dateRange: false, lockZoom: false })
+    source.fireCrosshairSync(crosshair)
+    source.fireViewportSync(viewport)
+    expect(target.value.setCrosshairSync).not.toHaveBeenCalled()
+    expect(target.value.setViewportSync).not.toHaveBeenCalled()
+
+    engine.setSyncFlags({ crosshair: true, dateRange: false, lockZoom: false })
+    source.fireCrosshairSync(crosshair)
+    source.fireViewportSync(viewport)
+    expect(target.value.setCrosshairSync).toHaveBeenCalledOnce()
+    expect(target.value.setViewportSync).not.toHaveBeenCalled()
+
+    engine.setSyncFlags({ crosshair: false, dateRange: true, lockZoom: false })
+    source.fireCrosshairSync(crosshair)
+    source.fireViewportSync(viewport)
+    expect(target.value.setCrosshairSync).toHaveBeenCalledOnce()
+    expect(target.value.setViewportSync).toHaveBeenCalledOnce()
+    expect(target.value.setViewportSync).toHaveBeenLastCalledWith(viewport)
+
+    const lockedViewport = { ...viewport, logicalSpan: 24 }
+    engine.setSyncFlags({ crosshair: false, dateRange: true, lockZoom: true })
+    source.fireViewportSync(lockedViewport)
+    expect(target.value.setViewportSync).toHaveBeenLastCalledWith(lockedViewport)
     engine.destroy()
   })
 

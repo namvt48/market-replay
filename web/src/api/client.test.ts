@@ -39,6 +39,9 @@ describe('API client transient recovery', () => {
       events: [{
         id: 'us-cpi', ts: 1_786_723_800, country: 'US', currency: 'USD', title: 'CPI m/m',
         importance: 'high', forecast: '0.2%', previous: '0.3%', released: false,
+      }, {
+        id: 'uk-holiday', ts: 1_786_724_000, country: 'UK', currency: 'GBP', title: 'Bank Holiday',
+        importance: 'none', released: false,
       }],
     }
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(payload), {
@@ -60,6 +63,7 @@ describe('API client transient recovery', () => {
     expect(requested.searchParams.get('tz')).toBe(payload.timeZone)
     expect(requested.searchParams.getAll('country')).toEqual(['US', 'EU'])
     expect(Object.hasOwn(week.events[0], 'actual')).toBe(false)
+    expect(week.events[1].importance).toBe('none')
   })
 
   it('rejects an actual value attached to an unreleased calendar event', async () => {

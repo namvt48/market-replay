@@ -47,4 +47,39 @@ describe('drawing templates', () => {
     expect(parseDrawingTemplates('{oops')).toEqual([])
     expect(parseDrawingTemplates(JSON.stringify([{ id: 'bad' }]))).toEqual([])
   })
+
+  it('adds display defaults when loading templates saved before the new drawing options', () => {
+    const [saved] = saveNamedDrawingTemplate([], 'Legacy rectangle', drawing, 100, () => 'template-1')
+    const {
+      rectangleMiddleLine: _rectangleMiddleLine,
+      rectangleMiddleLineColor: _rectangleMiddleLineColor,
+      rectangleMiddleLineOpacity: _rectangleMiddleLineOpacity,
+      rectangleMiddleLineWidth: _rectangleMiddleLineWidth,
+      rectangleMiddleLineStyle: _rectangleMiddleLineStyle,
+      fibonacciDiagonalLine: _fibonacciDiagonalLine,
+      fibonacciLabelVerticalPosition: _fibonacciLabelVerticalPosition,
+      fibonacciReverse: _fibonacciReverse,
+      fibonacciPrices: _fibonacciPrices,
+      fibonacciLevelLabels: _fibonacciLevelLabels,
+      fibonacciLevelFormat: _fibonacciLevelFormat,
+      fibonacciTextVisible: _fibonacciTextVisible,
+      ...legacyAppearance
+    } = saved.appearance
+    const parsed = parseDrawingTemplates(JSON.stringify([{ ...saved, appearance: legacyAppearance }]))
+
+    expect(parsed[0].appearance).toMatchObject({
+      rectangleMiddleLine: false,
+      rectangleMiddleLineColor: '#2962ff',
+      rectangleMiddleLineOpacity: 1,
+      rectangleMiddleLineWidth: 1,
+      rectangleMiddleLineStyle: 'solid',
+      fibonacciDiagonalLine: true,
+      fibonacciLabelVerticalPosition: 'middle',
+      fibonacciReverse: false,
+      fibonacciPrices: true,
+      fibonacciLevelLabels: true,
+      fibonacciLevelFormat: 'values',
+      fibonacciTextVisible: false,
+    })
+  })
 })

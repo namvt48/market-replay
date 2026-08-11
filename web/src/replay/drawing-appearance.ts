@@ -3,7 +3,9 @@ import type { DrawingOptions, DrawingStyle, IDrawing } from 'lightweight-charts-
 export type DrawingBorderStyle = 'solid' | 'dashed' | 'dotted'
 export type DrawingHorizontalAlign = 'left' | 'center' | 'right'
 export type DrawingVerticalAlign = 'top' | 'inside' | 'bottom'
-export type FibonacciLabelPosition = 'left' | 'right'
+export type FibonacciLabelPosition = 'left' | 'center' | 'right'
+export type FibonacciLabelVerticalPosition = 'top' | 'middle' | 'bottom'
+export type FibonacciLevelFormat = 'values' | 'percents'
 
 export interface FibonacciLevelAppearance {
   value: number
@@ -60,6 +62,18 @@ export interface DrawingWorkbenchMetadata {
   fibonacciExtend: boolean
   fibonacciLevelDecimals: number
   fibonacciLabelPosition: FibonacciLabelPosition
+  fibonacciLabelVerticalPosition: FibonacciLabelVerticalPosition
+  fibonacciReverse: boolean
+  fibonacciPrices: boolean
+  fibonacciLevelLabels: boolean
+  fibonacciLevelFormat: FibonacciLevelFormat
+  fibonacciTextVisible: boolean
+  rectangleMiddleLine: boolean
+  rectangleMiddleLineColor: string
+  rectangleMiddleLineOpacity: number
+  rectangleMiddleLineWidth: number
+  rectangleMiddleLineStyle: DrawingBorderStyle
+  fibonacciDiagonalLine: boolean
 }
 
 export interface DrawingAppearance extends DrawingWorkbenchMetadata {
@@ -79,7 +93,17 @@ export interface DrawingWorkbenchOptions extends DrawingOptions {
   extendLines?: boolean
   levelDecimals?: number
   labelPosition?: FibonacciLabelPosition
+  labelVerticalPosition?: FibonacciLabelVerticalPosition
   labelFontSize?: number
+  showPrices?: boolean
+  showLevelLabels?: boolean
+  levelFormat?: FibonacciLevelFormat
+  reverseDirection?: boolean
+  showMiddleLine?: boolean
+  middleLineColor?: string
+  middleLineWidth?: number
+  middleLineDash?: number[]
+  showDiagonalLine?: boolean
 }
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
@@ -105,6 +129,18 @@ export const DEFAULT_DRAWING_METADATA: DrawingWorkbenchMetadata = {
   fibonacciExtend: false,
   fibonacciLevelDecimals: 3,
   fibonacciLabelPosition: 'right',
+  fibonacciLabelVerticalPosition: 'middle',
+  fibonacciReverse: false,
+  fibonacciPrices: true,
+  fibonacciLevelLabels: true,
+  fibonacciLevelFormat: 'values',
+  fibonacciTextVisible: false,
+  rectangleMiddleLine: false,
+  rectangleMiddleLineColor: '#2962ff',
+  rectangleMiddleLineOpacity: 1,
+  rectangleMiddleLineWidth: 1,
+  rectangleMiddleLineStyle: 'solid',
+  fibonacciDiagonalLine: true,
 }
 
 const EXTENDABLE_TYPES = new Set([
@@ -185,6 +221,18 @@ export function getDrawingAppearance(drawing: IDrawing): DrawingAppearance {
     fibonacciExtend: stored?.fibonacciExtend ?? options.extendLines ?? false,
     fibonacciLevelDecimals: Math.max(0, Math.min(8, Math.round(stored?.fibonacciLevelDecimals ?? options.levelDecimals ?? 3))),
     fibonacciLabelPosition: stored?.fibonacciLabelPosition ?? options.labelPosition ?? 'right',
+    fibonacciLabelVerticalPosition: stored?.fibonacciLabelVerticalPosition ?? options.labelVerticalPosition ?? 'middle',
+    fibonacciReverse: stored?.fibonacciReverse ?? options.reverseDirection ?? false,
+    fibonacciPrices: stored?.fibonacciPrices ?? options.showPrices ?? true,
+    fibonacciLevelLabels: stored?.fibonacciLevelLabels ?? options.showLevelLabels ?? true,
+    fibonacciLevelFormat: stored?.fibonacciLevelFormat ?? options.levelFormat ?? 'values',
+    fibonacciTextVisible: stored?.fibonacciTextVisible ?? false,
+    rectangleMiddleLine: stored?.rectangleMiddleLine ?? options.showMiddleLine ?? false,
+    rectangleMiddleLineColor: normalizeHexColor(stored?.rectangleMiddleLineColor ?? options.middleLineColor ?? DEFAULT_DRAWING_METADATA.rectangleMiddleLineColor, DEFAULT_DRAWING_METADATA.rectangleMiddleLineColor),
+    rectangleMiddleLineOpacity: clampOpacity(stored?.rectangleMiddleLineOpacity ?? DEFAULT_DRAWING_METADATA.rectangleMiddleLineOpacity),
+    rectangleMiddleLineWidth: Math.max(1, Math.min(8, Math.round(stored?.rectangleMiddleLineWidth ?? options.middleLineWidth ?? DEFAULT_DRAWING_METADATA.rectangleMiddleLineWidth))),
+    rectangleMiddleLineStyle: stored?.rectangleMiddleLineStyle ?? DEFAULT_DRAWING_METADATA.rectangleMiddleLineStyle,
+    fibonacciDiagonalLine: stored?.fibonacciDiagonalLine ?? options.showDiagonalLine ?? true,
   }
 }
 
@@ -196,11 +244,14 @@ export function mergeDrawingAppearance(current: DrawingAppearance, patch: Drawin
     fillColor: normalizeHexColor(patch.fillColor ?? current.fillColor, current.fillColor),
     textColor: normalizeHexColor(patch.textColor ?? current.textColor, current.textColor),
     backgroundColor: normalizeHexColor(patch.backgroundColor ?? current.backgroundColor, current.backgroundColor),
+    rectangleMiddleLineColor: normalizeHexColor(patch.rectangleMiddleLineColor ?? current.rectangleMiddleLineColor, current.rectangleMiddleLineColor),
     strokeOpacity: clampOpacity(patch.strokeOpacity ?? current.strokeOpacity),
     fillOpacity: clampOpacity(patch.fillOpacity ?? current.fillOpacity),
     textOpacity: clampOpacity(patch.textOpacity ?? current.textOpacity),
     backgroundOpacity: clampOpacity(patch.backgroundOpacity ?? current.backgroundOpacity),
+    rectangleMiddleLineOpacity: clampOpacity(patch.rectangleMiddleLineOpacity ?? current.rectangleMiddleLineOpacity),
     lineWidth: Math.max(1, Math.min(8, Math.round(patch.lineWidth ?? current.lineWidth))),
+    rectangleMiddleLineWidth: Math.max(1, Math.min(8, Math.round(patch.rectangleMiddleLineWidth ?? current.rectangleMiddleLineWidth))),
     fontSize: Math.max(9, Math.min(32, Math.round(patch.fontSize ?? current.fontSize))),
     fibonacciLevels: normalizeFibonacciLevels(patch.fibonacciLevels ?? current.fibonacciLevels),
     fibonacciLevelDecimals: Math.max(0, Math.min(8, Math.round(patch.fibonacciLevelDecimals ?? current.fibonacciLevelDecimals))),
@@ -224,6 +275,15 @@ export function appearanceStyle(appearance: DrawingAppearance): Partial<DrawingS
 export function appearanceOptions(appearance: DrawingAppearance): DrawingWorkbenchOptions {
   const { id: _id, type: _type, lineWidth: _lineWidth, supportsExtend: _supportsExtend, extendLeft, extendRight, ...workbench } = appearance
   const options: DrawingWorkbenchOptions = { extendLeft, extendRight, workbench }
+  if (appearance.type === 'rectangle') {
+    return {
+      ...options,
+      showMiddleLine: appearance.rectangleMiddleLine,
+      middleLineColor: colorWithOpacity(appearance.rectangleMiddleLineColor, appearance.rectangleMiddleLineOpacity),
+      middleLineWidth: appearance.rectangleMiddleLineWidth,
+      middleLineDash: lineDashFor(appearance.rectangleMiddleLineStyle),
+    }
+  }
   if (appearance.type !== 'fib-retracement') return options
   return {
     ...options,
@@ -231,6 +291,12 @@ export function appearanceOptions(appearance: DrawingAppearance): DrawingWorkben
     extendLines: appearance.fibonacciExtend,
     levelDecimals: appearance.fibonacciLevelDecimals,
     labelPosition: appearance.fibonacciLabelPosition,
+    labelVerticalPosition: appearance.fibonacciLabelVerticalPosition,
     labelFontSize: appearance.fontSize,
+    showPrices: appearance.fibonacciPrices,
+    showLevelLabels: appearance.fibonacciLevelLabels,
+    levelFormat: appearance.fibonacciLevelFormat,
+    reverseDirection: appearance.fibonacciReverse,
+    showDiagonalLine: appearance.fibonacciDiagonalLine,
   }
 }

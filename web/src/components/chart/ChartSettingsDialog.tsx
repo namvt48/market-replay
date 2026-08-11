@@ -16,7 +16,7 @@ const PRESETS: ChartTimezonePreset[] = ['ET', 'CT', 'MT', 'PT', 'UTC']
 const OFFSETS = Array.from({ length: 53 }, (_, index) => -720 + index * 30)
 
 export function ChartSettingsDialog({ value, onPreview, onApply, onCancel }: ChartSettingsDialogProps) {
-  const [draft, setDraft] = useState<ChartPaneSettings>(() => ({ appearance: { ...value.appearance }, timezone: { ...value.timezone }, marketSession: value.marketSession }))
+  const [draft, setDraft] = useState<ChartPaneSettings>(() => ({ appearance: { ...value.appearance }, timezone: { ...value.timezone } }))
   const [tab, setTab] = useState<'appearance' | 'timezone'>('appearance')
   const dialogRef = useRef<HTMLDivElement>(null)
 
@@ -39,7 +39,7 @@ export function ChartSettingsDialog({ value, onPreview, onApply, onCancel }: Cha
   }
 
   const reset = (): void => {
-    const next: ChartPaneSettings = { appearance: { ...DEFAULT_CHART_APPEARANCE }, timezone: { ...DEFAULT_CHART_TIMEZONE }, marketSession: 'eth' }
+    const next: ChartPaneSettings = { appearance: { ...DEFAULT_CHART_APPEARANCE }, timezone: { ...DEFAULT_CHART_TIMEZONE } }
     setDraft(next)
     onPreview(next)
   }

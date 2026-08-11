@@ -30,6 +30,16 @@ export function placeOrder(state: FillEngineState, input: PlaceOrderInput): Fill
   if (input.type !== 'market' && !Number.isInteger(input.priceTicks)) {
     throw new Error(`${input.type} orders require a price in ticks`)
   }
+  if ((input.role ?? 'entry') === 'entry') {
+    const signedQty = (side: PlaceOrderInput['side'], qty: number): number => side === 'buy' ? qty : -qty
+    const workingExposure = state.orders.reduce((sum, order) => (
+      order.active && order.role === 'entry' ? sum + signedQty(order.side, order.qty) : sum
+    ), 0)
+    const projectedQty = (state.position?.qty ?? 0) + workingExposure + signedQty(input.side, input.qty)
+    if (Math.abs(projectedQty) > state.config.maxContracts) {
+      throw new Error(`Position size cannot exceed ${state.config.maxContracts} contracts`)
+    }
+  }
   const sequence = state.sequence + 1
   const order: WorkingOrder = {
     id: `order-${sequence}`,
@@ -48,6 +58,10 @@ export function placeOrder(state: FillEngineState, input: PlaceOrderInput): Fill
 
 export function cancelOrder(state: FillEngineState, orderId: string): FillEngineState {
   return { ...state, orders: state.orders.filter((order) => order.id !== orderId && order.parentId !== orderId) }
+}
+
+export function cancelAllOrders(state: FillEngineState): FillEngineState {
+  return state.orders.length === 0 ? state : { ...state, orders: [] }
 }
 
 export function amendOrder(state: FillEngineState, orderId: string, priceTicks: number): FillEngineState {

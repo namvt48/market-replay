@@ -125,7 +125,7 @@ class DrawingLabelsRenderer implements IPrimitivePaneRenderer {
       for (const drawing of this.primitive.drawings()) {
         const appearance = getDrawingAppearance(drawing)
         const text = appearance.text.trim()
-        if (!text || drawing.options.visible === false) continue
+        if (!text || drawing.options.visible === false || (drawing.type === 'fib-retracement' && !appearance.fibonacciTextVisible)) continue
         const bounds = this.primitive.bounds(drawing)
         if (!bounds) continue
 
@@ -218,7 +218,7 @@ export class DrawingLabelsPrimitive implements ISeriesPrimitive<Time> {
 
   private rebuildPriceAxisViews(): void {
     const levels = this.getDrawings()
-      .filter((drawing) => drawing.id !== '__drawing-preview__')
+      .filter((drawing) => drawing.id !== '__drawing-preview__' && (drawing.state === 'selected' || drawing.state === 'editing'))
       .flatMap((drawing) => drawingPriceLevels(drawing).map((level) => ({ drawingId: drawing.id, ...level })))
     const signature = levels.map((level) => `${level.drawingId}:${level.price}:${level.color}`).join('|')
     if (signature === this.priceAxisSignature) return

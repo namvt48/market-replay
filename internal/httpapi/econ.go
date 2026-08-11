@@ -39,7 +39,7 @@ func (s *Server) handleEconMeta(w http.ResponseWriter, _ *http.Request) {
 //     and no actual.
 //   - tz            optional, defaults to UTC. IANA name; the week runs
 //     Monday 00:00 to the next Monday 00:00 in this zone.
-//   - minImportance optional: low | medium | high.
+//   - minImportance optional: none | low | medium | high.
 //   - country       optional, repeatable.
 //
 // at and cursorTs are separate because paging to next week's schedule is a

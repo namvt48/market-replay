@@ -38,6 +38,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import multiprocessing
 import os
@@ -45,6 +46,7 @@ import struct
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -63,6 +65,15 @@ RBR1_FLAG_PRICE_AS_TICKS = 1 << 0
 RBR1_HEADER_SIZE = 24
 
 CHUNK = 1_000_000  # rows per DataFrame from store.to_df
+
+
+def _tick_frac(tick_size: float) -> tuple[int, int]:
+    """Reduced (numerator, denominator) for a tick size, e.g. 0.25 -> (1,4),
+    0.01 -> (1,100), 1.0 -> (1,1). Written into the RBR1 header so the server's
+    checkTickSize (TickNum/TickDen == symbols.json tickSize) passes for futures
+    (0.25, 1.0) and stocks (0.01) alike."""
+    f = Fraction(str(tick_size)).limit_denominator(1_000_000)
+    return f.numerator, f.denominator
 
 
 # ---------------------------------------------------------------------------
@@ -261,12 +272,25 @@ def pick_fronts(
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
-        "--input", required=True, help="Databento .dbn.zst (NQ.FUT ohlcv-1m)"
+        "--input",
+        action="append",
+        required=True,
+        help="Databento .dbn.zst (NQ.FUT/YM.FUT ohlcv-1m, or an equity raw_symbol). "
+        "Repeatable; each value may be a glob. Multiple files whose date ranges "
+        "overlap are merged with duplicate (ts, instrument_id) bars dropped, so "
+        "separately-downloaded history chunks concatenate into one series.",
     )
     ap.add_argument(
         "--out", required=True, help="data dir (creates bin/ and meta/ inside)"
     )
     ap.add_argument("--symbol", default="NQ")
+    ap.add_argument(
+        "--kind",
+        default="future",
+        choices=["future", "stock"],
+        help="instrument kind recorded in symbols.json; future rolls contracts "
+        "across quarterly expiries, stock keeps the single listed instrument",
+    )
     ap.add_argument("--tf", default="1m")
     ap.add_argument("--tick-size", type=float, default=0.25)
     ap.add_argument("--point-value", type=float, default=20.0)
@@ -290,7 +314,14 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    input_path = Path(args.input)
+    inputs: list[str] = []
+    for pat in args.input:
+        inputs.extend(sorted(glob.glob(pat)))
+    if not inputs:
+        print(f"error: no input files matched {args.input}", file=sys.stderr)
+        return 1
+
+    input_path = Path(inputs[0])
     out_dir = Path(args.out)
     bin_dir, meta_dir = out_dir / "bin", out_dir / "meta"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -298,115 +329,167 @@ def main() -> int:
     tick_inv = 1.0 / args.tick_size
 
     t0 = time.time()
-    print(f"[1/4] decoding {input_path.name} (jobs={args.jobs}) ...", flush=True)
-    store = read_dbn(str(input_path))
-    mappings = store.mappings
-
-    # ---- decode ONCE into compact per-chunk payloads ----------------------
-    # NOTE: grouping key is instrument_id (NOT the symbol string). Databento
-    # reuses raw symbols across eras (e.g. "NQH7" = Mar-2017 AND Mar-2027),
-    # so grouping by symbol would merge two distinct contracts. instrument_id
-    # is unique per listing; resolve it to a display symbol only for rolls.
+    print(f"[1/4] decoding {len(inputs)} file(s) (jobs={args.jobs}) ...", flush=True)
+    # Multiple stores may share instrument_ids (Databento ids are global per
+    # listing), but their mappings are era-disjoint (a 2010-2014 file's
+    # contracts never collide with a 2014-2026 file's), so a plain merge is
+    # safe; the union is what the rollover resolver needs across the boundary.
+    mappings: dict[str, Any] = {}
     payloads: list[dict[str, Any]] = []
     n_records = 0
-    for chunk in store.to_df(
-        pretty_ts=False, map_symbols=True, price_type="fixed", count=CHUNK
-    ):
-        ts_ns = chunk.index.to_numpy(dtype=np.int64)
-        iids = chunk["instrument_id"].to_numpy(dtype=np.int32)
-        payloads.append(
-            {
-                "ts": ts_ns // NS_PER_SEC,
-                "code": iids,
-                "day": _day_codes(ts_ns),
-                "o": chunk["open"].to_numpy(dtype=np.int64),
-                "h": chunk["high"].to_numpy(dtype=np.int64),
-                "l": chunk["low"].to_numpy(dtype=np.int64),
-                "c": chunk["close"].to_numpy(dtype=np.int64),
-                "v": chunk["volume"].to_numpy(dtype=np.int64),
-            }
-        )
-        n_records += len(ts_ns)
+    for input_path_str in inputs:
+        store = read_dbn(input_path_str)
+        mappings.update(store.mappings)
+        for chunk in store.to_df(
+            pretty_ts=False, map_symbols=True, price_type="fixed", count=CHUNK
+        ):
+            ts_ns = chunk.index.to_numpy(dtype=np.int64)
+            iids = chunk["instrument_id"].to_numpy(dtype=np.int32)
+            payloads.append(
+                {
+                    "ts": ts_ns // NS_PER_SEC,
+                    "code": iids,
+                    "day": _day_codes(ts_ns),
+                    "o": chunk["open"].to_numpy(dtype=np.int64),
+                    "h": chunk["high"].to_numpy(dtype=np.int64),
+                    "l": chunk["low"].to_numpy(dtype=np.int64),
+                    "c": chunk["close"].to_numpy(dtype=np.int64),
+                    "v": chunk["volume"].to_numpy(dtype=np.int64),
+                }
+            )
+            n_records += len(ts_ns)
+            if args.progress:
+                print(
+                    f"      decoded chunk {len(payloads)} ({n_records:,} records, "
+                    f"{time.time() - t0:.0f}s)",
+                    flush=True,
+                )
+            if args.max_chunks and len(payloads) >= args.max_chunks:
+                break
         if args.progress:
             print(
-                f"      decoded chunk {len(payloads)} ({n_records:,} records, "
-                f"{time.time() - t0:.0f}s)",
+                f"      {Path(input_path_str).name}: {sum(len(p['ts']) for p in payloads):,} "
+                f"records so far ({time.time() - t0:.0f}s)",
                 flush=True,
             )
         if args.max_chunks and len(payloads) >= args.max_chunks:
             break
+
+    # Dedupe across files: overlapping downloads (e.g. a 2010-2014 file next to
+    # a 2014-2026 file sharing 2014-01-01..03) carry identical bars for the
+    # same (ts, instrument_id). Keep the first occurrence so the merged series
+    # stays strictly ts-increasing and never double-counts volume.
+    if len(inputs) > 1:
+        lengths = [len(p["ts"]) for p in payloads]
+        offsets = np.concatenate([[0], np.cumsum(lengths)])
+        all_keys = np.concatenate(
+            [
+                (p["ts"].astype(np.int64) << 32) | p["code"].astype(np.int64)
+                for p in payloads
+            ]
+        )
+        _, first_global = np.unique(all_keys, return_index=True)
+        keep = np.zeros(len(all_keys), dtype=bool)
+        keep[first_global] = True
+        deduped: list[dict[str, Any]] = []
+        for i, p in enumerate(payloads):
+            sl = keep[offsets[i] : offsets[i + 1]]
+            deduped.append({k: v[sl] if not sl.all() else v for k, v in p.items()})
+        n_before = n_records
+        n_records = int(keep.sum())
+        payloads = deduped
+        print(
+            f"      deduped {n_before - n_records:,} overlapping bars "
+            f"({n_records:,} unique, {time.time() - t0:.0f}s)",
+            flush=True,
+        )
     print(
         f"      records: {n_records:,} ({time.time() - t0:.0f}s)",
         flush=True,
     )
 
     # ---- pass A: daily volumes (parallel, order-independent) --------------
-    print("[2/4] pass A: daily volumes per contract ...", flush=True)
+    # Skipped for stocks: a single instrument needs no rollover — ITCH even
+    # re-lists the same symbol under a fresh instrument_id almost every day,
+    # so the futures quarterly-contract model does not apply.
+    is_stock = args.kind == "stock"
     vol_by_day: dict[int, dict[int, int]] = {}
     max_ts_contract: dict[int, int] = {}
     day_end: dict[int, int] = {}
     mp_ctx = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(max_workers=args.jobs, mp_context=mp_ctx) as pool:
-        a_futs = [pool.submit(worker_pass_a, p) for p in payloads]
-        done = 0
-        for fut in as_completed(a_futs):
-            r = fut.result()
-            for d, m in r["vol"].items():
-                tgt = vol_by_day.setdefault(d, {})
-                for s, v in m.items():
-                    tgt[s] = tgt.get(s, 0) + int(v)
-            for s, t in r["max_ts"].items():
-                if t > max_ts_contract.get(s, 0):
-                    max_ts_contract[s] = int(t)
-            for d, t in r["day_end"].items():
-                if t > day_end.get(d, 0):
-                    day_end[d] = int(t)
-            done += 1
-            if args.progress and done % 5 == 0:
-                print(
-                    f"      pass A merged {done}/{len(a_futs)} chunks "
-                    f"({time.time() - t0:.0f}s)",
-                    flush=True,
-                )
-    print(
-        f"      session days: {len(day_end)} ({time.time() - t0:.0f}s)",
-        flush=True,
-    )
-
-    # ---- rollover ---------------------------------------------------------
-    print("[3/4] volume rollover ...", flush=True)
-    from datetime import date as _date
-
-    def _sym_for_roll(iid: int, dstr: str) -> str:
-        y, m, d = map(int, dstr.split("-"))
-        return resolve_symbol(mappings, iid, _date(y, m, d))
-
-    front_by_day, rolls = pick_fronts(vol_by_day, max_ts_contract, day_end)
-    # drop "self-rolls": two distinct instrument_ids that resolve to the same
-    # contract symbol (Databento splits one contract into multiple stubs)
-    rolls = [
-        r
-        for r in rolls
-        if _sym_for_roll(r["from"], r["date"]) != _sym_for_roll(r["to"], r["date"])
-    ]
-    print(f"      fronts: {len(front_by_day)} days, rolls: {len(rolls)}", flush=True)
-    for r in rolls[:6]:
+    if not is_stock:
+        print("[2/4] pass A: daily volumes per contract ...", flush=True)
+        with ProcessPoolExecutor(max_workers=args.jobs, mp_context=mp_ctx) as pool:
+            a_futs = [pool.submit(worker_pass_a, p) for p in payloads]
+            done = 0
+            for fut in as_completed(a_futs):
+                r = fut.result()
+                for d, m in r["vol"].items():
+                    tgt = vol_by_day.setdefault(d, {})
+                    for s, v in m.items():
+                        tgt[s] = tgt.get(s, 0) + int(v)
+                for s, t in r["max_ts"].items():
+                    if t > max_ts_contract.get(s, 0):
+                        max_ts_contract[s] = int(t)
+                for d, t in r["day_end"].items():
+                    if t > day_end.get(d, 0):
+                        day_end[d] = int(t)
+                done += 1
+                if args.progress and done % 5 == 0:
+                    print(
+                        f"      pass A merged {done}/{len(a_futs)} chunks "
+                        f"({time.time() - t0:.0f}s)",
+                        flush=True,
+                    )
         print(
-            f"      roll {r['date']}: {_sym_for_roll(r['from'], r['date'])} "
-            f"-> {_sym_for_roll(r['to'], r['date'])}",
+            f"      session days: {len(day_end)} ({time.time() - t0:.0f}s)",
             flush=True,
         )
-    for r in rolls:
-        r["from"] = _sym_for_roll(r["from"], r["date"])
-        r["to"] = _sym_for_roll(r["to"], r["date"])
 
-    # ---- pass B: filter to front, convert ticks, validate (parallel) ------
-    print("[4/4] pass B: stitch front-contract bars -> RBR1 ...", flush=True)
-    # vectorized day -> front-code lookup (no Python row loop)
-    days_sorted = np.array(sorted(day_end), dtype=np.int32)
-    fronts_sorted = np.array(
-        [front_by_day.get(d, -1) for d in days_sorted], dtype=np.int32
-    )
+    # ---- rollover ---------------------------------------------------------
+    if is_stock:
+        front_by_day: dict[int, int] = {}
+        rolls: list[dict[str, Any]] = []
+        days_sorted: np.ndarray[Any, np.dtype[Any]] = np.array([], dtype=np.int32)
+        fronts_sorted: np.ndarray[Any, np.dtype[Any]] = np.array([], dtype=np.int32)
+        print("[2,3/4] single-instrument: skipping volume rollover", flush=True)
+    else:
+        print("[3/4] volume rollover ...", flush=True)
+        from datetime import date as _date
+
+        def _sym_for_roll(iid: int, dstr: str) -> str:
+            y, m, d = map(int, dstr.split("-"))
+            return resolve_symbol(mappings, iid, _date(y, m, d))
+
+        front_by_day, rolls = pick_fronts(vol_by_day, max_ts_contract, day_end)
+        # drop "self-rolls": two distinct instrument_ids that resolve to the same
+        # contract symbol (Databento splits one contract into multiple stubs)
+        rolls = [
+            r
+            for r in rolls
+            if _sym_for_roll(r["from"], r["date"]) != _sym_for_roll(r["to"], r["date"])
+        ]
+        print(
+            f"      fronts: {len(front_by_day)} days, rolls: {len(rolls)}", flush=True
+        )
+        for r in rolls[:6]:
+            print(
+                f"      roll {r['date']}: {_sym_for_roll(r['from'], r['date'])} "
+                f"-> {_sym_for_roll(r['to'], r['date'])}",
+                flush=True,
+            )
+        for r in rolls:
+            r["from"] = _sym_for_roll(r["from"], r["date"])
+            r["to"] = _sym_for_roll(r["to"], r["date"])
+
+        # vectorized day -> front-code lookup (no Python row loop)
+        days_sorted = np.array(sorted(day_end), dtype=np.int32)
+        fronts_sorted = np.array(
+            [front_by_day.get(d, -1) for d in days_sorted], dtype=np.int32
+        )
+
+    # ---- pass B: filter to front (keep-all for stocks), convert ticks ----
+    print("[4/4] pass B: stitch bars -> RBR1 ...", flush=True)
 
     def front_for(
         day: np.ndarray[Any, np.dtype[Any]],
@@ -421,40 +504,21 @@ def main() -> int:
     col_c: list[np.ndarray[Any, np.dtype[Any]]] = []
     col_v: list[np.ndarray[Any, np.dtype[Any]]] = []
     session_bars: dict[int, int] = {}
-    prev_ts = -1
-    first_ts = last_ts = None
 
     with ProcessPoolExecutor(max_workers=args.jobs, mp_context=mp_ctx) as pool:
         b_futs = []
         for i, p in enumerate(payloads):
-            b_futs.append(
-                (
-                    i,
-                    pool.submit(
-                        worker_pass_b,
-                        {
-                            **p,
-                            "front": front_for(p["day"]),
-                            "tick_inv": tick_inv,
-                        },
-                    ),
-                )
-            )
+            b_payload: dict[str, Any] = {**p, "tick_inv": tick_inv}
+            if is_stock:
+                b_payload["front"] = p["code"]
+            else:
+                b_payload["front"] = front_for(p["day"])
+            b_futs.append((i, pool.submit(worker_pass_b, b_payload)))
         for idx, fut in sorted(b_futs):
             r = fut.result()
             if r["n"] == 0:
                 continue
-            t = r["ts"]
-            if t[0] <= prev_ts:
-                print(
-                    f"      !! non-monotonic ts at chunk boundary: {t[0]} <= {prev_ts}",
-                    flush=True,
-                )
-                return 1
-            prev_ts = int(t[-1])
-            first_ts = int(t[0]) if first_ts is None else first_ts
-            last_ts = int(t[-1])
-            col_ts.append(t)
+            col_ts.append(r["ts"])
             col_o.append(r["o"])
             col_h.append(r["h"])
             col_l.append(r["l"])
@@ -465,6 +529,28 @@ def main() -> int:
                 session_bars[int(d)] = session_bars.get(int(d), 0) + int(n)
 
     n_kept = sum(len(a) for a in col_ts)
+    # Multi-input runs can leave the file-boundary overlap out of time order
+    # (two downloads sharing 2014-01-01..03 keep interleaved chunks); the
+    # front-series has one bar per minute, so a stable global sort by ts makes
+    # the merged series strictly increasing.
+    if n_kept:
+        ts_all = np.concatenate(col_ts)
+        if len(inputs) > 1:
+            order = np.argsort(ts_all, kind="stable")
+            ts_all = ts_all[order]
+            col_ts = [ts_all]
+            col_o = [np.concatenate(col_o)[order]]
+            col_h = [np.concatenate(col_h)[order]]
+            col_l = [np.concatenate(col_l)[order]]
+            col_c = [np.concatenate(col_c)[order]]
+            col_v = [np.concatenate(col_v)[order]]
+        if np.any(np.diff(ts_all) <= 0):
+            print("      !! series not strictly increasing", file=sys.stderr)
+            return 1
+        first_ts = int(ts_all[0])
+        last_ts = int(ts_all[-1])
+    else:
+        first_ts = last_ts = None
     print(f"      kept {n_kept:,} bars ({time.time() - t0:.0f}s)", flush=True)
 
     # ---- write RBR1 .bin -------------------------------------------------
@@ -474,8 +560,9 @@ def main() -> int:
     struct.pack_into("<H", header, 4, RBR1_VERSION)
     struct.pack_into("<H", header, 6, RBR1_FLAG_PRICE_AS_TICKS)
     struct.pack_into("<I", header, 8, n_kept)
-    struct.pack_into("<i", header, 12, 1)  # tickNum
-    struct.pack_into("<i", header, 16, 4)  # tickDen (NQ tick 1/4 = 0.25)
+    tick_num, tick_den = _tick_frac(args.tick_size)
+    struct.pack_into("<i", header, 12, tick_num)
+    struct.pack_into("<i", header, 16, tick_den)
     with open(bin_path, "wb") as f:
         f.write(header)
         for col in (col_ts, col_o, col_h, col_l, col_c, col_v):
@@ -515,7 +602,7 @@ def main() -> int:
     sym = {
         "symbol": args.symbol,
         "name": args.name,
-        "kind": "future",
+        "kind": args.kind,
         "tickSize": args.tick_size,
         "pointValue": args.point_value,
         "currency": "USD",

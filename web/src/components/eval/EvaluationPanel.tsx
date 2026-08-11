@@ -1,11 +1,11 @@
-import { Activity, ArrowRight, History, Plus, RotateCcw, Trophy } from 'lucide-react'
+import { Activity, ArrowRight, Plus, RotateCcw, Trash2, Trophy } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { evalAccountName, evalStatus, shortEvalAccountHash } from '../../eval/rules'
-import type { EvalConfig, EvalRuntime, EvalStatus, EvalTradeRecord } from '../../eval/rules'
+import { evalAccountName, evalStatus, payoutEligibility, shortEvalAccountHash } from '../../eval/rules'
+import type { EvalConfig, EvalRuntime, EvalStatus, EvalTradeRecord, PayoutEligibility, PayoutRecord } from '../../eval/rules'
 import { replayEngine } from '../../replay/replay-engine'
 import { useEvalSession } from '../../replay/use-eval-session'
 import { useReplaySelector } from '../../replay/use-replay'
-import { deriveEvalFinancials, loadEvalAccounts } from '../../store/eval-store'
+import { deleteEvalAccount, deriveEvalFinancials, loadEvalAccounts } from '../../store/eval-store'
 import type { EvalPhase } from '../../store/eval-store'
 
 const currency = new Intl.NumberFormat('en-US', {
@@ -27,6 +27,19 @@ const percentage = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 1,
 })
 
+const tradeTime = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+})
+
+function formatTradeTime(timestamp: number | undefined): string {
+  if (timestamp === undefined) return '—'
+  return tradeTime.format(timestamp * 1000)
+}
+
 interface AccountView {
   id: string
   config: EvalConfig
@@ -38,6 +51,8 @@ interface AccountView {
   balance: number
   equity: number
   trades: EvalTradeRecord[]
+  payoutHistory: PayoutRecord[]
+  payout: PayoutEligibility | null
   isCurrent: boolean
   phase: Exclude<EvalPhase, 'idle'>
 }
@@ -84,52 +99,51 @@ function ProgressLine({ label, value, pct, tone = 'accent' }: { label: string; v
   )
 }
 
-function TradeHistory({ trades }: { trades: EvalTradeRecord[] }) {
-  if (trades.length === 0) {
-    return (
-      <div className="grid place-items-center px-5 py-8 text-center">
-        <History size={20} className="mb-2 text-dim" />
-        <p className="text-ui-body text-muted">Closed trades for this account will appear here.</p>
-      </div>
-    )
-  }
+function TradeHistoryRow({ trade }: { trade: EvalTradeRecord }) {
+  const pnl = (trade.realizedCents ?? 0) / 100
   return (
-    <ol className="divide-y divide-line">
-      {trades.toReversed().map((trade, index) => {
-        const pnl = trade.realizedCents === undefined ? null : trade.realizedCents / 100
-        return (
-          <li key={trade.id ?? `${trade.exitTime}-${index}`} className="px-3 py-2.5">
-            <div className="flex items-start justify-between gap-2 text-ui-body">
-              <span>
-                {trade.side ? <strong className={trade.side === 'long' ? 'text-profit-bright' : 'text-loss-bright'}>{trade.side.toUpperCase()}</strong> : <strong className="text-ink">CLOSED</strong>}
-                <span className="ml-1.5 text-ink">{trade.qty ?? '—'} {trade.symbol ?? ''}</span>
-              </span>
-              <span className={`font-mono font-semibold ${pnl === null || pnl >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>
-                {pnl === null ? '—' : currency.format(pnl)}
-              </span>
-            </div>
-            <time dateTime={new Date(trade.exitTime * 1000).toISOString()} className="mt-1 block font-mono text-ui-meta text-dim">
-              {trade.entryTime ? `${accountTime.format(trade.entryTime * 1000)} → ` : ''}{accountTime.format(trade.exitTime * 1000)}
-            </time>
-            {trade.mfeTicks !== undefined || trade.maeTicks !== undefined ? (
-              <p className="mt-1 font-mono text-ui-meta text-muted">MFE {trade.mfeTicks ?? '—'}t · MAE {trade.maeTicks ?? '—'}t</p>
-            ) : null}
-          </li>
-        )
-      })}
-    </ol>
+    <li className="flex items-center gap-2.5 px-3 py-2">
+      <span className={`w-12 shrink-0 font-mono text-ui-meta font-semibold ${trade.side === 'short' ? 'text-loss-bright' : 'text-profit-bright'}`}>{trade.side === 'short' ? 'SHORT' : 'LONG'}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-mono text-ui-meta text-ink">{trade.qty ?? 1} {trade.symbol ?? '—'}</span>
+        <span className="mt-0.5 block font-mono text-ui-meta text-dim">{formatTradeTime(trade.entryTime)} → {formatTradeTime(trade.exitTime)}</span>
+      </span>
+      <span className="shrink-0 text-right">
+        <span className={`block font-mono text-ui-meta font-semibold tabular-nums ${pnl >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{pnl >= 0 ? '+' : ''}{currency.format(pnl)}</span>
+        <span className="mt-0.5 block font-mono text-ui-meta text-dim">MFE {trade.mfeTicks ?? 0} · MAE {trade.maeTicks ?? 0}</span>
+      </span>
+    </li>
+  )
+}
+
+function TradeHistory({ trades }: { trades: EvalTradeRecord[] }) {
+  const recent = [...trades].reverse()
+  return (
+    <div className="border-t border-line">
+      <h4 className="px-3 pb-1.5 pt-3 text-ui-meta font-semibold tracking-[0.04em] text-muted">TRADE HISTORY</h4>
+      {recent.length === 0 ? (
+        <p className="px-3 pb-3 text-ui-meta leading-relaxed text-muted">No closed trades yet.</p>
+      ) : (
+        <ul className="divide-y divide-line border-t border-line">
+          {recent.map((trade, index) => <TradeHistoryRow key={trade.id ?? `${trade.exitTime}-${index}`} trade={trade} />)}
+        </ul>
+      )}
+    </div>
   )
 }
 
 export function EvaluationPanel() {
   const { session } = useEvalSession()
-  const replay = useReplaySelector((snapshot) => ({ fill: snapshot.fill }))
+  const replay = useReplaySelector((snapshot) => ({ fill: snapshot.evalFill ?? snapshot.fill }))
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [accountsVersion, setAccountsVersion] = useState(0)
   const accountRegistryKey = `${session.accountId ?? 'none'}:${session.phase}`
   const savedAccounts = useMemo(() => {
     void accountRegistryKey
+    void accountsVersion
     return loadEvalAccounts()
-  }, [accountRegistryKey])
+  }, [accountRegistryKey, accountsVersion])
 
   // Recomputing evalStatus() for every saved account (up to 50) on every
   // tick was pure waste: only the live session's status needs to update
@@ -140,17 +154,22 @@ export function EvaluationPanel() {
   const savedAccountViews = useMemo<AccountView[]>(() => savedAccounts.map((account) => {
     const balance = account.lastEvalBalance
     const equity = account.lastEvalEquity
+    const status = evalStatus(account.config, account.runtime, { balance, equity, trades: account.trades }, account.sessionTimezone)
     return {
       id: account.accountId,
       config: account.config,
       runtime: account.runtime,
-      instrument: account.instrument,
+      instrument: 'All symbols',
       startDate: account.startDate,
       lastCursorTs: account.lastCursorTs,
       balance,
       equity,
-      status: evalStatus(account.config, account.runtime, { balance, equity, trades: account.trades }, account.sessionTimezone),
+      status,
       trades: account.trades,
+      payoutHistory: account.payoutHistory,
+      payout: account.config.phase === 'funded' && account.config.payout
+        ? payoutEligibility(account.config, account.runtime, status, account.sessionTimezone)
+        : null,
       isCurrent: account.accountId === session.accountId,
       phase: account.phase,
     }
@@ -163,13 +182,17 @@ export function EvaluationPanel() {
         id: session.accountId,
         config: session.config,
         runtime: session.runtime,
-        instrument: session.instrument ?? '—',
+        instrument: 'All symbols',
         startDate: session.startDate ?? '—',
         lastCursorTs: session.lastCursorTs ?? session.startTs ?? 0,
         balance: currentFinancials.balance,
         equity: currentFinancials.equity,
         status: currentFinancials.status,
         trades: session.trades,
+        payoutHistory: session.payoutHistory,
+        payout: session.config.phase === 'funded' && session.config.payout
+          ? payoutEligibility(session.config, session.runtime, currentFinancials.status, session.sessionTimezone ?? 'UTC')
+          : null,
         isCurrent: true,
         phase: session.phase === 'idle' ? 'ready' : session.phase,
       }
@@ -206,6 +229,25 @@ export function EvaluationPanel() {
     session.goFunded()
     void replayEngine.syncEvaluationSession()
   }
+  const goVerification = (): void => {
+    session.goVerification()
+    void replayEngine.syncEvaluationSession()
+  }
+  const requestPayout = (): void => {
+    session.requestPayout()
+  }
+  const deleteSelected = (): void => {
+    if (!selected) return
+    if (!confirmingDelete) {
+      setConfirmingDelete(true)
+      return
+    }
+    deleteEvalAccount(selected.id)
+    setAccountsVersion((version) => version + 1)
+    setConfirmingDelete(false)
+    const next = accounts.filter((account) => account.id !== selected.id)[0]
+    setSelectedId(next?.id ?? null)
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -233,7 +275,7 @@ export function EvaluationPanel() {
             <ul className="divide-y divide-line">
               {accounts.map((account) => (
                 <li key={account.id}>
-                  <button type="button" onClick={() => setSelectedId(account.id)} aria-pressed={selected?.id === account.id} className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left hover:bg-surface-2 aria-pressed:bg-surface-3">
+                  <button type="button" onClick={() => { setSelectedId(account.id); setConfirmingDelete(false) }} aria-pressed={selected?.id === account.id} className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left hover:bg-surface-2 aria-pressed:bg-surface-3">
                     <span className={`size-2 shrink-0 rounded-full ${account.runtime.outcome === 'failed' ? 'bg-loss' : account.runtime.outcome === 'passed' ? 'bg-profit' : account.isCurrent && account.phase === 'running' ? 'bg-active' : 'bg-muted'}`} aria-hidden="true" />
                     <span className="min-w-0 flex-1">
                       <strong className="block truncate text-ui-body font-medium text-ink">{evalAccountName(account.config)}</strong>
@@ -270,7 +312,10 @@ export function EvaluationPanel() {
                 <div className="border-t border-line px-3 py-5">
                   <p className="text-ui-body font-medium text-ink">This account has not started.</p>
                   <p className="mt-1 text-ui-meta leading-relaxed text-muted">Balance, equity, rule progress, and trade history begin only when you start the evaluation.</p>
-                  <button type="button" onClick={selected.isCurrent ? activate : resumeSelected} className="primary-button mt-4 w-full"><ArrowRight size={14} />Start Eval</button>
+                  <div className="mt-4 flex gap-2">
+                    <button type="button" onClick={selected.isCurrent ? activate : resumeSelected} className="primary-button flex-1"><ArrowRight size={14} />Start Eval</button>
+                    <button type="button" onClick={deleteSelected} className={`shrink-0 ${confirmingDelete ? 'primary-button bg-loss text-white' : 'secondary-button text-loss'}`} aria-label={confirmingDelete ? `Confirm delete ${evalAccountName(selected.config)} evaluation` : `Delete ${evalAccountName(selected.config)} evaluation`}><Trash2 size={14} />{confirmingDelete ? 'Confirm delete' : 'Delete Eval'}</button>
+                  </div>
                 </div>
               ) : (
                 <>
@@ -281,10 +326,11 @@ export function EvaluationPanel() {
                 <Metric label="Peak equity" value={currency.format(selected.runtime.peakEquity)} />
                 <Metric label="Trading days" value={String(selected.status.daysTraded)} />
                 <Metric label="Closed trades" value={String(selected.trades.length)} />
+                {selected.config.phase === 'funded' ? <Metric label="Payouts taken" value={String(selected.runtime.payoutsTaken)} /> : null}
               </dl>
 
               <div className="px-3 py-2">
-                <ProgressLine label="Profit target" value={`${Math.round(selected.status.targetPct * 100)}%`} pct={selected.status.targetPct} />
+                {selected.config.phase !== 'funded' ? <ProgressLine label="Profit target" value={`${Math.round(selected.status.targetPct * 100)}%`} pct={selected.status.targetPct} /> : null}
                 <ProgressLine label="Total drawdown" value={currency.format(selected.status.totalRemaining)} pct={selected.status.totalPct} tone="loss" />
                 {selected.config.maxDailyLoss > 0 ? <ProgressLine label="Daily loss" value={currency.format(selected.status.dailyRemaining)} pct={selected.status.dailyPct} tone="loss" /> : null}
                 {selected.config.consistencyRulePct > 0 ? (
@@ -297,20 +343,57 @@ export function EvaluationPanel() {
                 ) : null}
               </div>
 
+              {selected.config.phase === 'funded' && selected.config.payout && selected.payout ? (
+                <section className="border-t border-line px-3 py-3" aria-labelledby="funded-payout-status">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <h4 id="funded-payout-status" className="text-ui-body font-medium text-ink">Payout status</h4>
+                    <span className={`text-ui-meta font-semibold ${selected.payout.eligible ? 'text-profit-bright' : 'text-muted'}`}>{selected.payout.eligible ? 'ELIGIBLE' : 'PENDING'}</span>
+                  </div>
+                  <p className="mt-1 text-ui-meta leading-relaxed text-muted">{selected.payout.reason}</p>
+                  <dl className="mt-2 grid grid-cols-2 gap-x-3">
+                    <Metric label="Max withdrawal" value={currency.format(selected.payout.maxPayout)} />
+                    <Metric label="Trader share" value={currency.format(selected.payout.traderShare)} tone="text-profit-bright" />
+                    <Metric label="Winning days" value={`${selected.runtime.winningDays} / ${selected.config.payout.minWinningDays || '—'}`} />
+                    <Metric label="Window best day" value={currency.format(selected.runtime.bestDaySincePayout)} />
+                  </dl>
+                  {selected.isCurrent && selected.phase === 'running' && selected.payout.eligible ? (
+                    <button type="button" onClick={requestPayout} className="primary-button mt-3 w-full">Request payout</button>
+                  ) : null}
+                  {selected.payoutHistory.length > 0 ? (
+                    <ul className="mt-3 divide-y divide-line border-t border-line">
+                      {[...selected.payoutHistory].reverse().map((payout) => (
+                        <li key={payout.id} className="flex justify-between gap-3 py-2 text-ui-meta">
+                          <span className="text-muted">Payout #{payout.payoutNumber} · {payout.profitSplit}% split</span>
+                          <span className="font-mono text-profit-bright">{currency.format(payout.traderAmount)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </section>
+              ) : null}
+
               {selected.runtime.outcome === 'in_progress' && (!selected.isCurrent || selected.phase === 'paused') ? (
-                <div className="border-t border-line p-3"><button type="button" onClick={resumeSelected} className="primary-button w-full"><ArrowRight size={14} />Resume Eval</button></div>
+                <div className="flex gap-2 border-t border-line p-3">
+                  <button type="button" onClick={resumeSelected} className="primary-button flex-1"><ArrowRight size={14} />Resume Eval</button>
+                  <button type="button" onClick={deleteSelected} className={`shrink-0 ${confirmingDelete ? 'primary-button bg-loss text-white' : 'secondary-button text-loss'}`} aria-label={confirmingDelete ? `Confirm delete ${evalAccountName(selected.config)} evaluation` : `Delete ${evalAccountName(selected.config)} evaluation`}><Trash2 size={14} />{confirmingDelete ? 'Confirm delete' : 'Delete Eval'}</button>
+                </div>
               ) : null}
               {selected.isCurrent && selected.runtime.outcome === 'failed' ? (
                 <div className="border-t border-line p-3"><button type="button" onClick={retry} className="primary-button w-full"><RotateCcw size={14} />Retry with new account</button></div>
               ) : null}
               {selected.isCurrent && selected.runtime.outcome === 'passed' ? (
-                <div className="border-t border-line p-3"><button type="button" onClick={goFunded} className="primary-button w-full"><Trophy size={14} />Start funded account</button></div>
+                <div className="border-t border-line p-3">
+                  {selected.config.phase !== 'verification' && selected.config.verificationProfitTarget > 0 ? (
+                    <button type="button" onClick={goVerification} className="primary-button w-full"><Trophy size={14} />Start verification</button>
+                  ) : (
+                    <button type="button" onClick={goFunded} className="primary-button w-full"><Trophy size={14} />Start funded account</button>
+                  )}
+                </div>
               ) : null}
-
-              <h3 className="border-y border-line px-3 py-2 text-ui-meta font-semibold tracking-[0.04em] text-muted">TRADE HISTORY</h3>
-              <TradeHistory trades={selected.trades} />
                 </>
               )}
+
+              <TradeHistory trades={selected.trades} />
             </section>
           ) : null}
         </div>

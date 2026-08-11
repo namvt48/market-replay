@@ -30,3 +30,4 @@ pipeline/.venv/
 .claude/
 .archcore/
 .impeccable/
+.playwright-mcp/

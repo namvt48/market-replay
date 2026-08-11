@@ -4,7 +4,7 @@
 // lightweight-charts (LwcAdapter), but everything
 // upstream of this interface (BarBuffer, Aggregator, logical clock,
 // FillEngine) never changes if the chart library ever does.
-import type { Timeframe, SymbolMeta } from '../api/types'
+import type { EconImportance, Timeframe, SymbolMeta } from '../api/types'
 import type { SerializedDrawing, DrawingToolDefinition } from 'lightweight-charts-drawing'
 import type { DrawingAppearance, DrawingAppearancePatch } from './drawing-appearance'
 import type { ChartAppearanceSettings } from './chart-settings'
@@ -34,6 +34,7 @@ export interface ChartCrosshairSync {
 
 export interface ChartViewportSync {
   time: { from: number; to: number }
+  logicalSpan?: number
 }
 
 export interface HistoryUpdateOptions {
@@ -46,12 +47,33 @@ export type ReplaySelectionState =
   | { mode: 'selecting' }
   | { mode: 'active'; timestamp: number }
 
+export type DrawingNudgeDirection = 'left' | 'right' | 'up' | 'down'
+
+export type PriceScaleToggle = 'logarithmic' | 'percentage'
+
 export interface TradeMarker {
   time: number
   price: number
   text: string
   color: string
   shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square'
+}
+
+export interface TradeConnection {
+  entryTime: number
+  entryPrice: number
+  exitTime: number
+  exitPrice: number
+}
+
+export interface EconomicEventMarker {
+  id: string
+  time: number
+  country: string
+  currency?: string
+  title: string
+  importance: EconImportance
+  state: 'past' | 'next' | 'scheduled'
 }
 
 export interface OrderLine {
@@ -77,6 +99,7 @@ export type OrderLineAction =
 
 export interface ChartAdapter {
   init(el: HTMLElement, sym: SymbolMeta, tf: Timeframe): Promise<void>
+  setSymbol(sym: SymbolMeta): void
 
   setHistory(bars: DisplayBar[], options?: HistoryUpdateOptions): void // seek / change symbol / change tf (rebuild)
   pushBar(bar: DisplayBar): void // hot path — call AT MOST once per frame
@@ -95,6 +118,8 @@ export interface ChartAdapter {
   onReplayBarSelect(handler: (timestamp: number) => void): void
 
   setTradeMarkers(markers: TradeMarker[]): void // entry/exit
+  setEconomicEventMarkers(markers: EconomicEventMarker[]): void
+  setTradeConnections(connections: TradeConnection[]): void
   setOrderLines(lines: OrderLine[]): void
   onOrderLineMove(handler: (id: string, price: number) => void): void
   onOrderLineDragStart(handler: (id: string) => void): void
@@ -108,6 +133,12 @@ export interface ChartAdapter {
   deleteAllDrawings(): void
   updateSelectedDrawing(patch: DrawingAppearancePatch): void
   setNextDrawingAppearance(patch: DrawingAppearancePatch | null): void
+  copySelectedDrawing(): SerializedDrawing | null
+  pasteDrawing(drawing: SerializedDrawing): void
+  undoDrawing(): boolean
+  redoDrawing(): boolean
+  nudgeSelectedDrawing(direction: DrawingNudgeDirection): boolean
+  toggleDrawingsVisibility(): void
   getDrawings(): SerializedDrawing[]
   loadDrawings(drawings: SerializedDrawing[]): void
   onDrawingsChanged(handler: (drawingId?: string) => void): void
@@ -116,6 +147,11 @@ export interface ChartAdapter {
   onDrawingToolChanged(handler: (tool: string | null) => void): void
   visibleRange(): { from: number; to: number }
   focusTime(timestamp: number): void
+  panView(logicalBars: number): void
+  zoomView(factor: number): void
+  toggleInvertScale(): void
+  togglePriceScaleMode(mode: PriceScaleToggle): void
+  takeSnapshot(): void
   resetView(): void
   destroy(): void
 }

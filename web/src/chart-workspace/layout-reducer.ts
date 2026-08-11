@@ -1,6 +1,7 @@
 import type { ChartPaneSettings } from '../replay/chart-settings-store'
+import type { MarketSession } from '../replay/market-session'
 import { createLayoutPreset, paneIds } from './layout-presets'
-import type { ChartPaneState, ChartWorkspaceState, LayoutNode, LayoutPreset, SplitOrientation } from './types'
+import type { ChartPaneState, ChartSyncFlags, ChartWorkspaceState, LayoutNode, LayoutPreset, SplitOrientation } from './types'
 
 export type LayoutAction =
   | { type: 'replace'; state: ChartWorkspaceState }
@@ -9,8 +10,11 @@ export type LayoutAction =
   | { type: 'activate'; paneId: string }
   | { type: 'resize'; splitId: string; ratio: number; totalSize: number; minSize?: number }
   | { type: 'remove-pane'; paneId: string }
+  | { type: 'set-pane-symbol'; paneId: string; symbol: string }
   | { type: 'set-pane-timeframe'; paneId: string; timeframe: ChartWorkspaceState['panes'][string]['timeframe'] }
   | { type: 'set-pane-settings'; paneId: string; settings: ChartPaneSettings }
+  | { type: 'set-market-session'; marketSession: MarketSession }
+  | { type: 'set-sync-flags'; syncFlags: Partial<ChartSyncFlags> }
 
 export function clampSplitRatio(ratio: number, totalSize: number, minSize = 240): number {
   if (!Number.isFinite(ratio) || totalSize <= 0) return 0.5
@@ -46,7 +50,11 @@ export function layoutReducer(state: ChartWorkspaceState, action: LayoutAction):
   if (action.type === 'replace') return action.state
   if (action.type === 'set-preset') {
     const active = state.panes[state.activePaneId]
-    return createLayoutPreset(action.preset, active?.timeframe ?? '1m', action.inherited ?? active?.settings)
+    return {
+      ...createLayoutPreset(action.preset, active?.timeframe ?? '1m', action.inherited ?? active?.settings, active?.symbol ?? null),
+      marketSession: state.marketSession,
+      syncFlags: state.syncFlags,
+    }
   }
   if (action.type === 'add-pane') {
     if (state.panes[action.pane.id] || Object.keys(state.panes).length >= 4) return state
@@ -57,6 +65,12 @@ export function layoutReducer(state: ChartWorkspaceState, action: LayoutAction):
   }
   if (action.type === 'activate') return state.panes[action.paneId] ? { ...state, activePaneId: action.paneId } : state
   if (action.type === 'resize') return { ...state, root: resizeNode(state.root, action.splitId, clampSplitRatio(action.ratio, action.totalSize, action.minSize)) }
+  if (action.type === 'set-pane-symbol') {
+    const current = state.panes[action.paneId]
+    return current && current.symbol !== action.symbol
+      ? { ...state, panes: { ...state.panes, [action.paneId]: { ...current, symbol: action.symbol } } }
+      : state
+  }
   if (action.type === 'set-pane-timeframe') {
     const current = state.panes[action.paneId]
     return current ? { ...state, panes: { ...state.panes, [action.paneId]: { ...current, timeframe: action.timeframe } } } : state
@@ -64,6 +78,12 @@ export function layoutReducer(state: ChartWorkspaceState, action: LayoutAction):
   if (action.type === 'set-pane-settings') {
     const current = state.panes[action.paneId]
     return current ? { ...state, panes: { ...state.panes, [action.paneId]: { ...current, settings: action.settings } } } : state
+  }
+  if (action.type === 'set-market-session') {
+    return action.marketSession === state.marketSession ? state : { ...state, marketSession: action.marketSession }
+  }
+  if (action.type === 'set-sync-flags') {
+    return { ...state, syncFlags: { ...state.syncFlags, ...action.syncFlags } }
   }
   const root = removePane(state.root, action.paneId)
   if (!root) return state

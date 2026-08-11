@@ -320,6 +320,7 @@ func TestWeek_Filters(t *testing.T) {
 	start, _, _ := nyWeek(t)
 	dir := t.TempDir()
 	writeShard(t, dir, "2026.jsonl",
+		event("holiday", start+1800, ImportanceNone, "UK", ""),
 		event("us-high", start+3600, ImportanceHigh, "US", ""),
 		event("us-low", start+7200, ImportanceLow, "US", ""),
 		event("eu-medium", start+10800, ImportanceMedium, "EU", ""),
@@ -343,8 +344,13 @@ func TestWeek_Filters(t *testing.T) {
 		return strings.Join(out, ",")
 	}
 
-	if got := ids(base); got != "us-high,us-low,eu-medium" {
+	if got := ids(base); got != "holiday,us-high,us-low,eu-medium" {
 		t.Errorf("unfiltered = %q", got)
+	}
+	low := base
+	low.MinImportance = ImportanceLow
+	if got := ids(low); got != "us-high,us-low,eu-medium" {
+		t.Errorf("minImportance=low = %q, want non-economic rows excluded", got)
 	}
 	medium := base
 	medium.MinImportance = ImportanceMedium

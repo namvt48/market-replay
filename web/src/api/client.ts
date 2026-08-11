@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { decodeBarFrame, type BarFrame } from './binary-frame'
 import type { CalendarEntry, ChartBarTicks, ClosedTrade, EconMeta, EconWeek, EconWeekQuery, PersistedDrawing, ReplaySession, SymbolMeta, Timeframe } from './types'
 import { timeframeSchema } from '../replay/timeframe'
+import type { MarketSession } from '../replay/market-session'
 
 const rangeSchema = z.object({ from: z.number(), to: z.number() })
 const symbolSchema = z.object({
@@ -31,7 +32,7 @@ const chartBarSchema = z.object({
   time: z.number(), openTicks: z.number(), highTicks: z.number(), lowTicks: z.number(),
   closeTicks: z.number(), volume: z.number(),
 })
-const econImportanceSchema = z.enum(['low', 'medium', 'high'])
+const econImportanceSchema = z.enum(['none', 'low', 'medium', 'high'])
 const econMetaSchema = z.object({
   available: z.boolean(), count: z.number().int().nonnegative(), firstTs: z.number().int(),
   lastTs: z.number().int(), countries: z.array(z.string()),
@@ -119,9 +120,10 @@ export async function fetchChartBarsAt(
   after: number,
   to: number,
   signal?: AbortSignal,
+  marketSession: MarketSession = 'eth',
 ): Promise<ChartBarTicks[]> {
   const query = new URLSearchParams({
-    symbol, tf, at: String(at), before: String(before), after: String(after), to: String(to),
+    symbol, tf, at: String(at), before: String(before), after: String(after), to: String(to), session: marketSession,
   })
   const response = await checkedFetch(`/api/v1/chart-bars/at?${query}`, { signal })
   return z.array(chartBarSchema).parse(await response.json()) as ChartBarTicks[]

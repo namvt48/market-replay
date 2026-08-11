@@ -354,7 +354,7 @@ export function DrawingToolbar({ disabled = false }: DrawingToolbarProps): React
         </div>
 
         {textTool ? <button type="button" disabled={disabled} onClick={() => choose(textTool.type)} aria-label="Text" aria-pressed={replay.activeDrawingTool === textTool.type} className="tool-button disabled:cursor-not-allowed disabled:opacity-40" title="Text · one drawing"><Type size={16} strokeWidth={1.75} /></button> : null}
-        {measureTool ? <button type="button" disabled={disabled} onClick={() => choose(measureTool.type)} aria-label="Measure" aria-pressed={replay.activeDrawingTool === measureTool.type} className="tool-button disabled:cursor-not-allowed disabled:opacity-40" title="Measure · price, percent, bars and time"><Ruler size={16} strokeWidth={1.75} /></button> : null}
+        {measureTool ? <button type="button" disabled={disabled} onClick={() => choose(measureTool.type)} aria-label="Measure" aria-pressed={replay.activeDrawingTool === measureTool.type} className="tool-button disabled:cursor-not-allowed disabled:opacity-40" title="Measure · hold Shift for mouse-down, then release and drag · clears on next chart action"><Ruler size={16} strokeWidth={1.75} /></button> : null}
 
         <span aria-hidden="true" className="mx-1 my-1 h-px bg-line" />
 
@@ -393,7 +393,7 @@ export function DrawingToolbar({ disabled = false }: DrawingToolbarProps): React
       </nav>
 
       {favoriteTools.length > 0 ? (
-        <nav ref={floatingToolbarRef} aria-label="Favorite drawing tools" className="absolute left-0 top-0 z-40 flex max-w-[calc(100%-1rem)] items-center gap-0.5 overflow-x-auto rounded-panel border border-line bg-surface-1/95 p-1 shadow-overlay will-change-transform">
+        <nav ref={floatingToolbarRef} aria-label="Favorite drawing tools" className="absolute left-0 top-0 z-[60] flex max-w-[calc(100%-1rem)] items-center gap-0.5 overflow-x-auto rounded-panel border border-line bg-surface-1/95 p-1 shadow-overlay will-change-transform">
           <button
             type="button"
             aria-label="Move favorite toolbar"

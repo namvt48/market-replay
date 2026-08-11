@@ -172,6 +172,15 @@ describe('DrawingToolbar menus', () => {
     expect(loadDrawingToolbarPosition()).toEqual({ x: 158, y: 78 })
   })
 
+  it('keeps the floating toolbar above chart split handles', async () => {
+    const user = userEvent.setup()
+    render(<section><DrawingToolbar /></section>)
+    await user.click(screen.getByRole('button', { name: 'Manage favorite tools' }))
+    await user.click(within(screen.getByRole('menu', { name: 'Favorite tools menu' })).getByRole('menuitemcheckbox', { name: 'Star Path' }))
+
+    expect(screen.getByRole('navigation', { name: 'Favorite drawing tools' })).toHaveClass('z-[60]')
+  })
+
   it('supports precise keyboard movement for the floating toolbar', async () => {
     const user = userEvent.setup()
     render(<section><DrawingToolbar /></section>)

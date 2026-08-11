@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import * as rules from '../eval/rules'
 import type { EvalAttempt, EvalConfig } from '../eval/rules'
 import type { EngineTrade, FillEngineState } from '../fill-engine/types'
-import { EVAL_ACCOUNTS_STORAGE_KEY, EVAL_SESSION_STORAGE_KEY, deriveEvalFinancials, flushEvalSessionPersistence, getEvalState, isEvalActive, loadEvalAccounts, useEvalStore } from './eval-store'
+import { EVAL_ACCOUNTS_STORAGE_KEY, EVAL_SESSION_STORAGE_KEY, deleteEvalAccount, deriveEvalFinancials, flushEvalSessionPersistence, getEvalState, isEvalActive, loadEvalAccounts, useEvalStore } from './eval-store'
 
 const DAY0 = 1705276800 // Mon 2024-01-15 00:00:00 UTC
 
@@ -107,6 +107,13 @@ describe('eval session store', () => {
     expect(readPersistedSession()).toMatchObject({ phase: 'running' })
   })
 
+  it('creates a market-wide evaluation without an instrument', () => {
+    getEvalState().createEvaluation(ftmo, null, '2024-01-15', DAY0, 'America/New_York')
+
+    expect(getEvalState()).toMatchObject({ phase: 'ready', instrument: null })
+    expect(readPersistedSession()).toMatchObject({ phase: 'ready', instrument: null })
+  })
+
   it('starts an evaluation with a fresh runtime and persists the session', () => {
     getEvalState().startEvaluation(ftmo, 'NQ', '2024-01-15', DAY0, 'America/New_York')
     const state = getEvalState()
@@ -152,9 +159,23 @@ describe('eval session store', () => {
     const state = getEvalState()
     expect(state.baselineRealizedCents).toBe(1_002_500)
     expect(state.baselineEquityCents).toBe(1_003_750)
-    expect(state.lastTradeIds).toEqual(new Set(['t-old']))
+    expect(state.lastTradeIds).toEqual(new Set(['NQ:t-old']))
     expect(state.trades).toEqual([]) // absorbed ids, not re-added
     expect(state.runtime?.lastEquity).toBe(100000) // zero delta on the baseline tick
+  })
+
+  it('records same-numbered trade ids independently across symbols', () => {
+    getEvalState().startEvaluation(ftmo, null, '2024-01-15', DAY0)
+    getEvalState().tick({ cursorTs: DAY0, fill: makeFill({ realizedCents: 0, equityCents: 1_000_000 }) })
+    const nqTrade = makeTrade('trade-1', DAY0 + 60, 10_000)
+    const esTrade = { ...makeTrade('trade-1', DAY0 + 60, 20_000), symbol: 'ES' }
+
+    getEvalState().tick({
+      cursorTs: DAY0 + 60,
+      fill: makeFill({ realizedCents: 30_000, equityCents: 1_030_000, trades: [nqTrade, esTrade] }),
+    })
+
+    expect(getEvalState().trades.map((trade) => `${trade.symbol}:${trade.id}`)).toEqual(['NQ:trade-1', 'ES:trade-1'])
   })
 
   it('computes eval equity from the configured account size plus the fill delta', () => {
@@ -197,7 +218,8 @@ describe('eval session store', () => {
   })
 
   it('marks the eval passed and logs the attempt once realized profit hits the target', () => {
-    getEvalState().startEvaluation(ftmo, 'NQ', '2024-01-15', DAY0)
+    const config = { ...ftmo, minTradingDays: 0 }
+    getEvalState().startEvaluation(config, 'NQ', '2024-01-15', DAY0)
     getEvalState().tick({ cursorTs: DAY0, fill: makeFill() })
     getEvalState().tick({
       cursorTs: DAY0 + 3600,
@@ -208,12 +230,12 @@ describe('eval session store', () => {
     expect(state.runtime).toMatchObject({ outcome: 'passed', passedAt: DAY0 + 3600 })
     expect(logSpy).toHaveBeenCalledTimes(1)
     expect(logSpy).toHaveBeenCalledWith(expect.objectContaining({
-      config: ftmo,
+      config,
       outcome: 'passed',
       failReason: null,
       startedAt: DAY0,
       endedAt: DAY0 + 3600,
-      instrument: 'NQ',
+      instrument: 'ALL',
       endingBalance: 110000,
       endingEquity: 110000,
       daysTraded: 1,
@@ -223,7 +245,7 @@ describe('eval session store', () => {
   })
 
   it('keeps an eval running at the profit target until consistency is met', () => {
-    const config = { ...ftmo, profitTarget: 1000, consistencyRulePct: 50 }
+    const config = { ...ftmo, profitTarget: 1000, consistencyRulePct: 50, minTradingDays: 0 }
     getEvalState().startEvaluation(config, 'NQ', '2024-01-15', DAY0)
     getEvalState().tick({ cursorTs: DAY0, fill: makeFill() })
     const first = makeTrade('t-day-one', DAY0 + 3600, 100000)
@@ -256,7 +278,7 @@ describe('eval session store', () => {
       failReason: 'total',
       startedAt: DAY0,
       endedAt: DAY0 + 60,
-      instrument: 'NQ',
+      instrument: 'ALL',
       endingEquity: 47499.99,
     }))
     expect(readPersistedSession()).toMatchObject({ runtime: { outcome: 'failed' } })
@@ -284,19 +306,39 @@ describe('eval session store', () => {
   })
 
   it('goFunded prepares a funded account and waits for explicit start', () => {
-    getEvalState().startEvaluation(ftmo, 'NQ', '2024-01-15', DAY0)
+    const onePhase = { ...ftmo, minTradingDays: 0, verificationProfitTarget: 0 }
+    getEvalState().startEvaluation(onePhase, 'NQ', '2024-01-15', DAY0)
     getEvalState().tick({ cursorTs: DAY0, fill: makeFill() })
     getEvalState().tick({ cursorTs: DAY0 + 60, fill: makeFill({ realizedCents: 2_000_000, equityCents: 2_000_000, sequence: 2 }) })
     expect(getEvalState().phase).toBe('passed')
     getEvalState().goFunded()
     const state = getEvalState()
     expect(state.phase).toBe('ready')
-    expect(state.config).toEqual(rules.fundedConfig(ftmo))
-    expect(state.runtime).toEqual(rules.newRuntime(rules.fundedConfig(ftmo)))
+    expect(state.config).toEqual(rules.fundedConfig(onePhase))
+    expect(state.runtime).toEqual(rules.newRuntime(rules.fundedConfig(onePhase), DAY0 + 60))
     expect(state.baselineRealizedCents).toBeNull()
     expect(state.lastTradeIds.size).toBe(0)
     expect(state.trades).toEqual([])
-    expect(readPersistedSession()).toMatchObject({ phase: 'ready', config: rules.fundedConfig(ftmo) })
+    expect(readPersistedSession()).toMatchObject({ phase: 'ready', config: rules.fundedConfig(onePhase) })
+  })
+
+  it('moves a passed FTMO challenge into a fresh verification phase', () => {
+    getEvalState().startEvaluation(ftmo, 'NQ', '2024-01-15', DAY0)
+    useEvalStore.setState({
+      phase: 'passed',
+      runtime: { ...rules.newRuntime(ftmo), outcome: 'passed', passedAt: DAY0 + 3600 },
+      lastCursorTs: DAY0 + 3600,
+    })
+
+    getEvalState().goVerification()
+
+    expect(getEvalState()).toMatchObject({
+      phase: 'ready',
+      config: { phase: 'verification', profitTarget: 5000 },
+      lastEvalBalance: 100000,
+      trades: [],
+      payoutHistory: [],
+    })
   })
 
   it('abandon resets to idle and removes the persisted session', () => {
@@ -351,6 +393,82 @@ describe('eval session store', () => {
     expect(isEvalActive()).toBe(true)
     getEvalState().abandon()
     expect(isEvalActive()).toBe(false)
+  })
+})
+
+describe('funded payout store', () => {
+  function startFundedApex(dayProfits: number[]): void {
+    const config = rules.fundedConfig(apex)
+    getEvalState().startEvaluation(config, 'NQ', '2024-01-15', DAY0)
+    getEvalState().tick({ cursorTs: DAY0, fill: makeFill() })
+    const trades = dayProfits.map((profit, index) => makeTrade(`payout-day-${index}`, DAY0 + index * 86400 + 3600, profit * 100))
+    const totalProfit = dayProfits.reduce((sum, profit) => sum + profit, 0)
+    getEvalState().tick({
+      cursorTs: DAY0 + Math.max(1, dayProfits.length) * 86400,
+      fill: makeFill({
+        realizedCents: 1_000_000 + totalProfit * 100,
+        equityCents: 1_000_000 + totalProfit * 100,
+        trades,
+        sequence: dayProfits.length + 1,
+      }),
+    })
+  }
+
+  it('records an eligible payout, adjusts baselines, and resets the payout window', () => {
+    startFundedApex([800, 800, 800, 800, 800])
+
+    const result = getEvalState().requestPayout()
+
+    expect(result).toMatchObject({ success: true, payout: { grossAmount: 1400, traderAmount: 1400, payoutNumber: 1, balanceAfter: 52600 } })
+    expect(getEvalState()).toMatchObject({
+      lastEvalBalance: 52600,
+      lastEvalEquity: 52600,
+      baselineRealizedCents: 1_140_000,
+      baselineEquityCents: 1_140_000,
+      runtime: { payoutsTaken: 1, profitSinceLastPayout: 0, winningDays: 0, bestDaySincePayout: 0, payoutWindowDailyProfits: {} },
+    })
+    expect(getEvalState().payoutHistory).toHaveLength(1)
+    expect(localStorage.getItem('replay:eval:payouts')).toContain('"grossAmount":1400')
+    expect(readPersistedSession()).toMatchObject({ payoutHistory: [expect.objectContaining({ grossAmount: 1400 })] })
+  })
+
+  it('rejects an ineligible payout without changing the account', () => {
+    startFundedApex([1000, 1000, 1000, 1000])
+    const before = getEvalState()
+
+    const result = getEvalState().requestPayout()
+
+    expect(result).toMatchObject({ success: false, reason: '1 more qualifying winning day required.', payout: null })
+    expect(getEvalState().runtime).toBe(before.runtime)
+    expect(getEvalState().payoutHistory).toEqual([])
+  })
+
+  it('enforces the Apex payout safety net', () => {
+    startFundedApex([400, 400, 400, 400, 400])
+
+    expect(getEvalState().requestPayout()).toMatchObject({ success: false, reason: expect.stringContaining('safety net') })
+    expect(getEvalState().lastEvalBalance).toBe(52000)
+  })
+
+  it('enforces the maximum payout count', () => {
+    startFundedApex([800, 800, 800, 800, 800])
+    useEvalStore.setState((state) => ({ runtime: state.runtime ? { ...state.runtime, payoutsTaken: 6 } : null }))
+
+    expect(getEvalState().requestPayout()).toMatchObject({ success: false, reason: 'Maximum of 6 payouts reached.' })
+  })
+
+  it('keeps later fill deltas consistent after payout and starts a new window', () => {
+    startFundedApex([800, 800, 800, 800, 800])
+    expect(getEvalState().requestPayout().success).toBe(true)
+    const previousTrades = getEvalState().trades
+    const nextTrade = makeTrade('after-payout', DAY0 + 6 * 86400 + 3600, 10000)
+
+    getEvalState().tick({
+      cursorTs: DAY0 + 7 * 86400,
+      fill: makeFill({ realizedCents: 1_410_000, equityCents: 1_410_000, trades: [...previousTrades.map((trade) => makeTrade(trade.id ?? '', trade.exitTime, trade.realizedCents ?? 0)), nextTrade], sequence: 10 }),
+    })
+
+    expect(getEvalState()).toMatchObject({ lastEvalBalance: 52700, runtime: { profitSinceLastPayout: 100, winningDays: 0, bestDaySincePayout: 100 } })
   })
 })
 
@@ -420,5 +538,27 @@ describe('eval session hydration', () => {
     const reloaded = await import('./eval-store')
     expect(reloaded.getEvalState().phase).toBe('idle')
     expect(reloaded.getEvalState().config).toBeNull()
+  })
+
+  it('deletes a saved eval account from the registry', () => {
+    getEvalState().startEvaluation(ftmo, 'NQ', '2024-01-15', DAY0)
+    const accountId = getEvalState().accountId!
+    expect(loadEvalAccounts().some((account) => account.accountId === accountId)).toBe(true)
+
+    expect(deleteEvalAccount(accountId)).toBe(accountId)
+    expect(loadEvalAccounts().some((account) => account.accountId === accountId)).toBe(false)
+  })
+
+  it('clears the restored session when the deleted account is current', () => {
+    getEvalState().startEvaluation(ftmo, 'NQ', '2024-01-15', DAY0)
+    const accountId = getEvalState().accountId!
+
+    expect(deleteEvalAccount(accountId)).toBe(accountId)
+    expect(getEvalState().phase).toBe('idle')
+    expect(getEvalState().accountId).toBeNull()
+  })
+
+  it('returns null when deleting an unknown account id', () => {
+    expect(deleteEvalAccount('does-not-exist')).toBeNull()
   })
 })

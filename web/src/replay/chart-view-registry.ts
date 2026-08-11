@@ -1,6 +1,6 @@
 import type { SymbolMeta } from '../api/types'
 import type { Bar1m } from '../fill-engine/types'
-import type { ChartCrosshairSync, ChartViewportSync, DisplayBar, OrderLine, ReplaySelectionState, TradeMarker, ViewportDirection } from './chart-adapter'
+import type { ChartCrosshairSync, ChartViewportSync, DisplayBar, EconomicEventMarker, OrderLine, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDirection } from './chart-adapter'
 import { ChartViewController } from './chart-view-controller'
 
 export class ChartViewRegistry {
@@ -40,11 +40,14 @@ export class ChartViewRegistry {
   rebuildAll(raw: Bar1m[], symbol: SymbolMeta, preserveViewport = false): void {
     this.views.forEach((view) => view.rebuild(raw, symbol, preserveViewport))
   }
+  rebuildSymbol(raw: Bar1m[], symbol: SymbolMeta, preserveViewport = false): void {
+    this.views.forEach((view) => { if (view.symbol()?.symbol === symbol.symbol) view.rebuild(raw, symbol, preserveViewport) })
+  }
   mergeViewportPage(id: string, page: DisplayBar[], direction: ViewportDirection): void {
     this.views.get(id)?.mergeViewportPage(page, direction)
   }
-  pushRawBars(raw: Bar1m[], viewBudget = this.views.size): void {
-    const views = this.all()
+  pushRawBars(raw: Bar1m[], symbol: string, viewBudget = this.views.size): void {
+    const views = this.all().filter((view) => view.symbol()?.symbol === symbol)
     if (views.length === 0) return
     if (viewBudget >= views.length) {
       views.forEach((view) => view.pushRawBars(raw))
@@ -56,7 +59,13 @@ export class ChartViewRegistry {
     this.flushCursor = (this.flushCursor + budget) % views.length
   }
   flushRawBars(): void { this.views.forEach((view) => view.flushRawBars()) }
-  syncTrading(lines: OrderLine[], markers: TradeMarker[]): void { this.views.forEach((view) => view.syncTrading(lines, markers)) }
+  syncTrading(symbol: string, lines: OrderLine[], markers: TradeMarker[], connections: TradeConnection[]): void {
+    this.views.forEach((view) => {
+      if (view.symbol()?.symbol === symbol) view.syncTrading(lines, markers, connections)
+      else view.syncTrading([], [], [])
+    })
+  }
+  syncEconomicEventMarkers(markers: EconomicEventMarker[]): void { this.views.forEach((view) => view.syncEconomicEventMarkers(markers)) }
   focusTime(timestamp: number): void { this.views.forEach((view) => view.focusTime(timestamp)) }
   resetView(id: string): void { this.views.get(id)?.resetView() }
   syncCrosshair(sourceId: string, state: ChartCrosshairSync | null): void {

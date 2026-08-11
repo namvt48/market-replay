@@ -10,9 +10,11 @@
 import { create } from 'zustand'
 import { z } from 'zod'
 import { preferenceStorage, type PreferenceStorage } from './preference-sync'
-import { evalConfigSchema, evalStatus, fundedConfig, logEvalAttempt, newRuntime, sessionDate, tickEval } from '../eval/rules'
-import type { EvalConfig, EvalRuntime, EvalStatus, EvalTradeRecord } from '../eval/rules'
+import { evalConfigSchema, evalStatus, fundedConfig, logEvalAttempt, logPayout, newRuntime, payoutEligibility, sessionDate, syncPayoutRuntime, tickEval, verificationConfig } from '../eval/rules'
+import type { EvalConfig, EvalRuntime, EvalStatus, EvalTradeRecord, PayoutRecord } from '../eval/rules'
 import type { FillEngineState } from '../fill-engine/types'
+
+export type EvalFillState = Pick<FillEngineState, 'realizedCents' | 'equityCents' | 'trades'>
 
 export type EvalPhase = 'idle' | 'ready' | 'paused' | 'running' | 'passed' | 'failed'
 type StoredEvalPhase = Exclude<EvalPhase, 'idle'>
@@ -27,7 +29,8 @@ export interface EvalSessionState {
   accountId: string | null
   config: EvalConfig | null // null when idle
   runtime: EvalRuntime | null // null when idle
-  instrument: string | null // symbol code, e.g. 'NQ'
+  /** Legacy display value for accounts created before evaluations became market-wide. */
+  instrument: string | null
   sessionTimezone: string | null
   startDate: string | null // 'YYYY-MM-DD'
   startTs: number | null // epoch seconds the eval begins at (forward-only anchor)
@@ -40,21 +43,30 @@ export interface EvalSessionState {
   needsFillRebase: boolean
   lastTradeIds: Set<string> // trade ids already absorbed into the eval
   trades: EvalTradeRecord[] // eval-accumulated closed trades
+  payoutHistory: PayoutRecord[]
 
-  createEvaluation(config: EvalConfig, instrument: string, startDate: string, startTs: number, sessionTimezone?: string): void
-  startEvaluation(config: EvalConfig, instrument: string, startDate: string, startTs: number, sessionTimezone?: string): void
+  createEvaluation(config: EvalConfig, instrument: string | null, startDate: string, startTs: number, sessionTimezone?: string): void
+  startEvaluation(config: EvalConfig, instrument: string | null, startDate: string, startTs: number, sessionTimezone?: string): void
   activateEvaluation(): void
   /** Feed one replay-engine snapshot. No-op outside the running phase. */
-  tick(snapshot: { cursorTs: number; fill: FillEngineState | null }): void
+  tick(snapshot: { cursorTs: number; fill: EvalFillState | null }): void
   prepareFillRebase(): void
   restoreAccount(accountId: string): void
   exitEvaluation(): void // checkpoint as paused, then clear the current session
   retry(): void // same config, fresh ready account — for breach retry
+  goVerification(): void // passed challenge → fresh verification account
   goFunded(): void // pass → fresh funded account waiting in the ready phase
+  requestPayout(amount?: number): PayoutRequestResult
   abandon(): void // abandon the current eval → idle, clear everything
 }
 
-type EvalSessionData = Omit<EvalSessionState, 'createEvaluation' | 'startEvaluation' | 'activateEvaluation' | 'tick' | 'prepareFillRebase' | 'restoreAccount' | 'exitEvaluation' | 'retry' | 'goFunded' | 'abandon'>
+export interface PayoutRequestResult {
+  success: boolean
+  reason: string
+  payout: PayoutRecord | null
+}
+
+type EvalSessionData = Omit<EvalSessionState, 'createEvaluation' | 'startEvaluation' | 'activateEvaluation' | 'tick' | 'prepareFillRebase' | 'restoreAccount' | 'exitEvaluation' | 'retry' | 'goVerification' | 'goFunded' | 'requestPayout' | 'abandon'>
 
 function isValidTimezone(value: string): boolean {
   try {
@@ -72,10 +84,40 @@ const persistedRuntimeSchema = z.object({
   lastEquity: z.number(),
   dayKey: z.number().nullable(),
   dayStartEquity: z.number(),
+  dayStartBalance: z.number().optional(),
   outcome: z.enum(['in_progress', 'passed', 'failed']),
   failReason: z.enum(['total', 'daily']).nullable(),
   failedAt: z.number().nullable(),
   passedAt: z.number().nullable(),
+  payoutsTaken: z.number().int().nonnegative().optional(),
+  lastPayoutAt: z.number().finite().nonnegative().nullable().optional(),
+  profitSinceLastPayout: z.number().finite().optional(),
+  fundedStartTs: z.number().finite().nonnegative().optional(),
+  winningDays: z.number().int().nonnegative().optional(),
+  bestDaySincePayout: z.number().finite().nonnegative().optional(),
+  payoutWindowDailyProfits: z.record(z.string(), z.number().finite()).optional(),
+}).transform((runtime): EvalRuntime => ({
+  ...runtime,
+  dayStartBalance: runtime.dayStartBalance ?? runtime.startBalance,
+  payoutsTaken: runtime.payoutsTaken ?? 0,
+  lastPayoutAt: runtime.lastPayoutAt ?? null,
+  profitSinceLastPayout: runtime.profitSinceLastPayout ?? 0,
+  fundedStartTs: runtime.fundedStartTs ?? 0,
+  winningDays: runtime.winningDays ?? 0,
+  bestDaySincePayout: runtime.bestDaySincePayout ?? 0,
+  payoutWindowDailyProfits: runtime.payoutWindowDailyProfits ?? {},
+}))
+
+const payoutRecordSchema = z.object({
+  id: z.string().min(1),
+  accountId: z.string().optional(),
+  firm: z.string().min(1),
+  requestedAt: z.number().finite().nonnegative(),
+  grossAmount: z.number().finite().positive(),
+  traderAmount: z.number().finite().nonnegative(),
+  profitSplit: z.number().finite().min(0).max(100),
+  balanceAfter: z.number().finite(),
+  payoutNumber: z.number().int().positive(),
 })
 
 const persistedSessionSchema = z.object({
@@ -83,7 +125,7 @@ const persistedSessionSchema = z.object({
   phase: z.enum(['ready', 'paused', 'running', 'passed', 'failed']).optional(),
   accountId: z.string().min(1).optional(),
   config: evalConfigSchema,
-  instrument: z.string().trim().min(1),
+  instrument: z.string().trim().min(1).nullable().optional().transform((instrument) => instrument ?? null),
   sessionTimezone: z.string().trim().min(1).refine(isValidTimezone),
   startDate: z.iso.date(),
   startTs: z.number().finite().nonnegative(),
@@ -110,6 +152,7 @@ const persistedSessionSchema = z.object({
     maeTicks: z.number().finite().optional(),
     rMultiple: z.number().finite().nullable().optional(),
   })),
+  payoutHistory: z.array(payoutRecordSchema).default([]),
 })
 
 const persistedAccountsSchema = z.array(persistedSessionSchema).max(50)
@@ -145,6 +188,7 @@ function idleSession(): EvalSessionData {
     needsFillRebase: false,
     lastTradeIds: new Set<string>(),
     trades: [],
+    payoutHistory: [],
   }
 }
 
@@ -153,7 +197,7 @@ function getBrowserStorage(): PreferenceStorage | null {
 }
 
 function normalizedAccountId(account: PersistedEvalAccount): string {
-  return account.accountId ?? `eval-${account.instrument}-${account.attemptStartedAt}`
+  return account.accountId ?? `eval-${account.instrument ?? 'all'}-${account.attemptStartedAt}`
 }
 
 function normalizedAccountPhase(account: PersistedEvalAccount): StoredEvalPhase {
@@ -162,11 +206,11 @@ function normalizedAccountPhase(account: PersistedEvalAccount): StoredEvalPhase 
   return account.phase ?? 'paused'
 }
 
-function createAccountId(instrument: string, startTs: number): string {
+function createAccountId(instrument: string | null, startTs: number): string {
   const suffix = typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`
-  return `eval-${instrument}-${startTs}-${suffix}`
+  return `eval-${instrument ?? 'all'}-${startTs}-${suffix}`
 }
 
 export function loadEvalAccounts(): SavedEvalAccount[] {
@@ -191,6 +235,27 @@ function saveEvalAccount(account: PersistedEvalAccount): void {
   const accountId = normalizedAccountId(account)
   const existing = loadEvalAccounts().filter((item) => item.accountId !== accountId)
   storage.setItem(EVAL_ACCOUNTS_STORAGE_KEY, JSON.stringify([{ ...account, accountId }, ...existing].slice(0, 50)))
+}
+
+/**
+ * Permanently removes a saved evaluation account from the account registry.
+ * Unlike `abandon()` (which only clears the in-memory session but keeps the
+ * account recoverable), this deletes the account record itself. If the
+ * deleted account is the currently restored session, the session is cleared
+ * too. Returns the id that was removed, or null when nothing matched.
+ */
+export function deleteEvalAccount(accountId: string): string | null {
+  const storage = getBrowserStorage()
+  if (!storage) return null
+  const remaining = loadEvalAccounts().filter((item) => item.accountId !== accountId)
+  if (remaining.length === loadEvalAccounts().length) return null
+  try {
+    storage.setItem(EVAL_ACCOUNTS_STORAGE_KEY, JSON.stringify(remaining))
+  } catch {
+    return null
+  }
+  if (getEvalState().accountId === accountId) getEvalState().abandon()
+  return accountId
 }
 
 function loadPersistedSession(): z.infer<typeof persistedSessionSchema> | null {
@@ -235,6 +300,7 @@ function hydratedSession(): EvalSessionData | null {
     needsFillRebase: false,
     lastTradeIds: new Set(persisted.lastTradeIds),
     trades: persisted.trades,
+    payoutHistory: persisted.payoutHistory,
   }
 }
 
@@ -243,7 +309,7 @@ let pendingPersistState: EvalSessionState | null = null
 let lastPersistedAt = 0
 
 function persistedPayload(state: EvalSessionState): PersistedEvalAccount | null {
-  if (state.phase === 'idle' || !state.accountId || !state.config || !state.runtime || !state.instrument || !state.sessionTimezone || !state.startDate || state.startTs === null || state.attemptStartedAt === null || state.lastCursorTs === null) return null
+  if (state.phase === 'idle' || !state.accountId || !state.config || !state.runtime || !state.sessionTimezone || !state.startDate || state.startTs === null || state.attemptStartedAt === null || state.lastCursorTs === null) return null
   return {
     version: EVAL_SESSION_VERSION,
     phase: state.phase,
@@ -262,6 +328,7 @@ function persistedPayload(state: EvalSessionState): PersistedEvalAccount | null 
     lastEvalEquity: state.lastEvalEquity ?? state.runtime.lastEquity,
     lastTradeIds: [...state.lastTradeIds],
     trades: state.trades,
+    payoutHistory: state.payoutHistory,
   }
 }
 
@@ -315,7 +382,7 @@ export function flushEvalSessionPersistence(): void {
   persistSession(pending)
 }
 
-export function deriveEvalFinancials(session: EvalSessionState, fill: FillEngineState | null): EvalFinancials | null {
+export function deriveEvalFinancials(session: EvalSessionState, fill: EvalFillState | null): EvalFinancials | null {
   const { config, runtime } = session
   if (!config || !runtime) return null
   const baselinesReady = session.phase === 'running'
@@ -342,13 +409,13 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
   createEvaluation: (config, instrument, startDate, startTs, sessionTimezone = 'UTC') => {
     const parsed = evalConfigSchema.safeParse(config)
     if (!parsed.success) throw new Error(`Invalid evaluation configuration: ${parsed.error.issues[0]?.message ?? 'unknown error'}`)
-    if (!instrument.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !Number.isFinite(startTs) || startTs < 0) throw new Error('Evaluation instrument, date and start time are required')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !Number.isFinite(startTs) || startTs < 0) throw new Error('Evaluation date and start time are required')
     if (!isValidTimezone(sessionTimezone)) throw new Error(`Invalid evaluation timezone: ${sessionTimezone}`)
     set({
       phase: 'ready',
       accountId: createAccountId(instrument, startTs),
       config: parsed.data,
-      runtime: newRuntime(parsed.data),
+      runtime: newRuntime(parsed.data, startTs),
       instrument,
       sessionTimezone,
       startDate,
@@ -362,6 +429,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
       needsFillRebase: false,
       lastTradeIds: new Set<string>(),
       trades: [],
+      payoutHistory: [],
     })
     persistImmediately(get())
   },
@@ -369,13 +437,13 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
   startEvaluation: (config, instrument, startDate, startTs, sessionTimezone = 'UTC') => {
     const parsed = evalConfigSchema.safeParse(config)
     if (!parsed.success) throw new Error(`Invalid evaluation configuration: ${parsed.error.issues[0]?.message ?? 'unknown error'}`)
-    if (!instrument.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !Number.isFinite(startTs) || startTs < 0) throw new Error('Evaluation instrument, date and start time are required')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !Number.isFinite(startTs) || startTs < 0) throw new Error('Evaluation date and start time are required')
     if (!isValidTimezone(sessionTimezone)) throw new Error(`Invalid evaluation timezone: ${sessionTimezone}`)
     set({
       phase: 'running',
       accountId: createAccountId(instrument, startTs),
       config: parsed.data,
-      runtime: newRuntime(parsed.data),
+      runtime: newRuntime(parsed.data, startTs),
       instrument,
       sessionTimezone,
       startDate,
@@ -389,6 +457,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
       needsFillRebase: false,
       lastTradeIds: new Set<string>(),
       trades: [],
+      payoutHistory: [],
     })
     persistImmediately(get())
   },
@@ -413,7 +482,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     if (needsFillRebase) {
       baselineRealizedCents = fill.realizedCents - ((state.lastEvalBalance ?? config.accountSize) - config.accountSize) * 100
       baselineEquityCents = fill.equityCents - ((state.lastEvalEquity ?? runtime.lastEquity) - config.accountSize) * 100
-      lastTradeIds = new Set([...lastTradeIds, ...fill.trades.map((trade) => trade.id)])
+      lastTradeIds = new Set([...lastTradeIds, ...fill.trades.map((trade) => `${trade.symbol}:${trade.id}`)])
       needsFillRebase = false
     } else if (baselineRealizedCents === null || baselineEquityCents === null) {
       // First tick since (re)start: anchor the baselines on the fill
@@ -422,12 +491,16 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
       // them to the eval trade list.
       baselineRealizedCents = fill.realizedCents
       baselineEquityCents = fill.equityCents
-      lastTradeIds = new Set(fill.trades.map((trade) => trade.id))
+      lastTradeIds = new Set(fill.trades.map((trade) => `${trade.symbol}:${trade.id}`))
     } else {
-      const unseen = fill.trades.filter((trade) => !lastTradeIds.has(trade.id))
+      const unseen = fill.trades.filter((trade) => {
+        const compositeId = `${trade.symbol}:${trade.id}`
+        const legacyMatch = state.instrument === trade.symbol && lastTradeIds.has(trade.id)
+        return !lastTradeIds.has(compositeId) && !legacyMatch
+      })
       if (unseen.length > 0) {
         lastTradeIds = new Set(lastTradeIds)
-        for (const trade of unseen) lastTradeIds.add(trade.id)
+        for (const trade of unseen) lastTradeIds.add(`${trade.symbol}:${trade.id}`)
         trades = [...trades, ...unseen.map((trade) => ({
           id: trade.id,
           symbol: trade.symbol,
@@ -450,7 +523,8 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     const evalEquity = config.accountSize + (fill.equityCents - baselineEquityCents) / 100
 
     const timeZone = state.sessionTimezone ?? 'UTC'
-    let next = tickEval(config, runtime, cursorTs, evalEquity, timeZone)
+    let next = tickEval(config, runtime, cursorTs, evalEquity, timeZone, evalBalance)
+    next = syncPayoutRuntime(config, next, trades, timeZone)
     let phase: EvalPhase = 'running'
     let status = evalStatus(config, next, { balance: evalBalance, equity: evalEquity, trades }, timeZone)
     if (next.outcome === 'failed') {
@@ -473,7 +547,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
         failReason: next.failReason,
         startedAt: state.attemptStartedAt ?? cursorTs,
         endedAt: cursorTs,
-        instrument: state.instrument ?? '',
+        instrument: 'ALL',
         startDate: state.startDate ?? undefined,
         sessionTimezone: state.sessionTimezone ?? undefined,
         endingBalance: evalBalance,
@@ -516,6 +590,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
       needsFillRebase: false,
       lastTradeIds: new Set(account.lastTradeIds),
       trades: account.trades,
+      payoutHistory: account.payoutHistory,
     })
     persistImmediately(get())
   },
@@ -542,7 +617,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     set({
       phase: 'ready',
       accountId: createAccountId(state.instrument ?? 'eval', startTs),
-      runtime: newRuntime(config),
+      runtime: newRuntime(config, startTs),
       startTs,
       attemptStartedAt: startTs,
       lastCursorTs: startTs,
@@ -554,19 +629,52 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
       needsFillRebase: false,
       lastTradeIds: new Set<string>(),
       trades: [],
+      payoutHistory: [],
+    })
+    persistImmediately(get())
+  },
+
+  goVerification: () => {
+    const state = get()
+    if (state.phase !== 'passed' || !state.config || state.config.phase === 'verification' || state.config.phase === 'funded') return
+    let verification: EvalConfig
+    try {
+      verification = verificationConfig(state.config)
+    } catch {
+      return
+    }
+    const startTs = state.runtime?.passedAt ?? state.lastCursorTs ?? state.startTs ?? 0
+    set({
+      accountId: createAccountId(state.instrument ?? 'verification', startTs),
+      config: verification,
+      runtime: newRuntime(verification, startTs),
+      phase: 'ready',
+      startTs,
+      attemptStartedAt: startTs,
+      lastCursorTs: startTs,
+      startDate: sessionDate(startTs, verification.dayResetHour, state.sessionTimezone ?? 'UTC'),
+      baselineRealizedCents: null,
+      baselineEquityCents: null,
+      lastEvalBalance: verification.accountSize,
+      lastEvalEquity: verification.accountSize,
+      needsFillRebase: false,
+      lastTradeIds: new Set<string>(),
+      trades: [],
+      payoutHistory: [],
     })
     persistImmediately(get())
   },
 
   goFunded: () => {
     const state = get()
-    if (!state.config) return
+    if (state.phase !== 'passed' || !state.config) return
+    if (state.config.verificationProfitTarget > 0 && state.config.phase !== 'verification') return
     const funded = fundedConfig(state.config)
     const startTs = state.runtime?.passedAt ?? state.lastCursorTs ?? state.startTs ?? 0
     set({
       accountId: createAccountId(state.instrument ?? 'funded', startTs),
       config: funded,
-      runtime: newRuntime(funded),
+      runtime: newRuntime(funded, startTs),
       phase: 'ready',
       startTs,
       attemptStartedAt: startTs,
@@ -579,8 +687,69 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
       needsFillRebase: false,
       lastTradeIds: new Set<string>(),
       trades: [],
+      payoutHistory: [],
     })
     persistImmediately(get())
+  },
+
+  requestPayout: (requestedAmount) => {
+    const state = get()
+    const { config, runtime } = state
+    if (state.phase !== 'running' || !config || !runtime || config.phase !== 'funded' || !config.payout) {
+      return { success: false, reason: 'A live funded account is required to request a payout.', payout: null }
+    }
+    const balance = state.lastEvalBalance ?? config.accountSize
+    const equity = state.lastEvalEquity ?? runtime.lastEquity
+    const timeZone = state.sessionTimezone ?? 'UTC'
+    const syncedRuntime = syncPayoutRuntime(config, runtime, state.trades, timeZone)
+    const status = evalStatus(config, syncedRuntime, { balance, equity, trades: state.trades }, timeZone)
+    const eligibility = payoutEligibility(config, syncedRuntime, status, timeZone)
+    if (!eligibility.eligible) return { success: false, reason: eligibility.reason, payout: null }
+
+    const amount = Math.floor((requestedAmount ?? eligibility.maxPayout) * 100 + Number.EPSILON) / 100
+    if (!Number.isFinite(amount) || amount <= 0) return { success: false, reason: 'Payout amount must be greater than zero.', payout: null }
+    if (amount > eligibility.maxPayout) return { success: false, reason: `Payout cannot exceed ${eligibility.maxPayout.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}.`, payout: null }
+    if (amount < config.payout.minPayoutAmount) return { success: false, reason: `Minimum payout is ${config.payout.minPayoutAmount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}.`, payout: null }
+
+    const requestedAt = state.lastCursorTs ?? Math.floor(Date.now() / 1000)
+    const balanceAfter = Math.floor((balance - amount) * 100 + Number.EPSILON) / 100
+    const equityAfter = Math.floor((equity - amount) * 100 + Number.EPSILON) / 100
+    const payoutNumber = syncedRuntime.payoutsTaken + 1
+    const traderAmount = Math.floor(amount * config.payout.profitSplit + Number.EPSILON) / 100
+    const payout: PayoutRecord = {
+      id: `payout-${state.accountId ?? 'funded'}-${requestedAt}-${payoutNumber}`,
+      accountId: state.accountId ?? undefined,
+      firm: config.firm,
+      requestedAt,
+      grossAmount: amount,
+      traderAmount,
+      profitSplit: config.payout.profitSplit,
+      balanceAfter,
+      payoutNumber,
+    }
+    const nextRuntime: EvalRuntime = {
+      ...syncedRuntime,
+      lastEquity: equityAfter,
+      dayStartEquity: syncedRuntime.dayStartEquity - amount,
+      dayStartBalance: syncedRuntime.dayStartBalance - amount,
+      payoutsTaken: payoutNumber,
+      lastPayoutAt: requestedAt,
+      profitSinceLastPayout: 0,
+      winningDays: 0,
+      bestDaySincePayout: 0,
+      payoutWindowDailyProfits: {},
+    }
+    set({
+      runtime: nextRuntime,
+      lastEvalBalance: balanceAfter,
+      lastEvalEquity: equityAfter,
+      baselineRealizedCents: state.baselineRealizedCents === null ? null : state.baselineRealizedCents + amount * 100,
+      baselineEquityCents: state.baselineEquityCents === null ? null : state.baselineEquityCents + amount * 100,
+      payoutHistory: [...state.payoutHistory, payout],
+    })
+    logPayout(payout)
+    persistImmediately(get())
+    return { success: true, reason: 'Payout recorded.', payout }
   },
 
   abandon: () => {

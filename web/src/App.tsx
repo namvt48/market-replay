@@ -1,4 +1,5 @@
 import { ChartWorkspace } from './components/chart/ChartWorkspace'
+import { KeyboardCommandDialogs } from './components/KeyboardCommandDialogs'
 import { EvalProgressPanel } from './components/eval/EvalProgressPanel'
 import { EvalSetupScreen } from './components/eval/EvalSetupScreen'
 import { Sidebar } from './components/panels/Sidebar'
@@ -7,6 +8,7 @@ import { TopBar } from './components/TopBar'
 import { useHotkeys } from './hooks/use-hotkeys'
 import { ChartWorkspaceProvider } from './chart-workspace/ChartWorkspaceContext'
 import { useEvalTicker } from './replay/use-eval-session'
+import { EconomicCalendarChartSync } from './components/calendar/EconomicCalendarChartSync'
 
 // Layout shell matching docs §16.5: chart+toolbar on the left, position/
 // orders/watchlist/study-list stack on the right, replay transport strip
@@ -22,22 +24,31 @@ FORM: Familiar chart terminal grammar translated into Market Replay's own contro
 // Isolated so useHotkeys()/ChartWorkspaceProvider mount only on the chart
 // path; the /start setup screen renders without booting the replay engine.
 function Workspace() {
-  useHotkeys()
-  useEvalTicker()
   return (
     <ChartWorkspaceProvider>
-      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-ink">
-        <TopBar />
-        <main className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            <ChartWorkspace />
-            <ReplayBar />
-          </div>
-          <Sidebar />
-        </main>
-        <EvalProgressPanel />
-      </div>
+      <WorkspaceShell />
     </ChartWorkspaceProvider>
+  )
+}
+
+function WorkspaceShell() {
+  const hotkeys = useHotkeys()
+  useEvalTicker()
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-ink">
+      <EconomicCalendarChartSync />
+      <TopBar layoutMenuRequest={hotkeys.layoutMenuRequest} onOpenShortcuts={hotkeys.openShortcutHelp} />
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <ChartWorkspace />
+          <ReplayBar />
+        </div>
+        <Sidebar />
+      </main>
+      <EvalProgressPanel />
+      <KeyboardCommandDialogs state={hotkeys.dialog} onClose={hotkeys.closeDialog} />
+      <span className="sr-only" role="status" aria-live="polite">{hotkeys.statusMessage}</span>
+    </div>
   )
 }
 

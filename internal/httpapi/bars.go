@@ -199,6 +199,14 @@ func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	marketSession := r.URL.Query().Get("session")
+	if marketSession == "" {
+		marketSession = "eth"
+	}
+	if marketSession != "eth" && marketSession != "rth" {
+		writeError(w, fmt.Errorf("%w: invalid market session", errBadRequest))
+		return
+	}
 	var meta *model.SymbolMeta
 	for _, candidate := range s.Registry.Symbols() {
 		if candidate.Symbol == symbol {
@@ -214,7 +222,7 @@ func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
 	var output []bars.ChartBar
 	err = s.Registry.WithDataset(symbol, "1m", func(file *bars.BarFile, calendar *bars.Calendar, _ string) error {
 		var aggregateErr error
-		output, aggregateErr = bars.AggregateChartWindow(file, calendar, *meta, tf, at, before, after, maxTs)
+		output, aggregateErr = bars.AggregateChartWindowForSession(file, calendar, *meta, tf, at, before, after, maxTs, marketSession)
 		return aggregateErr
 	})
 	if err != nil {

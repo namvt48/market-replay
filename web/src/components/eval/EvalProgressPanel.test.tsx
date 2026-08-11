@@ -1,12 +1,13 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EVAL_PRESETS, customConfig } from '../../eval/rules'
+import { EVAL_PRESETS, customConfig, dayKey, fundedConfig, newRuntime } from '../../eval/rules'
 import { getEvalState, useEvalStore } from '../../store/eval-store'
 import { EvalProgressPanel } from './EvalProgressPanel'
 
+const replayMocks = vi.hoisted(() => ({ exitEvaluation: vi.fn() }))
 vi.mock('../../replay/replay-engine', () => ({
-  replayEngine: { syncEvaluationSession: vi.fn() },
+  replayEngine: { syncEvaluationSession: vi.fn(), exitEvaluation: replayMocks.exitEvaluation },
 }))
 
 const progressSnapshot = { fill: null }
@@ -21,6 +22,7 @@ describe('EvalProgressPanel', () => {
   beforeEach(() => {
     localStorage.clear()
     getEvalState().abandon()
+    replayMocks.exitEvaluation.mockImplementation(async () => { getEvalState().exitEvaluation() })
   })
 
   afterEach(cleanup)
@@ -43,7 +45,7 @@ describe('EvalProgressPanel', () => {
     expect(screen.getByRole('region', { name: 'Evaluation progress' })).toBeVisible()
     expect(screen.getByText('FTMO 100K (static)')).toBeVisible()
     expect(screen.getByText('LIVE')).toBeVisible()
-    expect(screen.getByText('NQ')).toBeVisible()
+    expect(screen.getByText('All symbols')).toBeVisible()
     expect(screen.getAllByText('$100,000').length).toBeGreaterThan(0)
   })
 
@@ -67,6 +69,7 @@ describe('EvalProgressPanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Exit evaluation' }))
 
+    expect(replayMocks.exitEvaluation).toHaveBeenCalledOnce()
     expect(screen.queryByRole('region', { name: 'Evaluation progress' })).not.toBeInTheDocument()
     expect(getEvalState().phase).toBe('idle')
     expect(localStorage.getItem('replay:eval')).toBeNull()
@@ -87,5 +90,32 @@ describe('EvalProgressPanel', () => {
     expect(screen.getByText('Consistency')).toBeVisible()
     expect(screen.getByText('100% / 40%')).toBeVisible()
     expect(screen.getByText('$6,000 more net profit needed')).toBeVisible()
+  })
+
+  it('shows funded payout eligibility and records a request', async () => {
+    const user = userEvent.setup()
+    const config = fundedConfig(EVAL_PRESETS[2])
+    getEvalState().startEvaluation(config, 'NQ', '2024-01-15', START_TS)
+    const trades = [0, 1, 2, 3, 4].map((index) => ({ exitTime: START_TS + index * 86400 + 3600, realizedCents: 80000 }))
+    useEvalStore.setState({
+      runtime: {
+        ...newRuntime(config, START_TS),
+        dayKey: dayKey(START_TS + 5 * 86400, config.dayResetHour),
+        profitSinceLastPayout: 4000,
+        winningDays: 5,
+        bestDaySincePayout: 800,
+      },
+      lastEvalBalance: 54000,
+      lastEvalEquity: 54000,
+      trades,
+    })
+
+    render(<EvalProgressPanel />)
+
+    expect(screen.getByText('Payout winning days')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Request $1,400 payout' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Request $1,400 payout' }))
+    expect(await screen.findByText('$1,400 payout recorded after split.')).toBeVisible()
+    expect(getEvalState().runtime?.payoutsTaken).toBe(1)
   })
 })

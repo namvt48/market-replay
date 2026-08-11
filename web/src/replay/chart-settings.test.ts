@@ -8,8 +8,9 @@ describe('chart appearance settings', () => {
     expect(parseChartAppearance({ version: 1, appearance: legacyAppearance })).toEqual(DEFAULT_CHART_APPEARANCE)
   })
 
-  it('upgrades legacy pane settings to the default ETH session', () => {
-    const { marketSession: _marketSession, ...legacy } = DEFAULT_CHART_PANE_SETTINGS
-    expect(chartPaneSettingsSchema.parse(legacy).marketSession).toBe('eth')
+  it('drops the legacy pane-scoped market session', () => {
+    const parsed = chartPaneSettingsSchema.parse({ ...DEFAULT_CHART_PANE_SETTINGS, marketSession: 'rth' })
+    expect(parsed).toEqual(DEFAULT_CHART_PANE_SETTINGS)
+    expect('marketSession' in parsed).toBe(false)
   })
 })

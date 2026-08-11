@@ -7,7 +7,7 @@ import { paneIds } from '../../chart-workspace/layout-presets'
 import { useUiStore } from '../../store/ui-store'
 import { LayoutMenu } from './LayoutMenu'
 
-const engineMocks = vi.hoisted(() => ({ activateChartView: vi.fn() }))
+const engineMocks = vi.hoisted(() => ({ activateChartView: vi.fn(), setMarketSession: vi.fn(), setSyncFlags: vi.fn() }))
 vi.mock('../../replay/replay-engine', () => ({ replayEngine: engineMocks }))
 
 function LayoutCount() {

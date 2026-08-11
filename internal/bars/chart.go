@@ -215,6 +215,154 @@ func AggregateChartWindow(file *BarFile, calendar *Calendar, meta model.SymbolMe
 	return output, nil
 }
 
+// AggregateChartWindowForSession keeps the existing ETH aggregation path
+// intact while providing a bounded, server-side RTH path. RTH cannot reuse
+// ETH rollups because their OHLC values include overnight bars.
+func AggregateChartWindowForSession(file *BarFile, calendar *Calendar, meta model.SymbolMeta, timeframeValue string, atTs int64, before, after int, maxTs int64, session string) ([]ChartBar, error) {
+	if session == "" || session == "eth" {
+		return AggregateChartWindow(file, calendar, meta, timeframeValue, atTs, before, after, maxTs)
+	}
+	if session != "rth" {
+		return nil, fmt.Errorf("invalid market session %q", session)
+	}
+	timeframe, err := parseChartTimeframe(timeframeValue)
+	if err != nil {
+		return nil, err
+	}
+	location := time.UTC
+	if meta.SessionTz != "" {
+		location, err = cachedLoadLocation(meta.SessionTz)
+		if err != nil {
+			return nil, fmt.Errorf("load session timezone %q: %w", meta.SessionTz, err)
+		}
+	}
+	return aggregateRTHChartWindow(file, timeframe, atTs, before, after, maxTs, location), nil
+}
+
+func regularTradingHours(timestamp int64, location *time.Location) bool {
+	local := time.Unix(timestamp, 0).In(location)
+	if local.Weekday() == time.Saturday || local.Weekday() == time.Sunday {
+		return false
+	}
+	minute := local.Hour()*60 + local.Minute()
+	return minute >= 9*60+30 && minute < 16*60
+}
+
+func rthBucketStart(timestamp int64, timeframe chartTimeframe, location *time.Location) int64 {
+	local := time.Unix(timestamp, 0).In(location)
+	open := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, location)
+	if timeframe.unit == 'm' || timeframe.unit == 'h' {
+		seconds := int64(timeframe.multiplier * 60)
+		if timeframe.unit == 'h' {
+			seconds *= 60
+		}
+		return open.Unix() + (timestamp-open.Unix())/seconds*seconds
+	}
+	if timeframe.unit == 'd' {
+		return open.Unix()
+	}
+	date := time.Date(local.Year(), local.Month(), local.Day(), 12, 0, 0, 0, location)
+	if timeframe.unit == 'w' {
+		daysFromMonday := (int(date.Weekday()) + 6) % 7
+		weekStart := date.AddDate(0, 0, -daysFromMonday)
+		anchorDays := int(time.Date(1970, time.January, 5, 0, 0, 0, 0, time.UTC).Unix() / 86400)
+		weekStartDays := int(time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 0, 0, 0, 0, time.UTC).Unix() / 86400)
+		groupWeek := floorDiv((weekStartDays-anchorDays)/7, timeframe.multiplier) * timeframe.multiplier
+		groupDate := time.Unix(int64(anchorDays+groupWeek*7)*86400, 0).UTC()
+		return time.Date(groupDate.Year(), groupDate.Month(), groupDate.Day(), 9, 30, 0, 0, location).Unix()
+	}
+	monthIndex := date.Year()*12 + int(date.Month()) - 1
+	groupMonth := floorDiv(monthIndex, timeframe.multiplier) * timeframe.multiplier
+	groupYear := floorDiv(groupMonth, 12)
+	groupMonthOfYear := time.Month(groupMonth - groupYear*12 + 1)
+	return time.Date(groupYear, groupMonthOfYear, 1, 9, 30, 0, 0, location).Unix()
+}
+
+func aggregateRTHChartWindow(file *BarFile, timeframe chartTimeframe, atTs int64, before, after int, maxTs int64, location *time.Location) []ChartBar {
+	if file.Count() == 0 {
+		return []ChartBar{}
+	}
+	if maxTs < atTs {
+		atTs = maxTs
+	}
+	lastAllowed := file.IndexAtOrBefore(maxTs)
+	center := file.IndexAtOrBefore(atTs)
+	if center > lastAllowed {
+		center = lastAllowed
+	}
+	for center >= 0 && !regularTradingHours(file.TsAt(center), location) {
+		center--
+	}
+	if center < 0 || lastAllowed < 0 {
+		return []ChartBar{}
+	}
+
+	wantedBefore := before
+	if wantedBefore < 1 {
+		wantedBefore = 1
+	}
+	from := center
+	currentBucket := rthBucketStart(file.TsAt(center), timeframe, location)
+	seen := 1
+	for index := center - 1; index >= 0; index-- {
+		if !regularTradingHours(file.TsAt(index), location) {
+			continue
+		}
+		bucket := rthBucketStart(file.TsAt(index), timeframe, location)
+		if bucket != currentBucket {
+			seen++
+			currentBucket = bucket
+			if seen > wantedBefore {
+				break
+			}
+		}
+		from = index
+	}
+
+	to := center + 1
+	currentBucket = rthBucketStart(file.TsAt(center), timeframe, location)
+	seenAfter := 0
+	for index := center + 1; index <= lastAllowed; index++ {
+		if !regularTradingHours(file.TsAt(index), location) {
+			continue
+		}
+		bucket := rthBucketStart(file.TsAt(index), timeframe, location)
+		if bucket != currentBucket {
+			seenAfter++
+			currentBucket = bucket
+			if seenAfter > after {
+				break
+			}
+		}
+		to = index + 1
+	}
+
+	output := make([]ChartBar, 0, wantedBefore+after)
+	for index := from; index < to; index++ {
+		timestamp := file.TsAt(index)
+		if !regularTradingHours(timestamp, location) {
+			continue
+		}
+		bucket := rthBucketStart(timestamp, timeframe, location)
+		if len(output) == 0 || output[len(output)-1].Time != bucket {
+			output = append(output, ChartBar{
+				Time: bucket, OpenTicks: file.OpenAt(index), HighTicks: file.HighAt(index), LowTicks: file.LowAt(index), CloseTicks: file.CloseAt(index), Volume: uint64(file.VolumeAt(index)),
+			})
+			continue
+		}
+		bar := &output[len(output)-1]
+		if high := file.HighAt(index); high > bar.HighTicks {
+			bar.HighTicks = high
+		}
+		if low := file.LowAt(index); low < bar.LowTicks {
+			bar.LowTicks = low
+		}
+		bar.CloseTicks = file.CloseAt(index)
+		bar.Volume += uint64(file.VolumeAt(index))
+	}
+	return output
+}
+
 // rollupFor picks the precomputed index whose bucket boundaries can never
 // straddle a display bucket of timeframe, or nil when no such index exists
 // and the caller must scan raw bars.

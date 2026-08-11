@@ -21,8 +21,20 @@ export const SYNCED_PREFERENCE_KEYS = [
 ] as const
 
 const SYNCED = new Set<string>(SYNCED_PREFERENCE_KEYS)
+/**
+ * Session state this browser writes authoritatively (see eval-store). Its
+ * backend copy is a debounced mirror that can lag or be lost to an unload,
+ * so at hydrate time a differing local value is the newer one and wins.
+ * Mirrors eval-store's EVAL_SESSION_STORAGE_KEY / EVAL_ACCOUNTS_STORAGE_KEY;
+ * not imported from there because eval-store imports this module.
+ */
+const LOCAL_WRITER_WINS_KEYS = new Set<string>(['replay:eval', 'replay:eval:accounts'])
 const PUSH_DEBOUNCE_MS = 400
 const HYDRATE_TIMEOUT_MS = 1_200
+// Long enough to survive a slow backend, short enough that a dead one never
+// holds up a navigation; losing the race still leaves local-wins hydration
+// as the backstop.
+const FLUSH_TIMEOUT_MS = 2_000
 
 export interface PreferenceStorage {
   getItem(key: string): string | null
@@ -39,6 +51,14 @@ function browserStorage(): PreferenceStorage | null {
   }
 }
 
+function pageHiding(): boolean {
+  try {
+    return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  } catch {
+    return false
+  }
+}
+
 /**
  * localStorage that mirrors writes to the backend.
  *
@@ -52,6 +72,7 @@ function browserStorage(): PreferenceStorage | null {
 class SyncedPreferenceStorage implements PreferenceStorage {
   private readonly local: PreferenceStorage | null
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly pending = new Map<string, string>()
 
   constructor(local: PreferenceStorage | null = browserStorage()) {
     this.local = local
@@ -75,20 +96,71 @@ class SyncedPreferenceStorage implements PreferenceStorage {
       clearTimeout(pending)
       this.timers.delete(key)
     }
+    this.pending.delete(key)
+  }
+
+  /** Pushes every queued backend write now; bounded, and never rejects. */
+  flush(): Promise<void> {
+    const queued = this.takePending()
+    if (queued.length === 0) return Promise.resolve()
+    const pushes = Promise.all(queued.map(([key, value]) => putPreference(key, value).catch(() => undefined)))
+    return withTimeout(pushes.then(() => undefined), FLUSH_TIMEOUT_MS).catch(() => undefined)
+  }
+
+  /** Fire-and-forget push for pagehide: keepalive lets requests outlive the page. */
+  flushDetached(): void {
+    for (const [key, value] of this.takePending()) {
+      void putPreference(key, value, { keepalive: true }).catch(() => undefined)
+    }
+  }
+
+  private takePending(): [string, string][] {
+    const queued = [...this.pending.entries()]
+    for (const [key] of queued) {
+      const timer = this.timers.get(key)
+      if (timer) {
+        clearTimeout(timer)
+        this.timers.delete(key)
+      }
+      this.pending.delete(key)
+    }
+    return queued
   }
 
   /** Writes land in bursts (dragging a colour picker, resizing panes); only the last one matters. */
   private schedulePush(key: string, value: string): void {
-    const pending = this.timers.get(key)
-    if (pending) clearTimeout(pending)
+    this.pending.set(key, value)
+    const timer = this.timers.get(key)
+    if (timer) clearTimeout(timer)
+    if (pageHiding()) {
+      this.pending.delete(key)
+      void putPreference(key, value, { keepalive: true }).catch(() => undefined)
+      return
+    }
     this.timers.set(key, setTimeout(() => {
       this.timers.delete(key)
-      void putPreference(key, value).catch(() => undefined)
+      const latest = this.pending.get(key)
+      if (latest === undefined) return
+      this.pending.delete(key)
+      void putPreference(key, latest).catch(() => undefined)
     }, PUSH_DEBOUNCE_MS))
   }
 }
 
-export const preferenceStorage: PreferenceStorage = new SyncedPreferenceStorage()
+const syncedPreferenceStorage = new SyncedPreferenceStorage()
+
+export const preferenceStorage: PreferenceStorage = syncedPreferenceStorage
+
+/** Pushes every queued backend write now, for code paths about to navigate. */
+export function flushPreferenceSync(): Promise<void> {
+  return syncedPreferenceStorage.flush()
+}
+
+if (typeof window !== 'undefined') {
+  // A debounced push that never fired leaves the backend with a stale copy,
+  // which then resurrects old state on the next boot.
+  window.addEventListener('pagehide', () => syncedPreferenceStorage.flushDetached())
+}
 
 /**
  * Pulls stored settings into localStorage before any store reads them.
@@ -104,6 +176,10 @@ export async function hydratePreferences(storage: PreferenceStorage | null = bro
     const remote = await withTimeout(fetchPreferences(), HYDRATE_TIMEOUT_MS)
     for (const [key, payload] of Object.entries(remote)) {
       if (!SYNCED.has(key)) continue
+      if (LOCAL_WRITER_WINS_KEYS.has(key)) {
+        const local = storage.getItem(key)
+        if (local !== null && local !== payload) continue
+      }
       storage.setItem(key, payload)
     }
   } catch {

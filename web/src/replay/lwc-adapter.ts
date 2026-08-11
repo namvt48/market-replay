@@ -4,6 +4,7 @@ import {
   CrosshairMode,
   HistogramSeries,
   LineSeries,
+  PriceScaleMode,
   createChart,
   createSeriesMarkers,
   type CandlestickData,
@@ -27,7 +28,7 @@ import {
   type SerializedDrawing,
 } from 'lightweight-charts-drawing'
 import type { SymbolMeta, Timeframe } from '../api/types'
-import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, HistoryUpdateOptions, OrderLine, OrderLineAction, ReplaySelectionState, TradeMarker, ViewportDemand } from './chart-adapter'
+import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, DrawingNudgeDirection, EconomicEventMarker, HistoryUpdateOptions, OrderLine, OrderLineAction, PriceScaleToggle, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDemand } from './chart-adapter'
 import {
   DEFAULT_DRAWING_METADATA,
   appearanceOptions,
@@ -40,6 +41,7 @@ import {
   type DrawingWorkbenchOptions,
 } from './drawing-appearance'
 import { DrawingLabelsPrimitive } from './drawing-labels-primitive'
+import { EconomicEventMarkersPrimitive } from './economic-event-markers-primitive'
 import { projectDrawingsToHistory } from './drawing-projection'
 import { DEFAULT_CHART_APPEARANCE, type ChartAppearanceSettings } from './chart-settings'
 import { DEFAULT_CHART_TIMEZONE, formatChartTime, type ChartTimezone } from './chart-timezone'
@@ -56,6 +58,7 @@ import {
 import { OrderLinesPrimitive } from './order-lines-primitive'
 import { HoverBarStore, type HoverBarSnapshot } from './hover-bar-store'
 import { ReplaySelectionPrimitive } from './replay-selection-primitive'
+import { TradeConnectionsPrimitive } from './trade-connections-primitive'
 
 const PREVIEW_ID = '__drawing-preview__'
 const UI_FONT_FAMILY = '"Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
@@ -68,8 +71,11 @@ interface DrawingDragState {
   pointerId: number
   startTime: number
   startPrice: number
+  startX: number
+  startY: number
   anchors: Anchor[]
   moved: boolean
+  cloneOnDrag: boolean
 }
 
 interface ProtectionDragState {
@@ -83,6 +89,11 @@ interface ProtectionDragState {
 interface ManualPriceRange {
   from: number
   to: number
+}
+
+interface DrawingPriceScaleLock {
+  range: ManualPriceRange
+  restoreAutoScale: boolean
 }
 
 /**
@@ -130,6 +141,10 @@ export class LwcAdapter implements ChartAdapter {
   private history: DisplayBar[] = []
   /** @internal Exposed for deterministic adapter interaction tests. */
   readonly orderPrimitive = new OrderLinesPrimitive()
+  /** @internal Exposed for deterministic adapter interaction tests. */
+  readonly tradeConnectionsPrimitive = new TradeConnectionsPrimitive()
+  /** @internal Exposed for deterministic adapter interaction tests. */
+  readonly economicEventMarkersPrimitive = new EconomicEventMarkersPrimitive()
   private replaySelectionPrimitive = new ReplaySelectionPrimitive()
   private replaySelectionState: ReplaySelectionState = { mode: 'inactive' }
   private replaySelectionHandler: (timestamp: number) => void = () => undefined
@@ -159,14 +174,26 @@ export class LwcAdapter implements ChartAdapter {
   private activeTool: string | null = null
   private placement: DrawingPlacementState = IDLE_DRAWING_PLACEMENT
   private preview: IDrawing | null = null
+  private measurementGesture: { pointerId: number; startX: number; startY: number; dragged: boolean; transient: boolean } | null = null
+  private measurementClickAnchored = false
+  private measurementPreviewPinned = false
   private draggingOrder: OrderLine | null = null
   private protectionDrag: ProtectionDragState | null = null
   private suppressNextOrderActionClick = false
   private quantityEditor: HTMLDivElement | null = null
   private draggingDrawing: DrawingDragState | null = null
+  private drawingPriceScaleLock: DrawingPriceScaleLock | null = null
+  private drawingsHidden = false
+  private drawingUndoStack: SerializedDrawing[][] = []
+  private drawingRedoStack: SerializedDrawing[][] = []
+  private drawingHistorySnapshot: SerializedDrawing[] = []
+  private applyingDrawingHistory = false
+  private lastDrawingUpdate: { id: string; at: number } | null = null
+  private suppressNextModifiedClick = false
   private nextDrawingAppearance: DrawingAppearancePatch | null = null
   private pricePrecision = 2
   private tickSize = 0.25
+  private symbolCode = 'chart'
   private lastClose = 0
   private appearance: ChartAppearanceSettings = { ...DEFAULT_CHART_APPEARANCE }
   private displayTimezone: ChartTimezone = DEFAULT_CHART_TIMEZONE
@@ -184,6 +211,7 @@ export class LwcAdapter implements ChartAdapter {
     this.container = element
     this.pricePrecision = symbol.priceDecimals
     this.tickSize = symbol.tickSize
+    this.symbolCode = symbol.symbol
     this.chart = createChart(element, {
       autoSize: true,
       layout: { background: { type: ColorType.Solid, color: this.appearance.backgroundColor }, textColor: this.appearance.textColor, fontFamily: UI_FONT_FAMILY, fontSize: 12, attributionLogo: false, panes: { separatorColor: '#2a2e39', enableResize: true } },
@@ -203,9 +231,11 @@ export class LwcAdapter implements ChartAdapter {
     this.volume = this.chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' }, 1)
     this.spacer = this.chart.addSeries(LineSeries, { visible: false, priceLineVisible: false, lastValueVisible: false })
     this.markers = createSeriesMarkers(this.candles)
+    this.candles.attachPrimitive(this.tradeConnectionsPrimitive)
     this.candles.attachPrimitive(this.orderPrimitive)
     this.candles.attachPrimitive(this.drawingLabelsPrimitive)
     this.candles.attachPrimitive(this.replaySelectionPrimitive)
+    this.candles.attachPrimitive(this.economicEventMarkersPrimitive)
     this.drawingManager.attach(this.chart, this.candles, element)
     this.bindDrawingEvents()
     this.bindInteractions()
@@ -216,6 +246,14 @@ export class LwcAdapter implements ChartAdapter {
     this.applyReplaySelectionState()
     this.resizeObserver = new ResizeObserver(() => this.chart?.applyOptions({ width: element.clientWidth, height: element.clientHeight }))
     this.resizeObserver.observe(element)
+  }
+
+  setSymbol(symbol: SymbolMeta): void {
+    this.pricePrecision = symbol.priceDecimals
+    this.tickSize = symbol.tickSize
+    this.symbolCode = symbol.symbol
+    this.chart?.applyOptions({ localization: { priceFormatter: createPriceFormatter(symbol.priceDecimals) } })
+    this.candles?.applyOptions({ priceFormat: { type: 'price', precision: symbol.priceDecimals, minMove: symbol.tickSize } })
   }
 
   setHistory(bars: DisplayBar[], options: HistoryUpdateOptions = {}): void {
@@ -248,11 +286,14 @@ export class LwcAdapter implements ChartAdapter {
 
   pushBar(bar: DisplayBar): void {
     const manualPriceRange = this.captureManualPriceRange()
+    const previousRange = this.chart?.timeScale().getVisibleLogicalRange() ?? null
     const last = this.history.at(-1)
-    if (last?.time === bar.time) this.history[this.history.length - 1] = bar
+    const appended = last?.time === bar.time ? 0 : 1
+    if (appended === 0) this.history[this.history.length - 1] = bar
     else this.history.push(bar)
     this.candles?.update(toCandle(bar))
     this.volume?.update(toVolume(bar))
+    this.followLatestBar(previousRange, appended)
     this.restoreManualPriceRange(manualPriceRange)
     this.lastClose = bar.close
     this.publishLatestBar()
@@ -269,7 +310,7 @@ export class LwcAdapter implements ChartAdapter {
     // asks for — "at most one mutation per series per animation frame".
     const bulk = bars.length >= BULK_PUSH_BARS
     const manualPriceRange = this.captureManualPriceRange()
-    const previousRange = bulk ? this.chart?.timeScale().getVisibleLogicalRange() ?? null : null
+    const previousRange = this.chart?.timeScale().getVisibleLogicalRange() ?? null
 
     let appended = 0
     for (const bar of bars) {
@@ -293,20 +334,14 @@ export class LwcAdapter implements ChartAdapter {
     if (bulk) {
       this.candles?.setData(this.history.map(toCandle))
       this.volume?.setData(this.history.map(toVolume))
-      // setData keeps the logical range where it was, so reproduce the
-      // right-edge follow that shiftVisibleRangeOnNewBar gives the
-      // incremental path. Trimming from the left renumbers the same bars
-      // downwards, hence the net shift.
-      const shift = appended - trimmed
-      if (previousRange && shift !== 0) {
-        this.chart?.timeScale().setVisibleLogicalRange({ from: previousRange.from + shift, to: previousRange.to + shift })
-      }
     } else {
       for (const bar of bars) {
         this.candles?.update(toCandle(bar))
         this.volume?.update(toVolume(bar))
       }
     }
+
+    this.followLatestBar(previousRange, appended - trimmed)
 
     this.restoreManualPriceRange(manualPriceRange)
     this.lastClose = bars.at(-1)?.close ?? this.lastClose
@@ -345,10 +380,23 @@ export class LwcAdapter implements ChartAdapter {
         horzLines: { color: settings.horizontalGridColor, visible: settings.showGrid },
       },
     })
-    const pane = this.volume?.getPane()
-    if (pane && !settings.showVolume && pane.getHeight() > 0) this.volumePaneHeight = pane.getHeight()
-    this.volume?.applyOptions({ visible: settings.showVolume })
-    pane?.setHeight(settings.showVolume ? this.volumePaneHeight : 0)
+    if (settings.showVolume) {
+      if (!this.volume && this.chart) {
+        this.volume = this.chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' }, 1)
+        this.volume.setData(this.history.map(toVolume))
+      }
+      this.volume?.applyOptions({ visible: true })
+      this.volume?.getPane()?.setHeight(this.volumePaneHeight)
+      return
+    }
+
+    const volume = this.volume
+    const pane = volume?.getPane()
+    if (!volume || !this.chart) return
+    if (pane && pane.getHeight() > 0) this.volumePaneHeight = pane.getHeight()
+    volume.applyOptions({ visible: false })
+    this.chart.removeSeries(volume)
+    this.volume = null
   }
 
   setDisplayTimezone(timezone: ChartTimezone): void {
@@ -394,11 +442,12 @@ export class LwcAdapter implements ChartAdapter {
     if (this.history.length === 0) return
     const timeScale = this.chart.timeScale()
     const current = timeScale.getVisibleLogicalRange()
-    if (!current || current.to <= current.from) return
+    const currentSpan = current && current.to > current.from ? current.to - current.from : null
     const centerTime = Math.floor((state.time.from + state.time.to) / 2)
     const centerIndex = timeScale.timeToIndex(toTime(centerTime), true)
     if (centerIndex === null) return
-    const span = current.to - current.from
+    const span = state.logicalSpan ?? currentSpan
+    if (span === null || !Number.isFinite(span) || span <= 0) return
     const center = Number(centerIndex)
     this.withExternalSync(() => {
       timeScale.setVisibleLogicalRange({ from: center - span / 2, to: center + span / 2 })
@@ -440,7 +489,32 @@ export class LwcAdapter implements ChartAdapter {
     this.markers?.setMarkers(next)
   }
 
-  setOrderLines(lines: OrderLine[]): void { this.orderPrimitive.setLines(lines) }
+  setEconomicEventMarkers(markers: EconomicEventMarker[]): void {
+    this.economicEventMarkersPrimitive.setMarkers(markers)
+  }
+
+  setTradeConnections(connections: TradeConnection[]): void {
+    this.tradeConnectionsPrimitive.setConnections(connections)
+  }
+
+  setOrderLines(lines: OrderLine[]): void {
+    const draggingOrder = this.draggingOrder
+    if (!draggingOrder) {
+      this.orderPrimitive.setLines(lines)
+      return
+    }
+
+    // Replay keeps projecting the committed fill state while it is playing.
+    // During a drag that projection still contains the old TP/SL price, so
+    // accepting it verbatim would make the line alternate between the cursor
+    // preview and the committed price on every replay frame. Preserve only
+    // the active line's local preview until pointerup commits it to the engine.
+    const nextLines = lines.map((line) => line.id === draggingOrder.id
+      ? { ...line, price: draggingOrder.price, priceLabel: draggingOrder.priceLabel }
+      : line)
+    this.draggingOrder = nextLines.find((line) => line.id === draggingOrder.id) ?? draggingOrder
+    this.orderPrimitive.setLines(nextLines)
+  }
   onOrderLineMove(handler: (id: string, price: number) => void): void { this.orderMoveHandler = handler }
   onOrderLineDragStart(handler: (id: string) => void): void { this.orderDragStartHandler = handler }
   onOrderLineAction(handler: (action: OrderLineAction) => void): void { this.orderActionHandler = handler }
@@ -448,7 +522,10 @@ export class LwcAdapter implements ChartAdapter {
   drawingTools(): DrawingToolDefinition[] { return getToolRegistry().getAll() }
 
   setDrawingTool(tool: string | null): void {
+    if (tool && this.drawingsHidden) this.toggleDrawingsVisibility()
     this.cancelPreview()
+    this.measurementGesture = null
+    this.measurementClickAnchored = false
     if (tool) this.drawingManager.deselectAll()
     this.activeTool = tool
     const definition = tool ? getToolRegistry().get(tool) : undefined
@@ -478,6 +555,7 @@ export class LwcAdapter implements ChartAdapter {
     const appearance = mergeDrawingAppearance(getDrawingAppearance(drawing), patch)
     drawing.updateStyle(appearanceStyle(appearance))
     drawing.updateOptions(appearanceOptions(appearance))
+    this.recordDrawingHistory('drawing:updated', drawing.id)
     this.drawingLabelsPrimitive.requestUpdate()
     this.drawingSelectionHandler(appearance)
     this.drawingChangedHandler(drawing.id)
@@ -485,6 +563,133 @@ export class LwcAdapter implements ChartAdapter {
 
   setNextDrawingAppearance(patch: DrawingAppearancePatch | null): void {
     this.nextDrawingAppearance = patch ? { ...patch } : null
+  }
+
+  copySelectedDrawing(): SerializedDrawing | null {
+    const selected = this.drawingManager.getSelectedDrawing()
+    if (!selected) return null
+    const serialized = selected.toJSON()
+    return structuredClone({ ...serialized, options: { ...serialized.options, ...selected.options } })
+  }
+
+  pasteDrawing(source: SerializedDrawing): void {
+    const last = this.history.at(-1)
+    const previous = this.history.at(-2)
+    const interval = Math.max(1, last && previous ? last.time - previous.time : 60)
+    const drawing = getToolRegistry().createDrawing(
+      source.type,
+      `drawing-${crypto.randomUUID()}`,
+      source.anchors.map((anchor) => ({
+        time: typeof anchor.time === 'number' ? toTime(Number(anchor.time) + interval) : anchor.time,
+        price: anchor.price + this.tickSize,
+      })),
+      structuredClone(source.style),
+      structuredClone(source.options),
+    )
+    if (!drawing) return
+    this.drawingManager.addDrawing(drawing)
+    this.drawingManager.selectDrawing(drawing.id)
+  }
+
+  private cloneDrawing(source: IDrawing): IDrawing | null {
+    const serialized = source.toJSON()
+    const clone = getToolRegistry().createDrawing(
+      serialized.type,
+      `drawing-${crypto.randomUUID()}`,
+      structuredClone(serialized.anchors),
+      structuredClone(serialized.style),
+      structuredClone({ ...serialized.options, ...source.options }),
+    )
+    if (!clone) return null
+    this.drawingManager.addDrawing(clone)
+    this.drawingManager.selectDrawing(clone.id)
+    return clone
+  }
+
+  undoDrawing(): boolean {
+    const previous = this.drawingUndoStack.pop()
+    if (!previous) return false
+    this.drawingRedoStack.push(this.captureDrawingState())
+    this.replaceDrawingsFromHistory(previous)
+    return true
+  }
+
+  redoDrawing(): boolean {
+    const next = this.drawingRedoStack.pop()
+    if (!next) return false
+    this.drawingUndoStack.push(this.captureDrawingState())
+    this.replaceDrawingsFromHistory(next)
+    return true
+  }
+
+  nudgeSelectedDrawing(direction: DrawingNudgeDirection): boolean {
+    const drawing = this.drawingManager.getSelectedDrawing()
+    if (!drawing || drawing.options.locked) return false
+    const last = this.history.at(-1)
+    const previous = this.history.at(-2)
+    const interval = Math.max(1, last && previous ? last.time - previous.time : 60)
+    drawing.setAnchors(drawing.anchors.map((anchor) => ({
+      time: typeof anchor.time === 'number'
+        ? toTime(Number(anchor.time) + (direction === 'left' ? -interval : direction === 'right' ? interval : 0))
+        : anchor.time,
+      price: anchor.price + (direction === 'up' ? this.tickSize : direction === 'down' ? -this.tickSize : 0),
+    })))
+    this.recordDrawingHistory('drawing:updated', drawing.id)
+    this.drawingLabelsPrimitive.requestUpdate()
+    this.drawingSelectionHandler(getDrawingAppearance(drawing))
+    this.drawingChangedHandler(drawing.id)
+    return true
+  }
+
+  toggleDrawingsVisibility(): void {
+    this.drawingsHidden = !this.drawingsHidden
+    if (this.drawingsHidden) this.drawingManager.deselectAll()
+    for (const drawing of this.drawingManager.getAllDrawings()) {
+      if (drawing.id === PREVIEW_ID) continue
+      if (this.drawingsHidden) drawing.detach()
+      else if (this.candles && this.chart) drawing.attach(this.candles, this.chart, this.container ?? undefined)
+    }
+    this.drawingLabelsPrimitive.requestUpdate()
+  }
+
+  private captureDrawingState(): SerializedDrawing[] {
+    return structuredClone(this.getDrawings())
+  }
+
+  private recordDrawingHistory(type: DrawingEvent['type'], drawingId?: string): void {
+    if (this.applyingDrawingHistory) return
+    const next = this.captureDrawingState()
+    if (JSON.stringify(next) === JSON.stringify(this.drawingHistorySnapshot)) return
+    const now = performance.now()
+    const continuousUpdate = type === 'drawing:updated'
+      && drawingId !== undefined
+      && this.lastDrawingUpdate?.id === drawingId
+      && now - this.lastDrawingUpdate.at < 500
+    if (!continuousUpdate) {
+      this.drawingUndoStack.push(structuredClone(this.drawingHistorySnapshot))
+      if (this.drawingUndoStack.length > 100) this.drawingUndoStack.shift()
+      this.drawingRedoStack = []
+    }
+    this.drawingHistorySnapshot = next
+    this.lastDrawingUpdate = type === 'drawing:updated' && drawingId ? { id: drawingId, at: now } : null
+  }
+
+  private replaceDrawingsFromHistory(drawings: SerializedDrawing[]): void {
+    this.applyingDrawingHistory = true
+    try {
+      this.drawingManager.clearAll()
+      const registry = getToolRegistry()
+      this.drawingManager.importDrawings(structuredClone(drawings), (type, data) => registry.createDrawing(type, data.id, data.anchors, data.style, data.options))
+      if (this.drawingsHidden) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.detach())
+      this.drawingHistorySnapshot = this.captureDrawingState()
+      this.lastDrawingUpdate = null
+      this.drawingLabelsPrimitive.requestUpdate()
+      this.drawingSelectionHandler(null)
+      this.applyChartInteractionLock()
+    } finally {
+      this.applyingDrawingHistory = false
+    }
+    this.drawingChangedHandler()
   }
 
   getDrawings(): SerializedDrawing[] {
@@ -495,13 +700,21 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   loadDrawings(drawings: SerializedDrawing[]): void {
-    this.drawingManager.clearAll()
-    const registry = getToolRegistry()
-    const projected = projectDrawingsToHistory(drawings, this.history)
-    this.drawingManager.importDrawings(projected, (type, data) => registry.createDrawing(type, data.id, data.anchors, data.style, data.options))
-    this.drawingLabelsPrimitive.requestUpdate()
-    this.drawingSelectionHandler(null)
-    this.applyChartInteractionLock()
+    this.applyingDrawingHistory = true
+    try {
+      this.drawingManager.clearAll()
+      const registry = getToolRegistry()
+      const projected = projectDrawingsToHistory(drawings, this.history)
+      this.drawingManager.importDrawings(projected, (type, data) => registry.createDrawing(type, data.id, data.anchors, data.style, data.options))
+      if (this.drawingsHidden) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.detach())
+      this.drawingHistorySnapshot = this.captureDrawingState()
+      this.lastDrawingUpdate = null
+      this.drawingLabelsPrimitive.requestUpdate()
+      this.drawingSelectionHandler(null)
+      this.applyChartInteractionLock()
+    } finally {
+      this.applyingDrawingHistory = false
+    }
   }
 
   onDrawingsChanged(handler: (drawingId?: string) => void): void { this.drawingChangedHandler = handler }
@@ -512,6 +725,48 @@ export class LwcAdapter implements ChartAdapter {
   visibleRange(): { from: number; to: number } {
     const range = this.chart?.timeScale().getVisibleRange()
     return range ? { from: Number(range.from), to: Number(range.to) } : { from: 0, to: 0 }
+  }
+
+  panView(logicalBars: number): void {
+    const timeScale = this.chart?.timeScale()
+    const range = timeScale?.getVisibleLogicalRange()
+    if (!timeScale || !range || !Number.isFinite(logicalBars) || logicalBars === 0) return
+    this.suppressViewportEchoUntilGesture = false
+    timeScale.setVisibleLogicalRange({ from: range.from + logicalBars, to: range.to + logicalBars })
+    this.scheduleViewportSync()
+  }
+
+  zoomView(factor: number): void {
+    const timeScale = this.chart?.timeScale()
+    const range = timeScale?.getVisibleLogicalRange()
+    if (!timeScale || !range || !Number.isFinite(factor) || factor <= 0) return
+    const center = (range.from + range.to) / 2
+    const halfSpan = Math.max(2, ((range.to - range.from) * factor) / 2)
+    this.suppressViewportEchoUntilGesture = false
+    timeScale.setVisibleLogicalRange({ from: center - halfSpan, to: center + halfSpan })
+    this.scheduleViewportSync()
+  }
+
+  toggleInvertScale(): void {
+    const scale = this.candles?.priceScale()
+    if (!scale) return
+    scale.applyOptions({ invertScale: !scale.options().invertScale })
+  }
+
+  togglePriceScaleMode(mode: PriceScaleToggle): void {
+    const scale = this.candles?.priceScale()
+    if (!scale) return
+    const requested = mode === 'logarithmic' ? PriceScaleMode.Logarithmic : PriceScaleMode.Percentage
+    scale.applyOptions({ mode: scale.options().mode === requested ? PriceScaleMode.Normal : requested })
+  }
+
+  takeSnapshot(): void {
+    if (!this.chart) return
+    const canvas = this.chart.takeScreenshot(true, true)
+    const anchor = document.createElement('a')
+    anchor.download = `market-replay-${this.symbolCode}-${new Date().toISOString().replaceAll(':', '-')}.png`
+    anchor.href = canvas.toDataURL('image/png')
+    anchor.click()
   }
 
   resetView(): void {
@@ -539,6 +794,20 @@ export class LwcAdapter implements ChartAdapter {
     return { from: range.from, to: range.to }
   }
 
+  private followLatestBar(previousRange: LogicalRange | null, logicalShift: number): void {
+    const timeScale = this.chart?.timeScale()
+    if (!timeScale || !previousRange || previousRange.to <= previousRange.from || this.history.length === 0) return
+    const span = previousRange.to - previousRange.from
+    const shifted = { from: previousRange.from + logicalShift, to: previousRange.to + logicalShift }
+    const latestIndex = this.history.length - 1
+    const rightReserve = Math.max(2, Math.min(12, Math.floor(span * 0.15)))
+    const target = latestIndex < shifted.from || latestIndex > shifted.to - rightReserve
+      ? { from: latestIndex + rightReserve - span, to: latestIndex + rightReserve }
+      : shifted
+    if (target.from === previousRange.from && target.to === previousRange.to) return
+    this.withExternalSync(() => { timeScale.setVisibleLogicalRange(target) })
+  }
+
   private restoreManualPriceRange(range: ManualPriceRange | null): void {
     if (!range) return
     const scale = this.candles?.priceScale()
@@ -546,6 +815,35 @@ export class LwcAdapter implements ChartAdapter {
     const current = scale.getVisibleRange()
     if (scale.options().autoScale) scale.setAutoScale(false)
     if (!current || current.from !== range.from || current.to !== range.to) scale.setVisibleRange(range)
+  }
+
+  private lockDrawingPriceScale(): void {
+    const scale = this.candles?.priceScale()
+    const range = scale?.getVisibleRange()
+    if (!scale || !range || range.to <= range.from) return
+    this.drawingPriceScaleLock = {
+      range: { from: range.from, to: range.to },
+      restoreAutoScale: scale.options().autoScale,
+    }
+    if (scale.options().autoScale) scale.setAutoScale(false)
+    scale.setVisibleRange(this.drawingPriceScaleLock.range)
+  }
+
+  private enforceDrawingPriceScaleLock(): void {
+    const scale = this.candles?.priceScale()
+    const lock = this.drawingPriceScaleLock
+    if (!scale || !lock) return
+    if (scale.options().autoScale) scale.setAutoScale(false)
+    scale.setVisibleRange(lock.range)
+  }
+
+  private releaseDrawingPriceScaleLock(): void {
+    const scale = this.candles?.priceScale()
+    const lock = this.drawingPriceScaleLock
+    this.drawingPriceScaleLock = null
+    if (!scale || !lock) return
+    scale.setVisibleRange(lock.range)
+    if (lock.restoreAutoScale) scale.setAutoScale(true)
   }
 
   destroy(): void {
@@ -580,7 +878,19 @@ export class LwcAdapter implements ChartAdapter {
     this.container = null
     this.activeTool = null
     this.placement = IDLE_DRAWING_PLACEMENT
+    this.preview = null
+    this.measurementGesture = null
+    this.measurementClickAnchored = false
+    this.measurementPreviewPinned = false
     this.draggingDrawing = null
+    this.drawingPriceScaleLock = null
+    this.drawingsHidden = false
+    this.drawingUndoStack = []
+    this.drawingRedoStack = []
+    this.drawingHistorySnapshot = []
+    this.applyingDrawingHistory = false
+    this.lastDrawingUpdate = null
+    this.suppressNextModifiedClick = false
     this.draggingOrder = null
     this.protectionDrag = null
     this.suppressNextOrderActionClick = false
@@ -615,6 +925,7 @@ export class LwcAdapter implements ChartAdapter {
   private bindDrawingEvents(): void {
     const changed = (event: DrawingEvent): void => {
       if (event.drawingId === PREVIEW_ID) return
+      this.recordDrawingHistory(event.type, event.drawingId)
       this.drawingLabelsPrimitive.requestUpdate()
       const selected = this.drawingManager.getSelectedDrawing()
       this.drawingSelectionHandler(selected ? getDrawingAppearance(selected) : null)
@@ -626,10 +937,12 @@ export class LwcAdapter implements ChartAdapter {
     this.drawingManager.on('drawing:updated', changed)
     this.drawingManager.on('drawing:cleared', changed)
     this.drawingManager.on('drawing:selected', (event) => {
+      this.drawingLabelsPrimitive.requestUpdate()
       this.drawingSelectionHandler(event.drawing ? getDrawingAppearance(event.drawing) : null)
       this.applyChartInteractionLock()
     })
     this.drawingManager.on('drawing:deselected', () => {
+      this.drawingLabelsPrimitive.requestUpdate()
       this.drawingSelectionHandler(null)
       this.applyChartInteractionLock()
     })
@@ -690,7 +1003,9 @@ export class LwcAdapter implements ChartAdapter {
     const from = timestampFromTime(time.from)
     const to = timestampFromTime(time.to)
     if (from === null || to === null || to <= from) return
-    this.viewportSyncHandler({ time: { from, to } })
+    const logicalRange = this.chart.timeScale().getVisibleLogicalRange()
+    const logicalSpan = logicalRange && logicalRange.to > logicalRange.from ? logicalRange.to - logicalRange.from : null
+    this.viewportSyncHandler(logicalSpan === null ? { time: { from, to } } : { time: { from, to }, logicalSpan })
   }
 
   private withExternalSync(action: () => void): void {
@@ -736,6 +1051,7 @@ export class LwcAdapter implements ChartAdapter {
 
   private handleDrawingClick = (event: MouseEvent): void => {
     if (!this.activeTool || event.shiftKey || event.ctrlKey || !this.container || !this.chart || !this.candles) return
+    if (this.activeTool === 'date-price-range') return
     const rect = this.container.getBoundingClientRect()
     const x = event.clientX - rect.left
     const y = event.clientY - rect.top
@@ -780,6 +1096,12 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   private handleModifiedClick = (event: MouseEvent): void => {
+    if (this.suppressNextModifiedClick) {
+      this.suppressNextModifiedClick = false
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
     if ((!event.shiftKey && !event.ctrlKey) || this.activeTool || this.drawingManager.getSelectedDrawing() || !this.container) return
     const y = event.clientY - this.container.getBoundingClientRect().top
     const price = this.candles?.coordinateToPrice(y)
@@ -886,7 +1208,27 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   private handlePointerDown = (event: PointerEvent): void => {
-    if (this.replaySelectionState.mode === 'selecting' || event.button !== 0 || !this.container || !this.chart || !this.candles || this.activeTool) return
+    if (this.replaySelectionState.mode === 'selecting' || event.button !== 0 || !this.container || !this.chart || !this.candles) return
+    if (this.measurementPreviewPinned) this.cancelPreview()
+    const initialRect = this.container.getBoundingClientRect()
+    const initialPoint = { x: event.clientX - initialRect.left, y: event.clientY - initialRect.top }
+    const transientMeasurement = event.shiftKey && !this.activeTool && this.drawingManager.hitTest(initialPoint) === null
+    if (this.activeTool === 'date-price-range' || transientMeasurement) {
+      if (transientMeasurement) this.setDrawingTool('date-price-range')
+      const rect = this.container.getBoundingClientRect()
+      const time = this.chart.timeScale().coordinateToTime(event.clientX - rect.left)
+      const price = this.candles.coordinateToPrice(event.clientY - rect.top)
+      if (typeof time !== 'number' || price === null) return
+      const anchor = { time, price }
+      if (!this.measurementClickAnchored) this.placement = commitDrawingAnchor(this.placement, anchor)
+      this.measurementGesture = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, dragged: false, transient: transientMeasurement }
+      this.renderPlacementPreview(anchor)
+      this.container.setPointerCapture(event.pointerId)
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (this.activeTool) return
     if (this.quantityEditor?.contains(event.target as Node)) return
     const rect = this.container.getBoundingClientRect()
     const point = { x: event.clientX - rect.left, y: event.clientY - rect.top }
@@ -904,11 +1246,16 @@ export class LwcAdapter implements ChartAdapter {
         pointerId: event.pointerId,
         startTime: time,
         startPrice: price,
+        startX: event.clientX,
+        startY: event.clientY,
         anchors: hitDrawing.anchors.map((anchor) => ({ ...anchor })),
         moved: false,
+        cloneOnDrag: event.ctrlKey || event.metaKey,
       }
+      this.lockDrawingPriceScale()
       this.container.setPointerCapture(event.pointerId)
       event.preventDefault()
+      event.stopPropagation()
       return
     }
     if (this.drawingManager.getSelectedDrawing()) {
@@ -967,6 +1314,10 @@ export class LwcAdapter implements ChartAdapter {
       return
     }
     if (this.activeTool && this.container && this.chart && this.candles) {
+      if (this.activeTool === 'date-price-range' && this.measurementGesture?.pointerId === event.pointerId && event.buttons !== 0) {
+        const distance = Math.hypot(event.clientX - this.measurementGesture.startX, event.clientY - this.measurementGesture.startY)
+        if (distance >= 3) this.measurementGesture.dragged = true
+      }
       const rect = this.container.getBoundingClientRect()
       const time = this.chart.timeScale().coordinateToTime(event.clientX - rect.left)
       const price = this.candles.coordinateToPrice(event.clientY - rect.top)
@@ -974,23 +1325,38 @@ export class LwcAdapter implements ChartAdapter {
       return
     }
     if (this.draggingDrawing && this.draggingDrawing.pointerId === event.pointerId && this.container && this.chart && this.candles) {
+      this.enforceDrawingPriceScaleLock()
       const rect = this.container.getBoundingClientRect()
       const time = this.chart.timeScale().coordinateToTime(event.clientX - rect.left)
       const price = this.candles.coordinateToPrice(event.clientY - rect.top)
-      const drawing = this.drawingManager.getDrawing(this.draggingDrawing.drawingId)
+      let drawing = this.drawingManager.getDrawing(this.draggingDrawing.drawingId)
       if (typeof time !== 'number' || price === null || !drawing) return
       const last = this.history.at(-1)
       const previous = this.history.at(-2)
       const barInterval = Math.max(1, last && previous ? last.time - previous.time : 60)
-      const timeDelta = Math.round((time - this.draggingDrawing.startTime) / barInterval) * barInterval
-      const priceDelta = Math.round((price - this.draggingDrawing.startPrice) / this.tickSize) * this.tickSize
+      let timeDelta = Math.round((time - this.draggingDrawing.startTime) / barInterval) * barInterval
+      let priceDelta = Math.round((price - this.draggingDrawing.startPrice) / this.tickSize) * this.tickSize
+      if (event.shiftKey) {
+        if (Math.abs(event.clientX - this.draggingDrawing.startX) >= Math.abs(event.clientY - this.draggingDrawing.startY)) priceDelta = 0
+        else timeDelta = 0
+      }
       if (timeDelta === 0 && priceDelta === 0) return
+      if (this.draggingDrawing.cloneOnDrag) {
+        const clone = this.cloneDrawing(drawing)
+        this.draggingDrawing.cloneOnDrag = false
+        if (!clone) return
+        drawing = clone
+        this.draggingDrawing.drawingId = clone.id
+        this.lastDrawingUpdate = { id: clone.id, at: performance.now() }
+      }
       drawing.setAnchors(this.draggingDrawing.anchors.map((anchor) => ({
         time: (Number(anchor.time) + timeDelta) as UTCTimestamp,
         price: anchor.price + priceDelta,
       })))
       this.draggingDrawing.moved = true
+      this.recordDrawingHistory('drawing:updated', drawing.id)
       this.drawingLabelsPrimitive.requestUpdate()
+      this.enforceDrawingPriceScaleLock()
       this.scheduleDrawingChange(this.draggingDrawing.drawingId)
       return
     }
@@ -1003,11 +1369,29 @@ export class LwcAdapter implements ChartAdapter {
     const price = this.orderPrimitive.priceAt(y)
     if (price === null) return
     const snapped = Math.round(price / this.tickSize) * this.tickSize
+    if (snapped === this.draggingOrder.price) return
     this.draggingOrder = { ...this.draggingOrder, price: snapped, priceLabel: snapped.toFixed(this.pricePrecision) }
     this.orderPrimitive.setLines(this.orderPrimitive.lines.map((line) => line.id === this.draggingOrder?.id ? this.draggingOrder : line))
   }
 
   private handlePointerUp = (event: PointerEvent): void => {
+    if (this.measurementGesture?.pointerId === event.pointerId && this.container) {
+      const transient = this.measurementGesture.transient
+      const cancelled = event.type === 'pointercancel'
+      const finishMeasurement = this.measurementGesture.dragged || this.measurementClickAnchored
+      if (this.container.hasPointerCapture(event.pointerId)) this.container.releasePointerCapture(event.pointerId)
+      this.measurementGesture = null
+      if (cancelled) this.setDrawingTool(null)
+      else if (finishMeasurement) this.pinMeasurementPreview()
+      else this.measurementClickAnchored = true
+      if (transient) {
+        this.suppressNextModifiedClick = true
+        window.setTimeout(() => { this.suppressNextModifiedClick = false }, 0)
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     this.handleViewportGesture()
     if (this.draggingDrawing?.pointerId === event.pointerId && this.container) {
       if (this.container.hasPointerCapture(event.pointerId)) this.container.releasePointerCapture(event.pointerId)
@@ -1018,6 +1402,7 @@ export class LwcAdapter implements ChartAdapter {
         this.scheduleDrawingChange(drawingId)
         this.flushDrawingChange()
       }
+      this.releaseDrawingPriceScaleLock()
       return
     }
     if (!this.draggingOrder || !this.container) return
@@ -1076,6 +1461,17 @@ export class LwcAdapter implements ChartAdapter {
   private removePreview(): void {
     if (this.preview) this.drawingManager.removeDrawing(this.preview.id)
     this.preview = null
+    this.measurementPreviewPinned = false
+  }
+
+  private pinMeasurementPreview(): void {
+    this.measurementPreviewPinned = this.preview !== null
+    this.measurementClickAnchored = false
+    this.activeTool = null
+    this.placement = IDLE_DRAWING_PLACEMENT
+    this.drawingManager.setActiveTool(null)
+    this.applyChartInteractionLock()
+    this.drawingToolChangedHandler(null)
   }
 
   private renderPlacementPreview(cursor: PlacementAnchor): void {

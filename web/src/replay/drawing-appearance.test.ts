@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { FibRetracement } from 'lightweight-charts-drawing'
+import { FibRetracement, Rectangle } from 'lightweight-charts-drawing'
 import type { UTCTimestamp } from 'lightweight-charts'
 import {
   DEFAULT_DRAWING_METADATA,
   appearanceOptions,
   clampOpacity,
   colorWithOpacity,
+  getDrawingAppearance,
   isHexColor,
   lineDashFor,
   mergeDrawingAppearance,
@@ -55,6 +56,12 @@ describe('drawing appearance utilities', () => {
       extendLines: true,
       levelDecimals: 8,
       labelPosition: 'right',
+      labelVerticalPosition: 'middle',
+      showPrices: true,
+      showLevelLabels: true,
+      levelFormat: 'values',
+      reverseDirection: false,
+      showDiagonalLine: true,
       levelSettings: expect.arrayContaining([expect.objectContaining({ value: 0.25, color: '#abcdef' })]),
     })
   })
@@ -63,10 +70,38 @@ describe('drawing appearance utilities', () => {
     const fibonacci = new FibRetracement('fib-1', [{ time: 1 as UTCTimestamp, price: 100 }, { time: 2 as UTCTimestamp, price: 120 }])
     const levelSettings = normalizeFibonacciLevels([{ value: 0.42, visible: true, color: '#112233' }])
 
-    fibonacci.updateOptions({ levelSettings, extendLines: true, levelDecimals: 4, labelPosition: 'left', labelFontSize: 14 })
+    fibonacci.updateOptions({ levelSettings, extendLines: true, levelDecimals: 4, labelPosition: 'center', labelVerticalPosition: 'top', labelFontSize: 14, reverseDirection: true, showPrices: false, showLevelLabels: true, levelFormat: 'percents' })
 
-    expect(fibonacci.fibOptions).toMatchObject({ extendLines: true, levelDecimals: 4, labelPosition: 'left', labelFontSize: 14 })
+    expect(fibonacci.fibOptions).toMatchObject({ extendLines: true, levelDecimals: 4, labelPosition: 'center', labelVerticalPosition: 'top', labelFontSize: 14, reverseDirection: true, showPrices: false, showLevelLabels: true, levelFormat: 'percents' })
     expect(fibonacci.fibOptions.levelSettings?.[0]).toEqual({ value: 0.42, visible: true, color: '#112233' })
-    expect(fibonacci.toJSON().options).toMatchObject({ extendLines: true, levelDecimals: 4, labelPosition: 'left' })
+    expect(fibonacci.toJSON().options).toMatchObject({ extendLines: true, levelDecimals: 4, labelPosition: 'center', labelVerticalPosition: 'top', reverseDirection: true, showPrices: false, levelFormat: 'percents' })
+  })
+
+  it('maps rectangle middle-line and Fibonacci diagonal visibility to serialized drawing options', () => {
+    const rectangle = new Rectangle('rectangle-1', [{ time: 1 as UTCTimestamp, price: 100 }, { time: 2 as UTCTimestamp, price: 120 }])
+    const fibonacci = new FibRetracement('fib-1', [{ time: 1 as UTCTimestamp, price: 100 }, { time: 2 as UTCTimestamp, price: 120 }])
+
+    rectangle.updateOptions(appearanceOptions({
+      ...getDrawingAppearance(rectangle),
+      rectangleMiddleLine: true,
+      rectangleMiddleLineColor: '#ff5500',
+      rectangleMiddleLineOpacity: 0.4,
+      rectangleMiddleLineWidth: 3,
+      rectangleMiddleLineStyle: 'dotted',
+    }))
+    fibonacci.updateOptions(appearanceOptions({
+      ...getDrawingAppearance(fibonacci),
+      fibonacciDiagonalLine: false,
+    }))
+
+    expect(rectangle.rectangleOptions.showMiddleLine).toBe(true)
+    expect(rectangle.toJSON().options).toMatchObject({
+      showMiddleLine: true,
+      middleLineColor: 'rgba(255, 85, 0, 0.4)',
+      middleLineWidth: 3,
+      middleLineDash: [2, 5],
+    })
+    expect(fibonacci.fibOptions.showDiagonalLine).toBe(false)
+    expect(fibonacci.toJSON().options).toMatchObject({ showDiagonalLine: false })
   })
 })

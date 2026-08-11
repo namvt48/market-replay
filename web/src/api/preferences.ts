@@ -22,9 +22,9 @@ export async function fetchPreferences(): Promise<Record<string, string>> {
   return Object.fromEntries(Object.entries(parsed).map(([key, value]) => [key, JSON.stringify(value)]))
 }
 
-export async function putPreference(key: string, payload: string): Promise<void> {
+export async function putPreference(key: string, payload: string, init?: RequestInit): Promise<void> {
   await checkedFetch(`/api/v1/preferences/${encodeURIComponent(key)}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: payload,
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: payload, ...init,
   })
 }
 

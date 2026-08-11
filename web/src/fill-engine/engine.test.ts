@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  cancelAllOrders,
   cancelOrder,
   createFillEngine,
   placeBracket,
@@ -27,6 +28,18 @@ function longState(): FillEngineState {
 }
 
 describe('fill engine rules', () => {
+  it('blocks entry exposure above the configured contract limit while allowing reductions', () => {
+    const maxed = stepFillEngine(placeOrder(visibleState(), { side: 'buy', type: 'market', qty: 5 }), bar(120, 100))
+
+    expect(() => placeOrder(maxed, { side: 'buy', type: 'market', qty: 1 })).toThrow('Position size cannot exceed 5 contracts')
+    expect(() => placeOrder(maxed, { side: 'sell', type: 'market', qty: 1 })).not.toThrow()
+  })
+
+  it('includes working entry orders when enforcing the contract limit', () => {
+    const pending = placeOrder(visibleState(), { side: 'buy', type: 'limit', qty: 4, priceTicks: 95 })
+    expect(() => placeOrder(pending, { side: 'buy', type: 'limit', qty: 2, priceTicks: 94 })).toThrow('Position size cannot exceed 5 contracts')
+  })
+
   it('fills a market order only at the next bar open plus slippage', () => {
     const pending = placeOrder(visibleState(), { side: 'buy', type: 'market', qty: 1 })
     expect(pending.position).toBeNull()
@@ -89,6 +102,16 @@ describe('fill engine rules', () => {
     })
     const cancelled = cancelOrder(pending, pending.orders[0].id)
     expect(cancelled.orders).toEqual([])
+  })
+
+  it('cancels every working order without closing the open position', () => {
+    const opened = stepFillEngine(placeOrder(visibleState(), { side: 'buy', type: 'market', qty: 1 }), bar(120, 100))
+    const protectedPosition = placeBracket(opened, 95, 105)
+
+    const cancelled = cancelAllOrders(protectedPosition)
+
+    expect(cancelled.orders).toEqual([])
+    expect(cancelled.position).toEqual(protectedPosition.position)
   })
 
   it('activates OCO protection and cancels its sibling after exit', () => {

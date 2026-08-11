@@ -50,6 +50,36 @@ func TestParseChartTimeframeWeekAndMonth(t *testing.T) {
 	}
 }
 
+func TestAggregateChartWindowForSessionReturnsDeepRTHHistory(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, calendar := buildSessionFixture(t, 45, time.Date(2025, time.January, 5, 18, 0, 0, 0, location))
+	meta := model.SymbolMeta{Kind: "future", SessionTz: "America/New_York"}
+	lastTs := file.TsAt(file.Count() - 1)
+
+	got, err := AggregateChartWindowForSession(file, calendar, meta, "1h", lastTs, 240, 0, lastTs, "rth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 240 {
+		t.Fatalf("bars = %d, want 240", len(got))
+	}
+	for index, bar := range got {
+		local := time.Unix(bar.Time, 0).In(location)
+		if local.Hour() < 9 || local.Hour() > 15 || local.Minute() != 30 {
+			t.Fatalf("bar %d starts at %s, want an RTH-aligned :30 bucket", index, local)
+		}
+	}
+}
+
+func TestAggregateChartWindowForSessionRejectsUnknownSession(t *testing.T) {
+	if _, err := AggregateChartWindowForSession(&BarFile{}, nil, model.SymbolMeta{}, "1h", 0, 1, 0, 0, "overnight"); err == nil {
+		t.Fatal("unknown market session succeeded")
+	}
+}
+
 // TestAggregateCalendarChartWindowDeepHistorySkipsWeekends is a regression
 // for the calendarDateIndexBefore/maxDaysPerBucket bound added to bound the
 // scan (BenchmarkAggregateCalendarChartWindow_Deep): it builds ~3 years of

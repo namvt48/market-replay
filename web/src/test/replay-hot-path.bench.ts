@@ -65,6 +65,7 @@ describe('chart view controller (one replay animation frame, per pane)', () => {
     adapter,
     timeframe: '1m',
     settings: DEFAULT_CHART_PANE_SETTINGS,
+    marketSession: 'eth',
     hoverStore: new HoverBarStore(),
   })
   controller.rebuild(RAW_6K, SYMBOL)

@@ -11,9 +11,12 @@ import {
   loadEvalHistory,
   logEvalAttempt,
   newRuntime,
+  payoutEligibility,
   shortEvalAccountHash,
+  syncPayoutRuntime,
   tickEval,
   totalFloor,
+  verificationConfig,
 } from './rules'
 import type { EvalAttempt, EvalConfig, EvalRuntime } from './rules'
 
@@ -41,12 +44,23 @@ function makeAttempt(overrides: Partial<EvalAttempt> = {}): EvalAttempt {
 }
 
 describe('EVAL_PRESETS', () => {
-  it('matches the production presets exactly', () => {
-    expect(EVAL_PRESETS).toEqual([
-      { firm: 'FTMO 100K (static)', accountSize: 100000, profitTarget: 10000, maxDailyLoss: 5000, maxTotalLoss: 10000, drawdownType: 'static', trailingLocksAtStart: false, trailingEod: false, minTradingDays: 0, consistencyRulePct: 0, dayResetHour: 0 },
-      { firm: 'TopStep 50K (EOD trail)', accountSize: 50000, profitTarget: 3000, maxDailyLoss: 1000, maxTotalLoss: 2000, drawdownType: 'trailing', trailingLocksAtStart: true, trailingEod: true, minTradingDays: 0, consistencyRulePct: 50, dayResetHour: 17 },
-      { firm: 'Apex 50K (trailing)', accountSize: 50000, profitTarget: 3000, maxDailyLoss: 0, maxTotalLoss: 2500, drawdownType: 'trailing', trailingLocksAtStart: false, trailingEod: false, minTradingDays: 0, consistencyRulePct: 0, dayResetHour: 17 },
-    ])
+  it('models FTMO, Topstep, and Apex pass and payout rules', () => {
+    expect(EVAL_PRESETS[0]).toMatchObject({
+      accountSize: 100000, profitTarget: 10000, verificationProfitTarget: 5000,
+      maxDailyLoss: 5000, maxTotalLoss: 10000, minTradingDays: 4,
+      dailyLossBase: 'midnight-balance', maxPositionSize: 0,
+      payout: { profitSplit: 90, eligibilityMode: 'min-days', minFundedDays: 14 },
+    })
+    expect(EVAL_PRESETS[1]).toMatchObject({
+      accountSize: 50000, profitTarget: 3000, trailingEod: true, maxPositionSize: 5,
+      consistencyRulePct: 50, consistencyMode: 'of-profit-target',
+      payout: { profitSplit: 90, eligibilityMode: 'winning-days', minWinningDays: 5, minDailyProfit: 150, maxPayoutPct: 50, maxPayoutAmount: 5000 },
+    })
+    expect(EVAL_PRESETS[2]).toMatchObject({
+      accountSize: 50000, profitTarget: 3000, maxDailyLoss: 0, maxPositionSize: 6,
+      trailingLockAtTarget: true, lockMargin: 2000, consistencyMode: 'net-profit',
+      payout: { profitSplit: 100, minWinningDays: 5, minDailyProfit: 200, maxPayouts: 6, safetyNet: 'drawdown-plus', safetyNetMargin: 100 },
+    })
   })
 })
 
@@ -72,9 +86,15 @@ describe('customConfig', () => {
       maxTotalLoss: 3000,
       drawdownType: 'trailing',
       trailingLocksAtStart: false,
+      trailingLockAtTarget: false,
+      lockMargin: 0,
       trailingEod: false,
+      maxPositionSize: 0,
       minTradingDays: 0,
       consistencyRulePct: 40,
+      consistencyMode: 'net-profit',
+      dailyLossBase: 'day-start-equity',
+      verificationProfitTarget: 0,
       dayResetHour: 17,
     })
   })
@@ -120,10 +140,18 @@ describe('newRuntime', () => {
       lastEquity: 50000,
       dayKey: null,
       dayStartEquity: 50000,
+      dayStartBalance: 50000,
       outcome: 'in_progress',
       failReason: null,
       failedAt: null,
       passedAt: null,
+      payoutsTaken: 0,
+      lastPayoutAt: null,
+      profitSinceLastPayout: 0,
+      fundedStartTs: 0,
+      winningDays: 0,
+      bestDaySincePayout: 0,
+      payoutWindowDailyProfits: {},
     })
   })
 })
@@ -165,6 +193,18 @@ describe('totalFloor', () => {
       config: topstep,
       fields: { eodPeak: 53000 },
       want: 50000,
+    },
+    {
+      name: 'lock at target: trails normally before target plus margin',
+      config: apex,
+      fields: { peakEquity: 54999 },
+      want: 52499,
+    },
+    {
+      name: 'lock at target: fixes the floor once target plus margin is reached',
+      config: apex,
+      fields: { peakEquity: 55000 },
+      want: 52500,
     },
   ]
   for (const tc of cases) {
@@ -235,6 +275,14 @@ describe('tickEval', () => {
     expect(next).toMatchObject({ outcome: 'in_progress', failReason: null })
   })
 
+  it('uses midnight cash balance rather than first-tick equity for FTMO daily loss', () => {
+    const ts = DAY0 + 86400
+    const runtime = makeRuntime(ftmo, { dayKey: dayKey(DAY0, 0), lastEquity: 100000 })
+    const next = tickEval(ftmo, runtime, ts, 95000, 'UTC', 100000)
+
+    expect(next).toMatchObject({ dayStartBalance: 100000, dayStartEquity: 95000, outcome: 'failed', failReason: 'daily' })
+  })
+
   it('never fails on daily loss when maxDailyLoss is 0', () => {
     const runtime = makeRuntime(apex, { dayKey: dayKey(DAY0, 17) })
     const next = tickEval(apex, runtime, DAY0 + 3600, 48000) // -2000 intraday, still above the 47500 floor
@@ -267,7 +315,8 @@ describe('evalStatus', () => {
   })
 
   it('passes on realized profit even when live equity is below the target', () => {
-    const status = evalStatus(ftmo, newRuntime(ftmo), {
+    const config = { ...ftmo, minTradingDays: 0 }
+    const status = evalStatus(config, newRuntime(config), {
       balance: 110000, // realized +10000 hits the 10000 target
       equity: 102000, // live +2000 only
       trades: [{ exitTime: DAY0 }],
@@ -387,7 +436,7 @@ describe('evalStatus', () => {
   })
 
   it('passes when daily net profits bring consistency down to the limit', () => {
-    const config = { ...ftmo, profitTarget: 2500, consistencyRulePct: 40 }
+    const config = { ...ftmo, profitTarget: 2500, consistencyRulePct: 40, minTradingDays: 0 }
     const status = evalStatus(config, newRuntime(config), {
       balance: 102500,
       equity: 102500,
@@ -421,12 +470,60 @@ describe('evalStatus', () => {
     expect(status.bestDayProfit).toBe(800)
     expect(status.consistencyPct).toBe(1)
   })
+
+  it('uses a fixed percentage of the profit target for Topstep consistency', () => {
+    const config = { ...topstep, minTradingDays: 0 }
+    const status = evalStatus(config, newRuntime(config), {
+      balance: 53000,
+      equity: 53000,
+      trades: [
+        { exitTime: DAY0 + 3600, realizedCents: 160000 },
+        { exitTime: DAY0 + 86400 + 3600, realizedCents: 140000 },
+      ],
+    })
+
+    expect(status).toMatchObject({ outcome: 'in_progress', consistencyPct: 1600 / 3000, consistencyMet: false, consistencyRemaining: 100 })
+  })
+
+  it('uses only positive-day profit for FTMO one-step consistency', () => {
+    const config = { ...ftmo, minTradingDays: 0, profitTarget: 1500, consistencyRulePct: 50, consistencyMode: 'positive-days' as const }
+    const status = evalStatus(config, newRuntime(config), {
+      balance: 101500,
+      equity: 101500,
+      trades: [
+        { exitTime: DAY0 + 3600, realizedCents: 100000 },
+        { exitTime: DAY0 + 86400 + 3600, realizedCents: -50000 },
+        { exitTime: DAY0 + 2 * 86400 + 3600, realizedCents: 100000 },
+      ],
+    })
+
+    expect(status).toMatchObject({ outcome: 'passed', positiveDaysProfit: 2000, bestDayProfit: 1000, consistencyPct: 0.5, consistencyMet: true, consistencyRemaining: 0 })
+  })
 })
 
 describe('evalConfigSchema', () => {
-  it('migrates saved configs created before consistency rules existed', () => {
-    const { consistencyRulePct: _removed, ...legacy } = ftmo
-    expect(evalConfigSchema.parse(legacy)).toEqual({ ...legacy, consistencyRulePct: 0 })
+  it('migrates saved configs created before the advanced rules existed', () => {
+    const {
+      consistencyRulePct: _consistencyRulePct,
+      consistencyMode: _consistencyMode,
+      dailyLossBase: _dailyLossBase,
+      trailingLockAtTarget: _trailingLockAtTarget,
+      lockMargin: _lockMargin,
+      maxPositionSize: _maxPositionSize,
+      verificationProfitTarget: _verificationProfitTarget,
+      payout: _payout,
+      ...legacy
+    } = ftmo
+    expect(evalConfigSchema.parse(legacy)).toEqual({
+      ...legacy,
+      consistencyRulePct: 0,
+      consistencyMode: 'net-profit',
+      dailyLossBase: 'day-start-equity',
+      trailingLockAtTarget: false,
+      lockMargin: 0,
+      maxPositionSize: 0,
+      verificationProfitTarget: 0,
+    })
   })
 })
 
@@ -435,6 +532,77 @@ describe('fundedConfig', () => {
     const funded = fundedConfig(ftmo)
     expect(funded).toEqual({ ...ftmo, phase: 'funded' })
     expect(ftmo.phase).toBeUndefined()
+  })
+
+  it('creates the configured verification target without mutating challenge config', () => {
+    const verification = verificationConfig(ftmo)
+    expect(verification).toEqual({ ...ftmo, phase: 'verification', profitTarget: 5000 })
+    expect(ftmo.profitTarget).toBe(10000)
+  })
+})
+
+describe('payoutEligibility', () => {
+  const fundedApex = fundedConfig(apex)
+
+  function payoutRuntime(fields: Partial<EvalRuntime> = {}): EvalRuntime {
+    return {
+      ...newRuntime(fundedApex, DAY0),
+      dayKey: dayKey(DAY0 + 5 * 86400, fundedApex.dayResetHour),
+      profitSinceLastPayout: 4000,
+      winningDays: 5,
+      bestDaySincePayout: 800,
+      ...fields,
+    }
+  }
+
+  function payoutStatus(runtime: EvalRuntime, balance = 54000) {
+    return evalStatus(fundedApex, runtime, { balance, equity: balance, trades: [] })
+  }
+
+  it('caps an eligible Apex payout above the drawdown-plus safety net', () => {
+    const runtime = payoutRuntime()
+    const result = payoutEligibility(fundedApex, runtime, payoutStatus(runtime))
+
+    expect(result).toMatchObject({ eligible: true, maxPayout: 1400, traderShare: 1400, winningDays: 5, safetyNetBalance: 52600 })
+  })
+
+  it('reports missing qualifying winning days', () => {
+    const runtime = payoutRuntime({ winningDays: 3 })
+    expect(payoutEligibility(fundedApex, runtime, payoutStatus(runtime))).toMatchObject({ eligible: false, reason: '2 more qualifying winning days required.' })
+  })
+
+  it('rejects a payout after the configured maximum count', () => {
+    const runtime = payoutRuntime({ payoutsTaken: 6 })
+    expect(payoutEligibility(fundedApex, runtime, payoutStatus(runtime))).toMatchObject({ eligible: false, reason: 'Maximum of 6 payouts reached.' })
+  })
+
+  it('enforces payout-window consistency', () => {
+    const config = fundedConfig({ ...apex, payout: { ...apex.payout!, eligibilityMode: 'consistency', safetyNet: 'none' } })
+    const runtime = { ...payoutRuntime(), bestDaySincePayout: 2500 }
+    const status = evalStatus(config, runtime, { balance: 54000, equity: 54000, trades: [] })
+    expect(payoutEligibility(config, runtime, status)).toMatchObject({ eligible: false, consistencyPct: 0.625 })
+  })
+
+  it('counts funded calendar days for FTMO min-days eligibility', () => {
+    const config = fundedConfig(ftmo)
+    const start = DAY0
+    const runtime = {
+      ...newRuntime(config, start),
+      dayKey: dayKey(start + 13 * 86400, config.dayResetHour),
+      profitSinceLastPayout: 1000,
+    }
+    const status = evalStatus(config, runtime, { balance: 101000, equity: 101000, trades: [] })
+    expect(payoutEligibility(config, runtime, status)).toMatchObject({ eligible: true, fundedDays: 14, maxPayout: 1000, traderShare: 900 })
+  })
+
+  it('rebuilds the payout window and excludes trades at or before the last payout', () => {
+    const runtime = { ...newRuntime(fundedApex, DAY0), lastPayoutAt: DAY0 + 60 }
+    const synced = syncPayoutRuntime(fundedApex, runtime, [
+      { exitTime: DAY0 + 60, realizedCents: 50000 },
+      { exitTime: DAY0 + 86400 + 60, realizedCents: 30000 },
+      { exitTime: DAY0 + 2 * 86400 + 60, realizedCents: 20000 },
+    ])
+    expect(synced).toMatchObject({ profitSinceLastPayout: 500, winningDays: 2, bestDaySincePayout: 300 })
   })
 })
 

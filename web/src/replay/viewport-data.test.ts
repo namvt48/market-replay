@@ -81,10 +81,10 @@ describe('BoundedBarCache', () => {
     const signal = new AbortController().signal
     const page = await new HttpViewportDataClient().load({
       symbol: 'NQ', visibleTimeframe: '1d', direction: 'before', anchorTs: 180,
-      pageBars: 240, maxTs: 180, tickSize: 0.25,
+      pageBars: 240, maxTs: 180, tickSize: 0.25, marketSession: 'rth',
     }, signal)
 
-    expect(apiMocks.fetchChartBarsAt).toHaveBeenCalledWith('NQ', '1d', 180, 240, 0, 180, signal)
+    expect(apiMocks.fetchChartBarsAt).toHaveBeenCalledWith('NQ', '1d', 180, 240, 0, 180, signal, 'rth')
     expect(page.bars).toEqual([{ time: 120, open: 100, high: 101, low: 99, close: 100.5, volume: 10 }])
     expect(page.hasMore).toBe(false)
   })

@@ -3,6 +3,7 @@ import { fetchChartBarsAt } from '../api/client'
 import type { Timeframe } from '../api/types'
 import type { Bar1m } from '../fill-engine/types'
 import type { DisplayBar, ViewportDirection } from './chart-adapter'
+import type { MarketSession } from './market-session'
 
 export const MAX_VIEWPORT_RAW_BARS = 6_000
 export const MAX_VIEWPORT_DISPLAY_BARS = 6_000
@@ -16,6 +17,7 @@ export interface ViewportDataRequest {
   pageBars: number
   maxTs: number
   tickSize: number
+  marketSession?: MarketSession
 }
 
 export interface ViewportDataPage {
@@ -40,6 +42,7 @@ export class HttpViewportDataClient implements ViewportDataClient {
       after,
       request.maxTs,
       signal,
+      request.marketSession ?? 'eth',
     )
     const bars = ticks.map((bar) => ({
       time: bar.time,

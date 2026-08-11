@@ -243,14 +243,18 @@ select:focus-visible {
 
 @utility replay-icon-button {
   display: grid;
-  width: 2rem;
-  height: 2rem;
+  width: 2.25rem;
+  height: 2.25rem;
   place-items: center;
   border-radius: 4px;
   color: #a3a6af;
   transition: color 100ms ease-out, background-color 100ms ease-out, transform 100ms ease-out;
   &:hover { color: #d1d4dc; background: #252934; }
   &:active { transform: translateY(1px); }
+  @media (width < 40rem) {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
 }
 
 @layer utilities {

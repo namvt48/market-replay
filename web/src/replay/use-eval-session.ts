@@ -4,9 +4,8 @@
 // into the store, calling the store action imperatively so the bridge adds
 // no extra React state of its own.
 import { useEffect } from 'react'
-import type { FillEngineState } from '../fill-engine/types'
 import { flushEvalSessionPersistence, getEvalState, useEvalStore } from '../store/eval-store'
-import type { EvalSessionState } from '../store/eval-store'
+import type { EvalFillState, EvalSessionState } from '../store/eval-store'
 import { replayEngine } from './replay-engine'
 
 /** Reactive view of the whole eval session; re-renders on eval ticks. */
@@ -30,9 +29,10 @@ export function useEvalSession(): { session: EvalSessionState } {
 export function useEvalTicker(): void {
   useEffect(() => {
     let lastCursorTs: number | null = null
-    let lastFill: FillEngineState | null = null
+    let lastFill: EvalFillState | null = null
     const pump = (): void => {
-      const { cursorTs, fill, status } = replayEngine.getSnapshot()
+      const { cursorTs, fill: activeFill, evalFill, status } = replayEngine.getSnapshot()
+      const fill = evalFill ?? activeFill
       if (status !== 'ready' || !fill) return
       // Same guard the effect's dependency array used to provide: emits that
       // changed neither the cursor nor the fill must not re-tick.

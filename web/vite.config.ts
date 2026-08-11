@@ -12,6 +12,12 @@ import tailwindcss from '@tailwindcss/vite'
 // for local development; run the Go server on :8080 alongside `pnpm dev`.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // This package is a live file dependency in the repository. Keeping it out
+  // of Vite's dependency prebundle makes drawing renderer edits visible during
+  // local development without deleting node_modules/.vite or using --force.
+  optimizeDeps: {
+    exclude: ['lightweight-charts-drawing'],
+  },
   server: {
     proxy: {
       '/api': 'http://localhost:8080',

@@ -27,14 +27,25 @@ describe('saved chart layouts', () => {
     expect(deleteSavedLayout(replaced[0].id, target)).toEqual([])
   })
 
-  it('persists the market session for every pane in a named layout', () => {
+  it('persists the shared market session in a named layout', () => {
     const target = storage()
     const state = createLayoutPreset('3')
-    state.panes['pane-2'].settings.marketSession = 'rth'
+    state.marketSession = 'rth'
 
     saveNamedLayout('RTH desk', state, target)
 
-    expect(loadSavedLayouts(target)[0].state.panes['pane-2'].settings.marketSession).toBe('rth')
+    expect(loadSavedLayouts(target)[0].state.marketSession).toBe('rth')
+    expect(Object.values(loadSavedLayouts(target)[0].state.panes).every((pane) => !('marketSession' in pane.settings))).toBe(true)
+  })
+
+  it('persists independent chart sync flags in a named layout', () => {
+    const target = storage()
+    const state = createLayoutPreset('2v')
+    state.syncFlags = { crosshair: false, dateRange: true, lockZoom: true }
+
+    saveNamedLayout('Independent crosshair', state, target)
+
+    expect(loadSavedLayouts(target)[0].state.syncFlags).toEqual({ crosshair: false, dateRange: true, lockZoom: true })
   })
 
   it('fails loudly for an empty name and recovers corrupt storage', () => {

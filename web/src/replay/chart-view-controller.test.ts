@@ -5,6 +5,7 @@ import type { ChartAdapter, DisplayBar } from './chart-adapter'
 import { DEFAULT_CHART_PANE_SETTINGS } from './chart-settings-store'
 import { ChartViewController } from './chart-view-controller'
 import { HoverBarStore } from './hover-bar-store'
+import type { MarketSession } from './market-session'
 import { MAX_VIEWPORT_DISPLAY_BARS } from './viewport-data'
 
 const symbol: SymbolMeta = {
@@ -18,17 +19,17 @@ function bar1m(index: number): Bar1m {
 
 function adapterMock() {
   return {
-    init: vi.fn().mockResolvedValue(undefined), applyAppearance: vi.fn(), setDisplayTimezone: vi.fn(),
-    setHistory: vi.fn(), pushBars: vi.fn(), setSpacerTimes: vi.fn(), setOrderLines: vi.fn(), setTradeMarkers: vi.fn(), destroy: vi.fn(),
+    init: vi.fn().mockResolvedValue(undefined), setSymbol: vi.fn(), applyAppearance: vi.fn(), setDisplayTimezone: vi.fn(),
+    setHistory: vi.fn(), pushBars: vi.fn(), setSpacerTimes: vi.fn(), setOrderLines: vi.fn(), setTradeMarkers: vi.fn(), setEconomicEventMarkers: vi.fn(), setTradeConnections: vi.fn(), destroy: vi.fn(),
     setCrosshairSync: vi.fn(), setViewportSync: vi.fn(), resetView: vi.fn(), setReplaySelection: vi.fn(),
   }
 }
 
-function makeController(timeframe: Timeframe = '1m', settings = DEFAULT_CHART_PANE_SETTINGS) {
+function makeController(timeframe: Timeframe = '1m', marketSession: MarketSession = 'eth') {
   const mock = adapterMock()
   const view = new ChartViewController({
     id: 'a', timeframe, adapter: mock as unknown as ChartAdapter,
-    element: document.createElement('div'), settings, hoverStore: new HoverBarStore(),
+    element: document.createElement('div'), settings: DEFAULT_CHART_PANE_SETTINGS, marketSession, hoverStore: new HoverBarStore(),
   })
   return { mock, view }
 }
@@ -41,6 +42,63 @@ function currentHistory(mock: ReturnType<typeof adapterMock>, view: ChartViewCon
 }
 
 describe('ChartViewController.pushRawBars', () => {
+  it('projects economic releases into the containing display candle', () => {
+    const { mock, view } = makeController('5m')
+    view.rebuild(Array.from({ length: 7 }, (_, index) => bar1m(index)), symbol)
+
+    view.syncEconomicEventMarkers([{
+      id: 'cpi', time: 260, country: 'US', currency: 'USD', title: 'CPI', importance: 'high', state: 'next',
+    }])
+
+    expect(mock.setEconomicEventMarkers).toHaveBeenLastCalledWith([
+      expect.objectContaining({ id: 'cpi', time: 0, state: 'next' }),
+    ])
+  })
+
+  it('adds distant following-week releases to the sparse spacer series', async () => {
+    const { mock, view } = makeController('1m')
+    await view.initialize(symbol)
+    view.rebuild([bar1m(0), bar1m(1), bar1m(2)], symbol)
+    const followingWeek = 7 * 86_400
+    mock.setSpacerTimes.mockClear()
+
+    view.syncEconomicEventMarkers([{
+      id: 'next-week-cpi', time: followingWeek, country: 'US', title: 'CPI', importance: 'high', state: 'scheduled',
+    }])
+
+    expect(mock.setSpacerTimes.mock.calls.at(-1)?.[0]).toContain(followingWeek)
+  })
+
+  it('preserves releases projected into the same candle so the canvas can cluster by zoom', () => {
+    const { mock, view } = makeController('5m')
+    view.rebuild(Array.from({ length: 7 }, (_, index) => bar1m(index)), symbol)
+
+    view.syncEconomicEventMarkers([
+      { id: 'jobs', time: 60, country: 'US', title: 'Jobs', importance: 'medium', state: 'scheduled' },
+      { id: 'cpi', time: 240, country: 'US', title: 'CPI', importance: 'high', state: 'next' },
+    ])
+
+    expect(mock.setEconomicEventMarkers).toHaveBeenLastCalledWith([
+      expect.objectContaining({ id: 'cpi', time: 0, state: 'next', importance: 'high' }),
+      expect.objectContaining({ id: 'jobs', time: 0, state: 'scheduled', importance: 'medium' }),
+    ])
+  })
+
+  it('projects trade connectors into each timeframe candle while preserving every partial exit', () => {
+    const { mock, view } = makeController('5m')
+    view.rebuild(Array.from({ length: 7 }, (_, index) => bar1m(index)), symbol)
+
+    view.syncTrading([], [], [
+      { entryTime: 60, entryPrice: 100, exitTime: 300, exitPrice: 101 },
+      { entryTime: 60, entryPrice: 100, exitTime: 360, exitPrice: 102 },
+    ])
+
+    expect(mock.setTradeConnections).toHaveBeenLastCalledWith([
+      { entryTime: 0, entryPrice: 100, exitTime: 300, exitPrice: 101 },
+      { entryTime: 0, entryPrice: 100, exitTime: 300, exitPrice: 102 },
+    ])
+  })
+
   it('projects future timestamps so drawing previews keep following the cursor in right-side whitespace', async () => {
     const { mock, view } = makeController('1m')
     await view.initialize(symbol)
@@ -109,8 +167,7 @@ describe('ChartViewController.pushRawBars', () => {
   })
 
   it('keeps replay moving while omitting bars outside RTH', async () => {
-    const rthSettings = { ...DEFAULT_CHART_PANE_SETTINGS, marketSession: 'rth' as const }
-    const { mock, view } = makeController('1m', rthSettings)
+    const { mock, view } = makeController('1m', 'rth')
     await view.initialize(symbol)
     const at = (iso: string, index: number): Bar1m => ({ ...bar1m(index), ts: Date.parse(iso) / 1000 })
     view.rebuild([
@@ -129,5 +186,21 @@ describe('ChartViewController.pushRawBars', () => {
       Date.parse('2026-08-10T19:59:00Z') / 1000,
       Date.parse('2026-08-11T13:30:00Z') / 1000,
     ])
+  })
+
+  it('hydrates a full server page for a large RTH timeframe instead of showing only the short raw replay window', () => {
+    const { mock, view } = makeController('1h', 'rth')
+    const remoteHistory = Array.from({ length: 240 }, (_, index) => ({
+      time: Date.parse('2025-08-11T13:30:00Z') / 1000 + index * 86_400,
+      open: 20_000 + index,
+      high: 20_010 + index,
+      low: 19_990 + index,
+      close: 20_005 + index,
+      volume: 100,
+    }))
+
+    view.rebuild([bar1m(0), bar1m(1), bar1m(2)], symbol, false, remoteHistory)
+
+    expect(currentHistory(mock, view)).toHaveLength(240)
   })
 })

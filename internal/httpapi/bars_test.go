@@ -57,6 +57,16 @@ func TestHandleChartBarsAt_AggregatesRequestedDisplayTimeframe(t *testing.T) {
 	}
 }
 
+func TestHandleChartBarsAt_RejectsUnknownMarketSession(t *testing.T) {
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/chart-bars/at?symbol=NQ&tf=5m&at=%d&session=overnight", testFixtureStart), nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleBars_Success(t *testing.T) {
 	s := newTestServer(t)
 	url := fmt.Sprintf("/api/v1/bars?symbol=NQ&tf=1m&from=%d&to=%d&limit=100", testFixtureStart, testFixtureStart+1200)

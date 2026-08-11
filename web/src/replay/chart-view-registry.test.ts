@@ -12,15 +12,15 @@ const bars: Bar1m[] = Array.from({ length: 6 }, (_, index) => ({ ts: index * 60,
 
 function adapter() {
   return {
-    init: vi.fn().mockResolvedValue(undefined), applyAppearance: vi.fn(), setDisplayTimezone: vi.fn(),
-    setHistory: vi.fn(), pushBars: vi.fn(), setSpacerTimes: vi.fn(), setOrderLines: vi.fn(), setTradeMarkers: vi.fn(), destroy: vi.fn(),
+    init: vi.fn().mockResolvedValue(undefined), setSymbol: vi.fn(), applyAppearance: vi.fn(), setDisplayTimezone: vi.fn(),
+    setHistory: vi.fn(), pushBars: vi.fn(), setSpacerTimes: vi.fn(), setOrderLines: vi.fn(), setTradeMarkers: vi.fn(), setEconomicEventMarkers: vi.fn(), setTradeConnections: vi.fn(), destroy: vi.fn(),
     setCrosshairSync: vi.fn(), setViewportSync: vi.fn(),
   }
 }
 
 function controller(id: string, timeframe: Timeframe) {
   const mock = adapter()
-  return { mock, view: new ChartViewController({ id, timeframe, adapter: mock as unknown as ChartAdapter, element: document.createElement('div'), settings: DEFAULT_CHART_PANE_SETTINGS, hoverStore: new HoverBarStore() }) }
+  return { mock, view: new ChartViewController({ id, timeframe, adapter: mock as unknown as ChartAdapter, element: document.createElement('div'), settings: DEFAULT_CHART_PANE_SETTINGS, marketSession: 'eth', hoverStore: new HoverBarStore() }) }
 }
 
 describe('ChartViewRegistry', () => {
@@ -30,7 +30,7 @@ describe('ChartViewRegistry', () => {
     views.forEach(({ view }) => registry.register(view))
     await registry.initializeAll(symbol)
     registry.rebuildAll(bars.slice(0, 5), symbol)
-    registry.pushRawBars([bars[5]])
+    registry.pushRawBars([bars[5]], symbol.symbol)
     expect(views.every(({ mock }) => mock.init.mock.calls.length === 1)).toBe(true)
     expect(views.map(({ mock }) => mock.setHistory.mock.calls[0]?.[0].length)).toEqual([5, 3, 2, 1])
     expect(views.every(({ mock }) => mock.pushBars.mock.calls.length === 1)).toBe(true)
@@ -136,7 +136,7 @@ describe('ChartViewRegistry', () => {
     views.forEach(({ view }) => registry.register(view))
     registry.rebuildAll(bars.slice(0, 5), symbol)
 
-    registry.pushRawBars([bars[5]], 1)
+    registry.pushRawBars([bars[5]], symbol.symbol, 1)
     expect(views.map(({ mock }) => mock.pushBars.mock.calls.length)).toEqual([1, 0, 0, 0])
 
     registry.flushRawBars()

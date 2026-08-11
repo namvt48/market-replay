@@ -31,7 +31,7 @@ export interface CalendarEntry {
   bars: number
 }
 
-export type EconImportance = 'low' | 'medium' | 'high'
+export type EconImportance = 'none' | 'low' | 'medium' | 'high'
 
 /** Spoiler-safe economic event returned by /api/v1/econ/week. */
 export interface EconEventView {

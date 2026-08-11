@@ -1,7 +1,6 @@
 import { z } from 'zod'
 import { chartAppearanceSchema, DEFAULT_CHART_APPEARANCE, type ChartAppearanceSettings } from './chart-settings'
 import { chartTimezoneSchema, DEFAULT_CHART_TIMEZONE, type ChartTimezone } from './chart-timezone'
-import { DEFAULT_MARKET_SESSION, marketSessionSchema, type MarketSession } from './market-session'
 import { preferenceStorage } from '../store/preference-sync'
 
 const STORAGE_KEY = 'market-replay:chart-pane-settings'
@@ -9,20 +8,17 @@ const STORAGE_KEY = 'market-replay:chart-pane-settings'
 export interface ChartPaneSettings {
   appearance: ChartAppearanceSettings
   timezone: ChartTimezone
-  marketSession: MarketSession
 }
 
 export const chartPaneSettingsSchema = z.object({
   appearance: chartAppearanceSchema,
   timezone: chartTimezoneSchema,
-  marketSession: marketSessionSchema.default(DEFAULT_MARKET_SESSION),
 })
 const storageSchema = z.object({ version: z.literal(1), panes: z.record(z.string(), chartPaneSettingsSchema) })
 
 export const DEFAULT_CHART_PANE_SETTINGS: ChartPaneSettings = {
   appearance: DEFAULT_CHART_APPEARANCE,
   timezone: DEFAULT_CHART_TIMEZONE,
-  marketSession: DEFAULT_MARKET_SESSION,
 }
 
 export class ChartSettingsStore {
@@ -41,8 +37,8 @@ export class ChartSettingsStore {
   getPane(id: string): ChartPaneSettings {
     const value = this.panes[id]
     return value
-      ? { appearance: { ...value.appearance }, timezone: { ...value.timezone }, marketSession: value.marketSession }
-      : { appearance: { ...DEFAULT_CHART_APPEARANCE }, timezone: { ...DEFAULT_CHART_TIMEZONE }, marketSession: DEFAULT_MARKET_SESSION }
+      ? { appearance: { ...value.appearance }, timezone: { ...value.timezone } }
+      : { appearance: { ...DEFAULT_CHART_APPEARANCE }, timezone: { ...DEFAULT_CHART_TIMEZONE } }
   }
 
   setPane(id: string, settings: ChartPaneSettings): void {

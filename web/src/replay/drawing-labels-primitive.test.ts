@@ -8,6 +8,7 @@ function drawing(overrides: Partial<IDrawing> & Pick<IDrawing, 'id' | 'type' | '
   return {
     style: { lineColor: '#f6a53a', lineWidth: 2 },
     options: { visible: true },
+    state: 'normal',
     ...overrides,
   } as IDrawing
 }
@@ -56,7 +57,7 @@ describe('drawingPriceLevels', () => {
 
 describe('DrawingLabelsPrimitive price-axis views', () => {
   it('formats the right-axis price and keeps the cached array until a level changes', () => {
-    const line = drawing({ id: 'line', type: 'horizontal-line', anchors: [{ time: 1 as Time, price: 20_125.25 }] })
+    const line = drawing({ id: 'line', type: 'horizontal-line', state: 'selected', anchors: [{ time: 1 as Time, price: 20_125.25 }] })
     const requestUpdate = vi.fn()
     const primitive = new DrawingLabelsPrimitive(() => [line], (price) => price.toFixed(2))
     primitive.attached({
@@ -80,6 +81,26 @@ describe('DrawingLabelsPrimitive price-axis views', () => {
     primitive.requestUpdate()
     expect(primitive.priceAxisViews()).not.toBe(initial)
     expect(primitive.priceAxisViews()[0].text()).toBe('20130.00')
+  })
+
+  it('only exposes drawing-colored price labels while the drawing is targeted', () => {
+    const line = drawing({ id: 'line', type: 'horizontal-line', anchors: [{ time: 1 as Time, price: 20_125.25 }] })
+    const primitive = new DrawingLabelsPrimitive(() => [line], (price) => price.toFixed(2))
+    primitive.attached({
+      chart: {},
+      series: { priceToCoordinate: (price: number) => price - 20_000 },
+      requestUpdate: vi.fn(),
+    } as unknown as SeriesAttachedParameter<Time>)
+
+    expect(primitive.priceAxisViews()).toHaveLength(0)
+
+    line.state = 'selected'
+    primitive.requestUpdate()
+    expect(primitive.priceAxisViews()).toHaveLength(1)
+
+    line.state = 'normal'
+    primitive.requestUpdate()
+    expect(primitive.priceAxisViews()).toHaveLength(0)
   })
 
   it('uses the foreground with the stronger contrast', () => {

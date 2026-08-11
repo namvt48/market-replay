@@ -12,8 +12,10 @@ import {
   upsertDrawings,
 } from '../api/client'
 import type { ClosedTrade, PersistedDrawing, ReplaySession, SymbolMeta, Timeframe } from '../api/types'
+import { DEFAULT_CHART_SYNC_FLAGS, type ChartSyncFlags } from '../chart-workspace/types'
 import {
   amendOrder,
+  cancelAllOrders,
   cancelOrder,
   createFillEngine,
   flattenPosition,
@@ -24,18 +26,19 @@ import {
   stepFillEngine,
 } from '../fill-engine/engine'
 import { calculateTradeStats, type TradeStats } from '../fill-engine/stats'
-import type { Bar1m, FillEngineState, OrderSide, OrderType } from '../fill-engine/types'
-import { getEvalState, isEvalActive } from '../store/eval-store'
+import type { Bar1m, EngineTrade, FillEngineState, OrderSide, OrderType } from '../fill-engine/types'
+import { getEvalState, isEvalActive, type EvalFillState } from '../store/eval-store'
 import { aggregateRange } from './aggregate'
 import { BarSource } from './bar-source'
 import { timeframeSeconds } from './timeframe'
 import { restoreReplayRuntime, serializeReplayRuntime } from './session-state'
-import type { ChartAdapter, DisplayBar, OrderLine, OrderLineAction, ReplaySelectionState, TradeMarker, ViewportDemand, ViewportDirection } from './chart-adapter'
+import type { ChartAdapter, DisplayBar, EconomicEventMarker, OrderLine, OrderLineAction, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDemand, ViewportDirection } from './chart-adapter'
 import type { ChartPaneSettings } from './chart-settings-store'
 import { ChartViewController } from './chart-view-controller'
 import { ChartViewRegistry } from './chart-view-registry'
 import type { DrawingAppearance, DrawingAppearancePatch } from './drawing-appearance'
 import type { HoverBarStore } from './hover-bar-store'
+import { DEFAULT_MARKET_SESSION, type MarketSession } from './market-session'
 import { nearestDataTimestamp, type NearestDataDirection } from './nearest-data'
 import {
   createOrderTicketDraft,
@@ -55,7 +58,10 @@ import {
   type ViewportDataClient,
 } from './viewport-data'
 
-const SPEEDS = [0.5, 1, 2, 5, 20, 100, 500] as const
+export const SPEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] as const
+export const STEP_TIMEFRAMES = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '4h'] as const
+export type ReplayStepTimeframe = (typeof STEP_TIMEFRAMES)[number]
+const HIGH_THROUGHPUT_BARS_PER_SECOND = 100
 const TIMEFRAME_SWITCH_SETTLE_MS = 48
 const MAX_REPLAY_CONTRACTS = 1_000
 const TRANSIENT_ERROR_TIMEOUT_MS = 20_000
@@ -77,18 +83,22 @@ export interface ReplaySnapshot {
   error: string | null
   symbols: SymbolMeta[]
   symbol: SymbolMeta | null
+  activeSymbol?: SymbolMeta | null
   timeframe: Timeframe
   cursorTs: number
   replayMode: ReplayMode
   replayStartTs: number | null
   playing: boolean
   speed: number
+  stepTimeframe: ReplayStepTimeframe
   qty: number
   eagerState: 'idle' | 'loading' | 'ready' | 'disabled' | 'error'
   viewportCachedBars: number
   sessionId: string | null
   sessionStatus: ReplaySession['status'] | null
   fill: FillEngineState | null
+  /** Account-wide fill totals across every symbol during an evaluation. */
+  evalFill: EvalFillState | null
   stats: TradeStats
   frameMetrics: FrameMetrics
   lastBar: Bar1m | null
@@ -100,8 +110,8 @@ export interface ReplaySnapshot {
 }
 
 const initialSnapshot: ReplaySnapshot = {
-  status: 'idle', error: null, symbols: [], symbol: null, timeframe: '1m', cursorTs: 0,
-  replayMode: 'inactive', replayStartTs: null, playing: false, speed: 5, qty: 1, eagerState: 'idle', viewportCachedBars: 0, sessionId: null, sessionStatus: null, fill: null,
+  status: 'idle', error: null, symbols: [], symbol: null, activeSymbol: null, timeframe: '1m', cursorTs: 0,
+  replayMode: 'inactive', replayStartTs: null, playing: false, speed: 1, stepTimeframe: '1m', qty: 1, eagerState: 'idle', viewportCachedBars: 0, sessionId: null, sessionStatus: null, fill: null, evalFill: null,
   stats: EMPTY_STATS, frameMetrics: { p50: 0, p95: 0, max: 0, samples: 0 }, lastBar: null,
   drawingMode: 'replay', activeDrawingTool: null, selectedDrawing: null, drawingInspectorOpen: false, persistencePending: false,
 }
@@ -121,6 +131,9 @@ interface DataTimestampResolution {
 export class ReplayEngine {
   private views = new ChartViewRegistry()
   private source: BarSource | null = null
+  private auxiliarySources = new Map<string, BarSource>()
+  /** Independent execution state per market, combined into one eval account. */
+  private evaluationFills = new Map<string, FillEngineState>()
   private snapshot: ReplaySnapshot = initialSnapshot
   private listeners = new Set<() => void>()
   private cursorIndex = 0
@@ -169,9 +182,13 @@ export class ReplayEngine {
   private projectedUnrealizedCents: number | null = null
   private projectedOrderDraft: OrderTicketDraft | null = null
   private orderDraft: OrderTicketDraft | null = null
+  private drawingClipboard: SerializedDrawing | null = null
   private pendingTimeframeSwitches = new Map<string, ReturnType<typeof setTimeout>>()
   private timeframeControllers = new Map<string, AbortController>()
   private createSessionOnSelection = false
+  private marketSession: MarketSession = DEFAULT_MARKET_SESSION
+  private syncFlags: ChartSyncFlags = { ...DEFAULT_CHART_SYNC_FLAGS }
+  private economicEventMarkers: EconomicEventMarker[] = []
 
   constructor(viewportClient: ViewportDataClient = new HttpViewportDataClient()) {
     this.viewportClient = viewportClient
@@ -184,8 +201,8 @@ export class ReplayEngine {
   }
   getSnapshot = (): ReplaySnapshot => this.snapshot
 
-  async registerChartView(id: string, element: HTMLElement, adapter: ChartAdapter, timeframe: Timeframe, settings: ChartPaneSettings, hoverStore: HoverBarStore): Promise<void> {
-    const view = new ChartViewController({ id, element, adapter, timeframe, settings, hoverStore })
+  async registerChartView(id: string, element: HTMLElement, adapter: ChartAdapter, timeframe: Timeframe, settings: ChartPaneSettings, hoverStore: HoverBarStore, symbolCode?: string): Promise<void> {
+    const view = new ChartViewController({ id, element, adapter, timeframe, settings, marketSession: this.marketSession, hoverStore, followsReplaySymbol: !symbolCode })
     this.views.register(view)
     this.bindView(view)
     if (!this.bootstrapPromise && this.snapshot.symbols.length === 0) this.bootstrapPromise = this.bootstrap()
@@ -197,9 +214,11 @@ export class ReplayEngine {
       const displayBars = await this.loadInitialDisplayHistory(view.id, view.timeframe, symbol, raw)
       view.rebuild(raw, symbol, false, displayBars)
       view.setReplaySelection(this.currentReplaySelectionState())
+      view.syncEconomicEventMarkers(this.economicEventMarkers)
       this.syncChartTradingState(true)
       await this.reconcileDrawings(id)
     }
+    if (symbolCode && view.symbol()?.symbol !== symbolCode) await this.setChartViewSymbol(id, symbolCode)
   }
 
   unregisterChartView(id: string): void {
@@ -210,18 +229,45 @@ export class ReplayEngine {
   activateChartView(id: string): void {
     if (!this.views.activate(id)) return
     const view = this.views.active()
-    if (view) this.setSnapshot({ timeframe: view.timeframe, selectedDrawing: null, drawingInspectorOpen: false, activeDrawingTool: null }, true)
+    if (!view) return
+    if (isEvalActive()) {
+      this.orderDraft = null
+      const symbol = view.symbol() ?? this.snapshot.symbol
+      const fill = symbol ? this.ensureEvaluationFill(symbol) : null
+      const source = symbol ? this.sourceForSymbol(symbol.symbol) : null
+      const lastBar = source ? this.barAtCursor(source) : null
+      this.setSnapshot({ activeSymbol: symbol, timeframe: view.timeframe, fill, evalFill: this.aggregateEvaluationFill(), lastBar, stats: fill ? calculateTradeStats(fill.trades) : EMPTY_STATS, selectedDrawing: null, drawingInspectorOpen: false, activeDrawingTool: null }, true)
+      this.syncChartTradingState(true)
+      return
+    }
+    this.setSnapshot({ activeSymbol: view.symbol() ?? this.snapshot.symbol, timeframe: view.timeframe, selectedDrawing: null, drawingInspectorOpen: false, activeDrawingTool: null }, true)
   }
 
   updateChartViewSettings(id: string, settings: ChartPaneSettings): void {
     const view = this.views.get(id)
     if (!view) return
-    const sessionChanged = view.settings.marketSession !== settings.marketSession
     view.applySettings(settings)
+  }
+
+  setMarketSession(marketSession: MarketSession): void {
+    if (marketSession === this.marketSession) return
+    this.marketSession = marketSession
+    this.views.all().forEach((view) => view.setMarketSession(marketSession))
     const symbol = this.snapshot.symbol
-    if (sessionChanged && symbol && this.source) view.rebuild(this.rawHistory(), symbol, false)
+    if (symbol && this.source) this.views.rebuildSymbol(this.rawHistory(), symbol, false)
+    this.rebuildAuxiliaryCharts(this.snapshot.cursorTs, false)
+    this.syncChartTradingState(true)
+  }
+
+  setSyncFlags(syncFlags: ChartSyncFlags): void {
+    this.syncFlags = { ...syncFlags }
   }
   resetChartView(id: string): void { this.views.resetView(id) }
+
+  setEconomicEventMarkers(markers: EconomicEventMarker[]): void {
+    this.economicEventMarkers = markers
+    this.views.syncEconomicEventMarkers(markers)
+  }
 
   private async bootstrap(): Promise<void> {
     this.setSnapshot({ status: 'loading', error: null }, true)
@@ -230,11 +276,8 @@ export class ReplayEngine {
       await Promise.all(sessions.filter((session) => session.status === 'active').map((session) => patchSession(session.id, { status: 'paused' }).catch(() => undefined)))
       if (symbols.length === 0) throw new Error('No symbols are available in the local data registry')
       const evaluation = getEvalState()
-      const requestedSymbol = evaluation.phase === 'running' ? evaluation.instrument : null
-      const requested = requestedSymbol ? symbols.find((item) => item.symbol === requestedSymbol) : null
-      if (requestedSymbol && !requested) throw new Error(`Evaluation symbol ${requestedSymbol} is unavailable`)
-      const symbol = requested ?? symbols.find((item) => item.symbol === 'NQ') ?? symbols[0]
-      this.setSnapshot({ symbols, symbol, timeframe: this.views.active()?.timeframe ?? this.snapshot.timeframe }, true)
+      const symbol = symbols.find((item) => item.symbol === 'NQ') ?? symbols[0]
+      this.setSnapshot({ symbols, symbol, activeSymbol: symbol, timeframe: this.views.active()?.timeframe ?? this.snapshot.timeframe }, true)
       await this.loadSymbol(symbol, evaluation.phase === 'running' ? (evaluation.lastCursorTs ?? evaluation.startTs ?? undefined) : undefined)
     } catch (error) {
       this.setSnapshot({ status: 'error', error: error instanceof Error ? error.message : 'Failed to initialize replay' }, true)
@@ -251,6 +294,7 @@ export class ReplayEngine {
     this.pendingTimeframeSwitches.clear()
     this.timeframeControllers.forEach((controller) => controller.abort())
     this.timeframeControllers.clear()
+    this.auxiliarySources.clear()
     this.views.destroy()
     window.removeEventListener('pagehide', this.handlePageHide)
     this.bootstrapPromise = null
@@ -258,12 +302,16 @@ export class ReplayEngine {
 
   async selectSymbol(symbolCode: string): Promise<void> {
     const evaluation = getEvalState()
-    if (evaluation.phase === 'running' && symbolCode !== evaluation.instrument) return
+    if (evaluation.phase === 'running') {
+      const active = this.views.active()
+      if (active) await this.setChartViewSymbol(active.id, symbolCode)
+      return
+    }
     const symbol = this.snapshot.symbols.find((item) => item.symbol === symbolCode)
     if (!symbol || symbol.symbol === this.snapshot.symbol?.symbol) return
     this.pause()
     await this.deactivateReplaySession('paused')
-    this.setSnapshot({ symbol }, true)
+    this.setSnapshot({ symbol, activeSymbol: symbol }, true)
     await this.loadSymbol(symbol)
   }
 
@@ -279,8 +327,8 @@ export class ReplayEngine {
     if (!view || timeframe === view.timeframe) return
     this.pause()
     if (this.views.active()?.id === id) this.setSnapshot({ timeframe }, true)
-    const symbol = this.snapshot.symbol
-    if (!symbol || !this.source) return
+    const symbol = view.symbol() ?? this.snapshot.symbol
+    if (!symbol) return
     const controller = new AbortController()
     this.timeframeControllers.set(id, controller)
     let displayBars: DisplayBar[] | undefined
@@ -293,6 +341,7 @@ export class ReplayEngine {
         pageBars: VIEWPORT_PAGE_BARS,
         maxTs: this.snapshot.cursorTs,
         tickSize: symbol.tickSize,
+        marketSession: this.marketSession,
       }, controller.signal)
       if (controller.signal.aborted || this.timeframeControllers.get(id) !== controller) return
       displayBars = page.bars.filter((bar) => bar.time <= this.snapshot.cursorTs)
@@ -304,9 +353,63 @@ export class ReplayEngine {
     } finally {
       if (this.timeframeControllers.get(id) === controller) this.timeframeControllers.delete(id)
     }
-    await view.changeTimeframe(timeframe, symbol, this.rawHistory(timeframe), displayBars)
+    const raw = this.snapshot.symbol?.symbol === symbol.symbol && this.source ? this.rawHistory(timeframe) : []
+    await view.changeTimeframe(timeframe, symbol, raw, displayBars)
+    view.syncEconomicEventMarkers(this.economicEventMarkers)
     this.syncChartTradingState(true)
-    if (!this.reloadDrawingDocumentForView(symbol.symbol, view.id)) await this.reconcileDrawings(view.id)
+    if (!this.reloadDrawingDocumentForView(symbol.symbol, view.id) && this.snapshot.symbol?.symbol === symbol.symbol) await this.reconcileDrawings(view.id)
+  }
+
+  async setChartViewSymbol(id: string, symbolCode: string): Promise<void> {
+    const view = this.views.get(id)
+    const symbol = this.snapshot.symbols.find((item) => item.symbol === symbolCode)
+    if (!view || !symbol || view.symbol()?.symbol === symbolCode) return
+    this.cancelPendingTimeframeSwitch(id)
+    this.timeframeControllers.get(id)?.abort()
+    const controller = new AbortController()
+    this.timeframeControllers.set(id, controller)
+    try {
+      const isReplaySymbol = this.snapshot.symbol?.symbol === symbol.symbol
+      const [page, auxiliarySource] = await Promise.all([
+        this.viewportClient.load({
+          symbol: symbol.symbol,
+          visibleTimeframe: view.timeframe,
+          direction: 'before',
+          anchorTs: this.snapshot.cursorTs,
+          pageBars: VIEWPORT_PAGE_BARS,
+          maxTs: this.snapshot.cursorTs,
+          tickSize: symbol.tickSize,
+          marketSession: this.marketSession,
+        }, controller.signal),
+        isReplaySymbol
+          ? Promise.resolve<BarSource | null>(null)
+          : fetchBarsAt(symbol.symbol, '1m', this.snapshot.cursorTs, 3000, 10000, controller.signal).then((frame) => new BarSource(frame)),
+      ])
+      if (controller.signal.aborted || this.timeframeControllers.get(id) !== controller) return
+      if (auxiliarySource) this.auxiliarySources.set(symbol.symbol, auxiliarySource)
+      const raw = isReplaySymbol && this.source
+        ? this.rawHistory()
+        : auxiliarySource ? this.rawHistoryFromSource(auxiliarySource, this.snapshot.cursorTs) : []
+      view.changeSymbol(symbol, raw, page.bars.filter((bar) => bar.time <= this.snapshot.cursorTs))
+      view.setReplaySelection(this.currentReplaySelectionState())
+      view.syncEconomicEventMarkers(this.economicEventMarkers)
+      if (isEvalActive()) {
+        this.ensureEvaluationFill(symbol)
+        if (this.views.active()?.id === id) this.activateChartView(id)
+        else this.syncChartTradingState(true)
+      } else if (this.snapshot.symbol?.symbol === symbol.symbol) this.syncChartTradingState(true)
+      else view.syncTrading([], [], [])
+      if (!this.reloadDrawingDocumentForView(symbol.symbol, id)) await this.reconcileDrawings(id)
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return
+      this.setSnapshot({ error: error instanceof Error ? error.message : `Could not load ${symbolCode} for this chart` }, true)
+    } finally {
+      if (this.timeframeControllers.get(id) === controller) this.timeframeControllers.delete(id)
+    }
+  }
+
+  requestChartViewSymbol(id: string, symbolCode: string): void {
+    void this.setChartViewSymbol(id, symbolCode)
   }
 
   requestChartViewTimeframe(id: string, timeframe: Timeframe): void {
@@ -342,12 +445,19 @@ export class ReplayEngine {
     this.scheduleSessionPersist()
   }
 
-  stepForward(): void { this.pause(); this.ensureCursorViewport(); this.advance(1); this.emitSnapshot(true) }
+  /** Number of underlying 1-minute bars the current step-timeframe covers. */
+  private stepBars(): number {
+    return Math.max(1, Math.round(timeframeSeconds(this.snapshot.stepTimeframe) / 60))
+  }
+
+  stepForward(): void { this.pause(); this.ensureCursorViewport(); this.advance(this.stepBars()); this.emitSnapshot(true) }
   stepBack(): void {
-    this.pause()
     if (isEvalActive()) return
+    this.pause()
     if (!this.source || this.cursorIndex <= 0) return
-    const restored = this.fillSnapshots.get(this.cursorIndex - 1)
+    const steps = Math.min(this.stepBars(), this.cursorIndex)
+    const targetIndex = this.cursorIndex - steps
+    const restored = this.fillSnapshots.get(targetIndex)
     if (!restored && (this.snapshot.fill?.trades.length ?? 0) > 0) {
       // Refuse rather than reset: rewinding past the recorded window would
       // discard a journal that has already been persisted, which is exactly
@@ -355,8 +465,8 @@ export class ReplayEngine {
       this.setSnapshot({ error: 'Cannot step back past the start of this replay session' }, true)
       return
     }
-    this.fillSnapshots.delete(this.cursorIndex)
-    this.cursorIndex -= 1
+    for (let index = targetIndex + 1; index <= this.cursorIndex; index += 1) this.fillSnapshots.delete(index)
+    this.cursorIndex = targetIndex
     this.recenterViewportCache()
     if (restored) {
       this.snapshot = { ...this.snapshot, fill: restored, stats: calculateTradeStats(restored.trades) }
@@ -380,14 +490,22 @@ export class ReplayEngine {
     const index = SPEEDS.indexOf(this.snapshot.speed as (typeof SPEEDS)[number])
     this.setSpeed(SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, index + direction))])
   }
+  setStepTimeframe(stepTimeframe: ReplayStepTimeframe): void {
+    this.accumulator = 0
+    this.setSnapshot({ stepTimeframe }, true)
+  }
   setQty(qty: number): void {
-    const next = Math.max(1, Math.min(MAX_REPLAY_CONTRACTS, Math.round(qty)))
+    const evaluation = getEvalState()
+    const evalLimit = evaluation.phase === 'running' ? (evaluation.config?.maxPositionSize ?? 0) : 0
+    const maxContracts = evalLimit > 0 ? Math.min(MAX_REPLAY_CONTRACTS, evalLimit) : MAX_REPLAY_CONTRACTS
+    const next = Math.max(1, Math.min(maxContracts, Math.round(qty)))
     if (this.orderDraft) this.orderDraft = setOrderTicketQuantity(this.orderDraft, next, MAX_REPLAY_CONTRACTS)
     this.setSnapshot({ qty: next }, true)
     this.syncChartTradingState(true)
   }
 
   beginReplaySelection(options: ReplaySelectionOptions = {}): void {
+    if (isEvalActive()) return
     if (!this.source || !this.snapshot.symbol || (this.snapshot.status !== 'ready' && this.snapshot.status !== 'buffering')) return
     this.pause()
     this.setDrawingTool(null)
@@ -398,11 +516,9 @@ export class ReplayEngine {
   }
 
   async selectReplayBar(timestamp: number): Promise<void> {
+    if (isEvalActive()) return
     if (this.snapshot.replayMode !== 'selecting' || !Number.isFinite(timestamp)) return
-    const selectedTimestamp = Math.max(
-      this.normalizeReplaySelectionTimestamp(timestamp),
-      isEvalActive() ? this.snapshot.cursorTs : 0,
-    )
+    const selectedTimestamp = Math.max(this.normalizeReplaySelectionTimestamp(timestamp), 0)
     const shouldCreateSession = this.createSessionOnSelection
     this.createSessionOnSelection = false
     if (!isEvalActive()) await this.deactivateReplaySession('paused')
@@ -444,20 +560,30 @@ export class ReplayEngine {
 
   exitReplay(): void {
     if (isEvalActive()) return
-    void this.deactivateReplaySession('paused')
+    void this.deactivateReplaySession('paused', { returnToLatest: true })
   }
 
-  pauseReplaySession(): Promise<void> { return this.deactivateReplaySession('paused') }
-  stopReplaySession(): Promise<void> { return this.deactivateReplaySession('stopped') }
+  pauseReplaySession(): Promise<void> { return this.deactivateReplaySession('paused', { returnToLatest: true }) }
+  stopReplaySession(): Promise<void> { return this.deactivateReplaySession('stopped', { returnToLatest: true }) }
+  async exitEvaluation(): Promise<void> {
+    if (!isEvalActive()) return
+    this.cancelActiveOrders()
+    if (!await this.flushDrawingPersistence()) {
+      this.setSnapshot({ error: 'Evaluation drawings could not be saved. Exit was cancelled so you can retry.' }, true)
+      return
+    }
+    getEvalState().exitEvaluation()
+    await this.deactivateReplaySession('paused', { returnToLatest: true, drawingsFlushed: true })
+  }
 
   async seek(timestamp: number, alignment: 'floor' | 'ceil' = 'floor'): Promise<void> {
     this.pause()
     const symbol = this.snapshot.symbol
     if (!symbol) return
     const evaluation = getEvalState()
+    if (evaluation.phase === 'running') evaluation.prepareFillRebase()
     const minimum = evaluation.phase === 'running' ? (evaluation.startTs ?? 0) : 0
     const targetTimestamp = Math.max(timestamp, minimum, evaluation.phase === 'running' ? this.snapshot.cursorTs : 0)
-    if (evaluation.phase === 'running') evaluation.prepareFillRebase()
     this.setSnapshot({ status: 'loading' }, true)
     try {
       if (!this.source || targetTimestamp < this.source.firstTs || targetTimestamp > this.source.lastTs) {
@@ -470,7 +596,9 @@ export class ReplayEngine {
       this.resetFillEngine()
       this.recenterViewportCache()
       this.rebuildChart()
-      this.setSnapshot({ status: 'ready', cursorTs: this.source.at(this.cursorIndex)?.ts ?? targetTimestamp }, true)
+      const cursorTs = this.source.at(this.cursorIndex)?.ts ?? targetTimestamp
+      await this.refreshAuxiliaryViewsAtCursor(cursorTs)
+      this.setSnapshot({ status: 'ready', cursorTs }, true)
       await this.reconcileDrawings()
     } catch (error) {
       this.setSnapshot({ status: 'error', error: error instanceof Error ? error.message : 'Seek failed' }, true)
@@ -479,7 +607,7 @@ export class ReplayEngine {
 
   placeMarket(side: OrderSide): void { this.mutateFill((state) => placeOrder(state, { side, type: 'market', qty: this.snapshot.qty })) }
   placePending(side: OrderSide, type: Exclude<OrderType, 'market'>, price: number): void {
-    const symbol = this.snapshot.symbol
+    const symbol = this.tradingSymbol()
     if (!symbol || !this.canTrade()) return
     this.orderDraft = createOrderTicketDraft(side, type, this.snapshot.qty, Math.round(price / symbol.tickSize))
     this.syncChartTradingState(true)
@@ -489,13 +617,15 @@ export class ReplayEngine {
   reverse(): void { this.mutateFill(reversePosition) }
   cancelOrder(id: string): void { this.mutateFill((state) => cancelOrder(state, id)) }
   placeBracket(stopPrice: number, targetPrice: number): void {
-    const symbol = this.snapshot.symbol
+    const symbol = this.tradingSymbol()
     if (!symbol) return
     this.mutateFill((state) => placeBracket(state, Math.round(stopPrice / symbol.tickSize), Math.round(targetPrice / symbol.tickSize)))
   }
 
   private canTrade(): boolean {
-    return Boolean(this.snapshot.fill && this.snapshot.replayMode === 'active')
+    const allowed = Boolean(this.snapshot.fill && this.snapshot.replayMode === 'active')
+    if (!allowed) this.setSnapshot({ error: 'Start bar replay before placing orders' }, true)
+    return allowed
   }
 
   private beginOrderEdit(id: string): void {
@@ -510,7 +640,7 @@ export class ReplayEngine {
   }
 
   private moveOrderLine(id: string, price: number): void {
-    const symbol = this.snapshot.symbol
+    const symbol = this.tradingSymbol()
     if (!symbol) return
     const ticks = Math.round(price / symbol.tickSize)
     if (this.orderDraft) {
@@ -602,6 +732,34 @@ export class ReplayEngine {
   deleteAllDrawings(): void { this.views.active()?.adapter.deleteAllDrawings() }
   updateSelectedDrawing(patch: DrawingAppearancePatch): void { this.views.active()?.adapter.updateSelectedDrawing(patch) }
   setNextDrawingAppearance(patch: DrawingAppearancePatch | null): void { this.views.active()?.adapter.setNextDrawingAppearance(patch) }
+  copySelectedDrawing(): void {
+    const drawing = this.views.active()?.adapter.copySelectedDrawing()
+    if (drawing) this.drawingClipboard = structuredClone(drawing)
+  }
+  pasteDrawing(): void {
+    if (this.drawingClipboard) this.views.active()?.adapter.pasteDrawing(structuredClone(this.drawingClipboard))
+  }
+  undoDrawing(): void { this.views.active()?.adapter.undoDrawing() }
+  redoDrawing(): void { this.views.active()?.adapter.redoDrawing() }
+  toggleDrawingsVisibility(): void { this.views.active()?.adapter.toggleDrawingsVisibility() }
+  moveChart(direction: 'left' | 'right', bars = 1): void {
+    const adapter = this.views.active()?.adapter
+    if (!adapter) return
+    if (bars === 1 && adapter.nudgeSelectedDrawing(direction)) return
+    adapter.panView(direction === 'left' ? -bars : bars)
+  }
+  nudgeDrawing(direction: 'up' | 'down'): boolean { return this.views.active()?.adapter.nudgeSelectedDrawing(direction) ?? false }
+  zoomChart(factor: number): void { this.views.active()?.adapter.zoomView(factor) }
+  toggleInvertScale(): void { this.views.active()?.adapter.toggleInvertScale() }
+  togglePriceScaleMode(mode: 'logarithmic' | 'percentage'): void { this.views.active()?.adapter.togglePriceScaleMode(mode) }
+  takeChartSnapshot(): void { this.views.active()?.adapter.takeSnapshot() }
+  placePendingAtLast(side: OrderSide, type: Exclude<OrderType, 'market'>): void {
+    const symbol = this.tradingSymbol()
+    const source = symbol ? this.sourceForSymbol(symbol.symbol) : null
+    const lastBar = source ? this.barAtCursor(source) : this.snapshot.lastBar
+    if (!symbol || !lastBar) return
+    this.placePending(side, type, lastBar.closeTicks * symbol.tickSize)
+  }
   closeDrawingInspector(): void { this.setSnapshot({ drawingInspectorOpen: false }, true) }
 
   async resumeSession(session: ReplaySession): Promise<void> {
@@ -652,18 +810,15 @@ export class ReplayEngine {
 
   async syncEvaluationSession(): Promise<void> {
     const evaluation = getEvalState()
-    if (evaluation.phase !== 'running' || !evaluation.instrument || evaluation.startTs === null) return
-    const symbol = this.snapshot.symbols.find((item) => item.symbol === evaluation.instrument)
-    if (!symbol) {
-      this.setSnapshot({ error: `Evaluation symbol ${evaluation.instrument} is unavailable` }, true)
-      return
-    }
+    if (evaluation.phase !== 'running' || evaluation.startTs === null) return
+    const symbol = this.views.active()?.symbol() ?? this.snapshot.symbol ?? this.snapshot.symbols.find((item) => item.symbol === 'NQ') ?? this.snapshot.symbols[0]
+    if (!symbol) return
     const checkpoint = evaluation.lastCursorTs ?? evaluation.startTs
     const latestTrade = evaluation.trades.reduce<(typeof evaluation.trades)[number] | null>((latest, trade) => !latest || trade.exitTime > latest.exitTime ? trade : latest, null)
     const resolution = latestTrade
       ? { timestamp: checkpoint, calendarAvailable: true }
       : await this.resolveDataTimestamp(symbol, checkpoint, 'at-or-after')
-    this.setSnapshot({ symbol }, true)
+    this.setSnapshot({ symbol, activeSymbol: symbol }, true)
     await this.loadSymbol(symbol, resolution.timestamp)
     if (this.snapshot.status !== 'ready') return
     this.setSnapshot({ replayMode: 'active', replayStartTs: evaluation.startTs }, true)
@@ -700,18 +855,39 @@ export class ReplayEngine {
       this.startIndex = this.cursorIndex
       this.resetFillEngine()
       this.recenterViewportCache()
-      await this.views.initializeAll(symbol)
+      const targetViews = this.views.all().filter((view) => !view.isInitialized() || view.followsReplaySymbol())
+      await Promise.all(targetViews.map(async (view) => {
+        if (!view.isInitialized()) await view.initialize(symbol)
+        else if (view.symbol()?.symbol !== symbol.symbol) view.changeSymbol(symbol, [], undefined, true)
+      }))
       const cursorTs = this.source.at(this.cursorIndex)?.ts ?? start
       const raw = this.rawHistory()
-      await Promise.all(this.views.all().map(async (view) => {
+      await Promise.all(targetViews.map(async (view) => {
         const displayBars = await this.loadInitialDisplayHistory(view.id, view.timeframe, symbol, raw, cursorTs)
         view.rebuild(raw, symbol, false, displayBars)
       }))
-      const last = this.source.at(this.cursorIndex)
-      this.snapshot = { ...this.snapshot, cursorTs, lastBar: last }
-      this.syncChartTradingState(true)
+      await this.refreshAuxiliaryViewsAtCursor(cursorTs)
+      this.snapshot = { ...this.snapshot, cursorTs }
       const evaluation = getEvalState()
-      const evaluationActive = evaluation.phase === 'running' && evaluation.instrument === symbol.symbol
+      if (evaluation.phase === 'running') {
+        for (const view of this.views.all()) {
+          const viewSymbol = view.symbol()
+          if (viewSymbol) this.ensureEvaluationFill(viewSymbol)
+        }
+        const activeSymbol = this.tradingSymbol()
+        const activeFill = activeSymbol ? this.ensureEvaluationFill(activeSymbol) : null
+        this.snapshot = { ...this.snapshot, fill: activeFill, evalFill: this.aggregateEvaluationFill() }
+      }
+      const last = this.source.at(this.cursorIndex)
+      const activeSource = evaluation.phase === 'running' && this.tradingSymbol()
+        ? this.sourceForSymbol(this.tradingSymbol()?.symbol ?? '')
+        : null
+      const activeLast = activeSource && activeSource.count > 0 && cursorTs >= activeSource.firstTs
+        ? activeSource.at(activeSource.findIndex(cursorTs)) ?? null
+        : null
+      this.snapshot = { ...this.snapshot, cursorTs, lastBar: activeLast ?? last }
+      this.syncChartTradingState(true)
+      const evaluationActive = evaluation.phase === 'running'
       const replayMode: ReplayMode = evaluationActive ? 'active' : 'inactive'
       const replayStartTs = evaluationActive ? evaluation.startTs : null
       this.setSnapshot({ status: 'ready', cursorTs, sessionId: null, sessionStatus: null, timeframe: this.views.active()?.timeframe ?? this.snapshot.timeframe, replayMode, replayStartTs }, true)
@@ -724,17 +900,23 @@ export class ReplayEngine {
   }
 
   private bindView(view: ChartViewController): void {
-    view.adapter.onOrderLineMove((id, price) => this.moveOrderLine(id, price))
-    view.adapter.onOrderLineDragStart((id) => this.beginOrderEdit(id))
-    view.adapter.onOrderLineAction((action) => this.handleOrderLineAction(action))
-    view.adapter.onChartOrder((side, type, price) => this.placePending(side, type, price))
+    const ownsReplayStream = (): boolean => isEvalActive()
+      ? this.views.active()?.id === view.id
+      : view.symbol()?.symbol === this.snapshot.symbol?.symbol
+    view.adapter.onOrderLineMove((id, price) => { if (ownsReplayStream()) this.moveOrderLine(id, price) })
+    view.adapter.onOrderLineDragStart((id) => { if (ownsReplayStream()) this.beginOrderEdit(id) })
+    view.adapter.onOrderLineAction((action) => { if (ownsReplayStream()) this.handleOrderLineAction(action) })
+    view.adapter.onChartOrder((side, type, price) => { if (ownsReplayStream()) this.placePending(side, type, price) })
     view.adapter.onDrawingsChanged((drawingId) => this.handleViewDrawingsChanged(view.id, drawingId))
     view.adapter.onDrawingSelection((drawing) => { if (this.views.active()?.id === view.id) this.handleDrawingSelection(drawing) })
     view.adapter.onDrawingEditRequest((drawing) => { if (this.views.active()?.id === view.id) this.setSnapshot({ selectedDrawing: drawing, drawingInspectorOpen: true }, true) })
     view.adapter.onDrawingToolChanged((tool) => { if (this.views.active()?.id === view.id) this.setSnapshot({ activeDrawingTool: tool }, true) })
     view.adapter.onViewportDemand((demand) => { void this.handleViewportDemand(view.id, demand) })
-    view.adapter.onCrosshairSync((state) => this.views.syncCrosshair(view.id, state))
-    view.adapter.onViewportSync((state) => this.views.syncViewport(view.id, state))
+    view.adapter.onCrosshairSync((state) => { if (this.syncFlags.crosshair) this.views.syncCrosshair(view.id, state) })
+    view.adapter.onViewportSync((state) => {
+      if (!this.syncFlags.dateRange) return
+      this.views.syncViewport(view.id, this.syncFlags.lockZoom ? state : { time: state.time })
+    })
     view.adapter.onReplayBarSelect((timestamp) => { void this.selectReplayBar(timestamp) })
     view.setReplaySelection(this.currentReplaySelectionState())
   }
@@ -745,6 +927,59 @@ export class ReplayEngine {
       return { mode: 'active', timestamp: this.snapshot.replayStartTs }
     }
     return { mode: 'inactive' }
+  }
+
+  private tradingSymbol(): SymbolMeta | null {
+    return isEvalActive()
+      ? this.views.active()?.symbol() ?? this.snapshot.symbol
+      : this.snapshot.symbol
+  }
+
+  private sourceForSymbol(symbolCode: string): BarSource | null {
+    if (this.snapshot.symbol?.symbol === symbolCode) return this.source
+    return this.auxiliarySources.get(symbolCode) ?? null
+  }
+
+  private barAtCursor(source: BarSource): Bar1m | null {
+    if (source.count === 0 || this.snapshot.cursorTs < source.firstTs) return null
+    return source.at(source.findIndex(this.snapshot.cursorTs)) ?? null
+  }
+
+  private createSymbolFill(symbol: SymbolMeta, current: Bar1m | null): FillEngineState {
+    const evaluation = getEvalState()
+    const evalLimit = evaluation.phase === 'running' ? (evaluation.config?.maxPositionSize ?? 0) : 0
+    const maxContracts = evalLimit > 0 ? Math.min(MAX_REPLAY_CONTRACTS, evalLimit) : MAX_REPLAY_CONTRACTS
+    const fill = createFillEngine({
+      symbol: symbol.symbol,
+      tickValueCents: Math.round(symbol.tickSize * symbol.pointValue * 100),
+      commissionPerSideCents: Math.round(symbol.commissionPerSide * 100),
+      slippageTicks: symbol.defaultSlippageTicks,
+      maxContracts,
+      startingEquityCents: 1_000_000,
+    })
+    return current ? stepFillEngine(fill, current) : fill
+  }
+
+  private ensureEvaluationFill(symbol: SymbolMeta): FillEngineState | null {
+    const existing = this.evaluationFills.get(symbol.symbol)
+    if (existing) return existing
+    const source = this.sourceForSymbol(symbol.symbol)
+    if (!source) return null
+    const fill = this.createSymbolFill(symbol, this.barAtCursor(source))
+    this.evaluationFills.set(symbol.symbol, fill)
+    return fill
+  }
+
+  private aggregateEvaluationFill(): EvalFillState | null {
+    if (this.evaluationFills.size === 0) return null
+    const fills = [...this.evaluationFills.values()]
+    const realizedCents = fills.reduce((total, fill) => total + fill.realizedCents, 0)
+    const unrealizedCents = fills.reduce((total, fill) => total + fill.unrealizedCents, 0)
+    return {
+      realizedCents,
+      equityCents: 1_000_000 + realizedCents + unrealizedCents,
+      trades: fills.flatMap((fill) => fill.trades),
+    }
   }
 
   private normalizeReplaySelectionTimestamp(timestamp: number): number {
@@ -766,18 +1001,15 @@ export class ReplayEngine {
     const symbol = this.snapshot.symbol
     if (!symbol) return
     this.orderDraft = null
-    const tickValueCents = Math.round(symbol.tickSize * symbol.pointValue * 100)
-    const fill = createFillEngine({
-      symbol: symbol.symbol,
-      tickValueCents,
-      commissionPerSideCents: Math.round(symbol.commissionPerSide * 100),
-      slippageTicks: symbol.defaultSlippageTicks,
-      maxContracts: MAX_REPLAY_CONTRACTS,
-      startingEquityCents: 1_000_000,
-    })
     const current = this.source?.at(this.cursorIndex) ?? null
-    const seeded = current ? stepFillEngine(fill, current) : fill
-    this.snapshot = { ...this.snapshot, fill: seeded, stats: EMPTY_STATS, lastBar: current }
+    const seeded = this.createSymbolFill(symbol, current)
+    if (isEvalActive()) {
+      this.evaluationFills.clear()
+      this.evaluationFills.set(symbol.symbol, seeded)
+    } else {
+      this.evaluationFills.clear()
+    }
+    this.snapshot = { ...this.snapshot, fill: seeded, evalFill: isEvalActive() ? this.aggregateEvaluationFill() : null, stats: EMPTY_STATS, lastBar: current }
     // A reset re-anchors the session, so every earlier snapshot is stale.
     this.fillSnapshots.clear()
     this.fillSnapshots.set(this.cursorIndex, seeded)
@@ -790,10 +1022,10 @@ export class ReplayEngine {
     this.lastFrameAt = now
     this.accumulator += elapsed
     const stepMs = 1000 / this.snapshot.speed
-    const steps = Math.floor(this.accumulator / stepMs)
-    if (steps > 0) {
-      this.accumulator -= steps * stepMs
-      this.advance(steps)
+    const ticks = Math.floor(this.accumulator / stepMs)
+    if (ticks > 0) {
+      this.accumulator -= ticks * stepMs
+      this.advance(ticks * this.stepBars())
     }
     const duration = performance.now() - started
     this.recordFrame(duration)
@@ -803,15 +1035,20 @@ export class ReplayEngine {
 
   private advance(steps: number): void {
     if (!this.source || !this.snapshot.fill || this.views.size() === 0) return
+    const previousCursorTs = this.snapshot.cursorTs
     const rawBars: Bar1m[] = []
-    let fill = this.snapshot.fill
+    let fill = isEvalActive()
+      ? this.evaluationFills.get(this.snapshot.symbol?.symbol ?? '') ?? this.snapshot.fill
+      : this.snapshot.fill
     let processed = 0
     for (let index = 0; index < steps; index += 1) {
       const bar = this.source.at(this.cursorIndex + 1)
       if (!bar) break
       this.cursorIndex += 1
-      fill = stepFillEngine(fill, bar)
-      this.fillSnapshots.set(this.cursorIndex, fill)
+      if (!isEvalActive()) {
+        fill = stepFillEngine(fill, bar)
+        this.fillSnapshots.set(this.cursorIndex, fill)
+      }
       rawBars.push(bar)
       this.viewportCache.append(bar)
       processed += 1
@@ -823,7 +1060,7 @@ export class ReplayEngine {
     }
     this.pruneFillSnapshots()
     let viewBudget = this.views.size()
-    if (this.snapshot.playing && this.snapshot.speed >= 100 && this.views.size() > 1) {
+    if (this.snapshot.playing && this.snapshot.speed * this.stepBars() >= HIGH_THROUGHPUT_BARS_PER_SECOND && this.views.size() > 1) {
       // Lightweight Charts paints on the animation frame after a series
       // update. Leave the following frame free for that paint, then rotate
       // to the next pane; this keeps pointer/input frames responsive while
@@ -831,9 +1068,41 @@ export class ReplayEngine {
       viewBudget = this.highSpeedChartFrame % 2 === 0 ? 1 : 0
       this.highSpeedChartFrame += 1
     }
-    this.views.pushRawBars(rawBars, viewBudget)
+    const symbolCode = this.snapshot.symbol?.symbol
+    if (symbolCode) this.views.pushRawBars(rawBars, symbolCode, viewBudget)
     const current = this.source.at(this.cursorIndex)
-    this.snapshot = { ...this.snapshot, fill, lastBar: current, cursorTs: current?.ts ?? this.snapshot.cursorTs, stats: calculateTradeStats(fill.trades) }
+    const cursorTs = current?.ts ?? this.snapshot.cursorTs
+    for (const [auxiliarySymbol, auxiliarySource] of this.auxiliarySources) {
+      if (auxiliarySymbol === symbolCode) continue
+      const auxiliaryBars = this.sourceBarsBetween(auxiliarySource, previousCursorTs, cursorTs)
+      if (auxiliaryBars.length > 0) this.views.pushRawBars(auxiliaryBars, auxiliarySymbol, viewBudget)
+    }
+    if (isEvalActive()) {
+      for (const [fillSymbol, currentFill] of this.evaluationFills) {
+        const source = this.sourceForSymbol(fillSymbol)
+        if (!source) continue
+        const bars = fillSymbol === this.snapshot.symbol?.symbol
+          ? rawBars
+          : this.sourceBarsBetween(source, previousCursorTs, cursorTs)
+        let nextFill = currentFill
+        for (const bar of bars) nextFill = stepFillEngine(nextFill, bar)
+        this.evaluationFills.set(fillSymbol, nextFill)
+      }
+      const activeSymbol = this.tradingSymbol()
+      const activeFill = activeSymbol ? this.evaluationFills.get(activeSymbol.symbol) ?? null : null
+      const activeSource = activeSymbol ? this.sourceForSymbol(activeSymbol.symbol) : null
+      const activeBar = activeSource ? this.barAtCursor(activeSource) : current
+      this.snapshot = {
+        ...this.snapshot,
+        fill: activeFill,
+        evalFill: this.aggregateEvaluationFill(),
+        lastBar: activeBar,
+        cursorTs,
+        stats: activeFill ? calculateTradeStats(activeFill.trades) : EMPTY_STATS,
+      }
+    } else {
+      this.snapshot = { ...this.snapshot, fill, evalFill: null, lastBar: current, cursorTs, stats: calculateTradeStats(fill.trades) }
+    }
     this.syncChartTradingState()
     this.scheduleSessionPersist()
   }
@@ -842,9 +1111,11 @@ export class ReplayEngine {
     const source = this.source
     const symbol = this.snapshot.symbol
     if (!source || !symbol || this.views.size() === 0) return
-    this.views.rebuildAll(this.rawHistory(), symbol, true)
+    this.views.rebuildSymbol(this.rawHistory(), symbol, true)
     const last = source.at(this.cursorIndex)
-    this.snapshot = { ...this.snapshot, cursorTs: last?.ts ?? this.snapshot.cursorTs, lastBar: last }
+    const cursorTs = last?.ts ?? this.snapshot.cursorTs
+    this.rebuildAuxiliaryCharts(cursorTs, true)
+    this.snapshot = { ...this.snapshot, cursorTs, lastBar: last }
     this.syncChartTradingState()
   }
 
@@ -860,10 +1131,14 @@ export class ReplayEngine {
   }
 
   private mutateFill(mutator: (state: FillEngineState) => FillEngineState): void {
-    if (!this.snapshot.fill || this.snapshot.replayMode !== 'active') return
+    if (!this.canTrade()) return
+    const currentFill = this.snapshot.fill
+    if (!currentFill) return
     try {
-      const fill = mutator(this.snapshot.fill)
-      this.snapshot = { ...this.snapshot, fill }
+      const fill = mutator(currentFill)
+      const symbol = this.tradingSymbol()
+      if (isEvalActive() && symbol) this.evaluationFills.set(symbol.symbol, fill)
+      this.snapshot = { ...this.snapshot, fill, evalFill: isEvalActive() ? this.aggregateEvaluationFill() : null, error: null }
       // Orders placed while parked on this bar belong to this bar's state,
       // so a later step-back onto it restores them too.
       this.fillSnapshots.set(this.cursorIndex, fill)
@@ -875,14 +1150,14 @@ export class ReplayEngine {
   }
 
   private amendOrderPrice(id: string, price: number): void {
-    const symbol = this.snapshot.symbol
+    const symbol = this.tradingSymbol()
     if (!symbol) return
     this.mutateFill((state) => amendOrder(state, id, Math.round(price / symbol.tickSize)))
   }
 
   private syncChartTradingState(force = false): void {
     const fill = this.snapshot.fill
-    const symbol = this.snapshot.symbol
+    const symbol = this.tradingSymbol()
     if (this.views.size() === 0 || !fill || !symbol) return
     const positionQty = fill.position?.qty ?? null
     const positionPrice = fill.position?.avgPriceTicks ?? null
@@ -950,16 +1225,121 @@ export class ReplayEngine {
       })
     }
     const markers: TradeMarker[] = []
+    const connections: TradeConnection[] = []
+    const priceFormatter = new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: symbol.priceDecimals,
+      maximumFractionDigits: symbol.priceDecimals,
+    })
     for (const trade of fill.trades) {
-      markers.push({ time: trade.entryTs, price: trade.entryPriceTicks * symbol.tickSize, text: `${trade.side === 'long' ? 'BUY' : 'SELL'} ${trade.qty}`, color: trade.side === 'long' ? '#089981' : '#f23645', shape: trade.side === 'long' ? 'arrowUp' : 'arrowDown' })
-      markers.push({ time: trade.exitTs, price: trade.exitPriceTicks * symbol.tickSize, text: `${trade.realizedCents >= 0 ? '+' : ''}$${(trade.realizedCents / 100).toFixed(2)}`, color: trade.realizedCents >= 0 ? '#089981' : '#f23645', shape: 'circle' })
+      const entryPrice = trade.entryPriceTicks * symbol.tickSize
+      const exitPrice = trade.exitPriceTicks * symbol.tickSize
+      const tradeColor = trade.side === 'long' ? '#089981' : '#f23645'
+      markers.push({ time: trade.entryTs, price: entryPrice, text: `${trade.side === 'long' ? '+' : '-'}${trade.qty} @ ${priceFormatter.format(entryPrice)}`, color: tradeColor, shape: trade.side === 'long' ? 'arrowUp' : 'arrowDown' })
+      markers.push({ time: trade.exitTs, price: exitPrice, text: `${trade.side === 'long' ? '-' : '+'}${trade.qty} @ ${priceFormatter.format(exitPrice)}`, color: tradeColor, shape: 'circle' })
+      connections.push({ entryTime: trade.entryTs, entryPrice, exitTime: trade.exitTs, exitPrice })
     }
-    this.views.syncTrading(lines, markers)
+    const savedEvalVisuals = this.evalTradeVisuals(symbol, priceFormatter, fill.trades)
+    markers.push(...savedEvalVisuals.markers)
+    connections.push(...savedEvalVisuals.connections)
+    markers.sort((left, right) => left.time - right.time)
+    this.views.syncTrading(symbol.symbol, lines, markers, connections)
+  }
+
+  // The fill engine restarts clean on every seek, so eval trades recorded
+  // before the cursor only exist in the eval store — project them too.
+  private evalTradeVisuals(symbol: SymbolMeta, priceFormatter: Intl.NumberFormat, fillTrades: EngineTrade[]): { markers: TradeMarker[]; connections: TradeConnection[] } {
+    const evaluation = getEvalState()
+    if (evaluation.trades.length === 0) return { markers: [], connections: [] }
+    const fillTradeIds = new Set(fillTrades.map((trade) => trade.id))
+    const markers: TradeMarker[] = []
+    const connections: TradeConnection[] = []
+    for (const trade of evaluation.trades) {
+      if (trade.symbol !== symbol.symbol) continue
+      if (trade.entryPriceTicks === undefined || trade.exitPriceTicks === undefined) continue
+      if (trade.id && fillTradeIds.has(trade.id)) continue
+      const entryTime = trade.entryTime ?? trade.exitTime
+      const entryPrice = trade.entryPriceTicks * symbol.tickSize
+      const exitPrice = trade.exitPriceTicks * symbol.tickSize
+      const tradeColor = trade.side === 'short' ? '#f23645' : '#089981'
+      const qty = trade.qty ?? 1
+      markers.push({ time: entryTime, price: entryPrice, text: `${trade.side === 'short' ? '-' : '+'}${qty} @ ${priceFormatter.format(entryPrice)}`, color: tradeColor, shape: trade.side === 'short' ? 'arrowDown' : 'arrowUp' })
+      markers.push({ time: trade.exitTime, price: exitPrice, text: `${trade.side === 'short' ? '+' : '-'}${qty} @ ${priceFormatter.format(exitPrice)}`, color: tradeColor, shape: 'circle' })
+      connections.push({ entryTime, entryPrice, exitTime: trade.exitTime, exitPrice })
+    }
+    return { markers, connections }
   }
 
   private rawHistory(_timeframe?: Timeframe): Bar1m[] {
     const cursorTs = this.source?.at(this.cursorIndex)?.ts ?? this.snapshot.cursorTs
     return this.viewportCache.values(cursorTs || Number.MAX_SAFE_INTEGER)
+  }
+
+  private rawHistoryFromSource(source: BarSource, cursorTs: number): Bar1m[] {
+    if (source.count === 0 || cursorTs < source.firstTs) return []
+    const end = source.findIndex(cursorTs)
+    const from = Math.max(0, end - MAX_VIEWPORT_RAW_BARS + 1)
+    const bars: Bar1m[] = []
+    for (let index = from; index <= end; index += 1) {
+      const bar = source.at(index)
+      if (bar && bar.ts <= cursorTs) bars.push(bar)
+    }
+    return bars
+  }
+
+  private sourceBarsBetween(source: BarSource, fromExclusive: number, toInclusive: number): Bar1m[] {
+    if (source.count === 0 || toInclusive <= fromExclusive || toInclusive < source.firstTs || fromExclusive >= source.lastTs) return []
+    const bars: Bar1m[] = []
+    let index = source.findIndexAtOrAfter(fromExclusive + 1)
+    while (index < source.count) {
+      const bar = source.at(index)
+      if (!bar || bar.ts > toInclusive) break
+      if (bar.ts > fromExclusive) bars.push(bar)
+      index += 1
+    }
+    return bars
+  }
+
+  private auxiliaryViews(): ChartViewController[] {
+    const replaySymbol = this.snapshot.symbol?.symbol
+    return this.views.all().filter((view) => {
+      const symbol = view.symbol()?.symbol
+      return Boolean(symbol && symbol !== replaySymbol)
+    })
+  }
+
+  private rebuildAuxiliaryCharts(cursorTs: number, preserveViewport: boolean): void {
+    for (const view of this.auxiliaryViews()) {
+      const symbol = view.symbol()
+      const source = symbol ? this.auxiliarySources.get(symbol.symbol) : undefined
+      if (!symbol || !source) continue
+      view.rebuild(this.rawHistoryFromSource(source, cursorTs), symbol, preserveViewport)
+      view.syncEconomicEventMarkers(this.economicEventMarkers)
+    }
+  }
+
+  private async refreshAuxiliaryViewsAtCursor(cursorTs: number): Promise<void> {
+    const views = this.auxiliaryViews()
+    if (views.length === 0) return
+    const symbols = new Map<string, SymbolMeta>()
+    for (const view of views) {
+      const symbol = view.symbol()
+      if (symbol) symbols.set(symbol.symbol, symbol)
+    }
+    await Promise.all([...symbols.values()].map(async (symbol) => {
+      const source = this.auxiliarySources.get(symbol.symbol)
+      if (source && cursorTs >= source.firstTs && cursorTs <= source.lastTs) return
+      const frame = await fetchBarsAt(symbol.symbol, '1m', cursorTs, 3000, 10000)
+      this.auxiliarySources.set(symbol.symbol, new BarSource(frame))
+    }))
+    await Promise.all(views.map(async (view) => {
+      const symbol = view.symbol()
+      const source = symbol ? this.auxiliarySources.get(symbol.symbol) : undefined
+      if (!symbol || !source) return
+      const raw = this.rawHistoryFromSource(source, cursorTs)
+      const displayBars = await this.loadInitialDisplayHistory(view.id, view.timeframe, symbol, raw, cursorTs)
+      view.rebuild(raw, symbol, true, displayBars)
+      view.syncEconomicEventMarkers(this.economicEventMarkers)
+    }))
   }
 
   private async loadInitialDisplayHistory(
@@ -983,6 +1363,7 @@ export class ReplayEngine {
         pageBars: VIEWPORT_PAGE_BARS,
         maxTs: cursorTs,
         tickSize: symbol.tickSize,
+        marketSession: this.marketSession,
       }, controller.signal)
       if (controller.signal.aborted || this.timeframeControllers.get(viewId) !== controller) return undefined
       return page.bars.filter((bar) => bar.time <= cursorTs)
@@ -1019,7 +1400,7 @@ export class ReplayEngine {
 
   private async handleViewportDemand(viewId: string, demand: ViewportDemand): Promise<void> {
     const view = this.views.get(viewId)
-    const symbol = this.snapshot.symbol
+    const symbol = view?.symbol() ?? null
     if (!view || this.views.active()?.id !== viewId || !symbol || this.snapshot.status !== 'ready') return
     const range = symbol.ranges['1m']
     if (!range) return
@@ -1050,11 +1431,12 @@ export class ReplayEngine {
         pageBars,
         maxTs: this.snapshot.cursorTs,
         tickSize: symbol.tickSize,
+        marketSession: this.marketSession,
       }, controller.signal)
-      if (controller.signal.aborted || this.snapshot.symbol?.symbol !== symbol.symbol) return
+      if (controller.signal.aborted || view.symbol()?.symbol !== symbol.symbol) return
       const spoilerSafeBars = page.bars.filter((bar) => bar.time <= this.snapshot.cursorTs)
       this.views.mergeViewportPage(viewId, spoilerSafeBars, demand.direction)
-      this.reloadDrawingDocument(symbol.symbol)
+      this.reloadDrawingDocumentForView(symbol.symbol, viewId)
       this.setSnapshot({ eagerState: 'ready', viewportCachedBars: this.viewportCache.count }, true)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
@@ -1106,47 +1488,111 @@ export class ReplayEngine {
     void this.checkpointSession('paused')
   }
 
-  private async checkpointSession(status: 'paused' | 'stopped'): Promise<void> {
+  private async checkpointSession(status: 'paused' | 'stopped'): Promise<boolean> {
     const { sessionId, cursorTs, fill } = this.snapshot
-    if (!sessionId || !fill) return
+    if (!sessionId || !fill) return true
     if (this.persistTimer) {
       clearTimeout(this.persistTimer)
       this.persistTimer = null
     }
-    await Promise.all([
-      patchSession(sessionId, {
+    try {
+      // The journal endpoint only accepts an active session. Persist it
+      // before changing the session status so the final trade cannot race
+      // the pause/stop request.
+      await this.persistJournal(sessionId, fill)
+      await patchSession(sessionId, {
         cursorTs,
         equityCents: fill.equityCents,
         status,
         config: serializeReplayRuntime(fill),
-      }),
-      // Still 'active' at this point, which is what the journal endpoint
-      // requires — patching the status first would reject the write.
-      this.persistJournal(sessionId, fill),
-    ]).catch(() => undefined)
+      })
+      return true
+    } catch {
+      this.setSnapshot({ error: 'Session could not be saved. It remains open so you can retry.', persistencePending: true }, true)
+      return false
+    }
   }
 
-  private async deactivateReplaySession(status: 'paused' | 'stopped'): Promise<void> {
+  private async deactivateReplaySession(
+    status: 'paused' | 'stopped',
+    options: { returnToLatest?: boolean; drawingsFlushed?: boolean } = {},
+  ): Promise<void> {
     cancelAnimationFrame(this.animationFrame)
     this.views.flushRawBars()
     this.highSpeedChartFrame = 0
+    this.cancelActiveOrders()
     const detachedSessionId = this.snapshot.sessionId
     const hadSession = detachedSessionId !== null
+    this.setSnapshot({ playing: false }, true)
+    if (!options.drawingsFlushed && !await this.flushDrawingPersistence()) {
+      this.setSnapshot({ error: 'Session drawings could not be saved. The session remains open so you can retry.' }, true)
+      return
+    }
+    if (!await this.checkpointSession(status)) return
     this.createSessionOnSelection = false
     this.orderDraft = null
     this.setSnapshot({ playing: false, sessionStatus: hadSession ? status : null, replayMode: 'inactive', replayStartTs: null }, true)
     this.syncChartTradingState(true)
     this.views.setReplaySelection({ mode: 'inactive' })
-    await this.checkpointSession(status)
     if (this.snapshot.sessionId === detachedSessionId && this.snapshot.sessionStatus === status) {
       this.setSnapshot({ sessionId: null, sessionStatus: null, persistencePending: false }, true)
+    }
+    if (options.returnToLatest) await this.resetChartToLatest()
+  }
+
+  private async resetChartToLatest(): Promise<void> {
+    const symbol = this.snapshot.symbol
+    const latest = symbol?.ranges['1m']?.to
+    if (!symbol || latest === undefined) return
+    this.views.active()?.adapter.setDrawingTool(null)
+    this.views.active()?.adapter.deselectDrawing()
+    this.setSnapshot({ activeDrawingTool: null, selectedDrawing: null, drawingInspectorOpen: false }, true)
+    await this.loadSymbol(symbol, latest)
+  }
+
+  private cancelActiveOrders(): void {
+    if (isEvalActive() && this.evaluationFills.size > 0) {
+      let changed = this.orderDraft !== null
+      this.orderDraft = null
+      for (const [symbol, fill] of this.evaluationFills) {
+        const next = cancelAllOrders(fill)
+        if (next !== fill) changed = true
+        this.evaluationFills.set(symbol, next)
+      }
+      const activeSymbol = this.tradingSymbol()
+      const activeFill = activeSymbol ? this.evaluationFills.get(activeSymbol.symbol) ?? null : null
+      this.snapshot = { ...this.snapshot, fill: activeFill, evalFill: this.aggregateEvaluationFill() }
+      if (changed) {
+        this.syncChartTradingState(true)
+        this.emitSnapshot(true)
+      }
+      return
+    }
+    const fill = this.snapshot.fill
+    const hadDraft = this.orderDraft !== null
+    this.orderDraft = null
+    if (!fill) {
+      if (hadDraft) this.syncChartTradingState(true)
+      return
+    }
+    const nextFill = cancelAllOrders(fill)
+    if (nextFill !== fill) {
+      this.snapshot = { ...this.snapshot, fill: nextFill }
+      this.fillSnapshots.set(this.cursorIndex, nextFill)
+    }
+    if (nextFill !== fill || hadDraft) {
+      this.syncChartTradingState(true)
+      this.emitSnapshot(true)
     }
   }
 
   private async reconcileDrawings(viewId?: string): Promise<void> {
-    const symbol = this.snapshot.symbol
+    const requestedView = viewId ? this.views.get(viewId) : null
+    const symbol = requestedView?.symbol() ?? this.snapshot.symbol
     if (!symbol) return
-    const targets = viewId ? [this.views.get(viewId)].filter((view): view is ChartViewController => view !== null) : this.views.all()
+    const targets = requestedView
+      ? [requestedView]
+      : this.views.all().filter((view) => view.symbol()?.symbol === symbol.symbol)
     try {
       // No createdTf filter: the canonical drawing document belongs to the
       // symbol/session, then each pane projects epoch/price anchors to its TF.
@@ -1176,14 +1622,6 @@ export class ReplayEngine {
     }
   }
 
-  private reloadDrawingDocument(symbol: string): void {
-    const document = this.drawingDocuments.get(this.drawingDocumentKey(symbol))
-    if (!document) return
-    this.syncingDrawings = true
-    for (const view of this.views.all()) view.adapter.loadDrawings(document.drawings)
-    this.syncingDrawings = false
-  }
-
   private reloadDrawingDocumentForView(symbol: string, viewId: string): boolean {
     const document = this.drawingDocuments.get(this.drawingDocumentKey(symbol))
     const view = this.views.get(viewId)
@@ -1209,7 +1647,7 @@ export class ReplayEngine {
     const source = this.views.get(viewId)
     if (!source) return
     const projected = source.adapter.getDrawings()
-    const symbol = this.snapshot.symbol
+    const symbol = source.symbol()
     let serialized = projected
     if (symbol) {
       const key = this.drawingDocumentKey(symbol.symbol)
@@ -1228,7 +1666,7 @@ export class ReplayEngine {
     }
     this.syncingDrawings = true
     for (const view of this.views.all()) {
-      if (view.id !== viewId) view.adapter.loadDrawings(serialized)
+      if (view.id !== viewId && view.symbol()?.symbol === symbol?.symbol) view.adapter.loadDrawings(serialized)
     }
     this.syncingDrawings = false
     this.scheduleDrawingPersist(viewId)
@@ -1240,15 +1678,27 @@ export class ReplayEngine {
     this.pendingDrawingViewId = viewId
     this.drawingTimer = setTimeout(() => {
       const pending = this.pendingDrawingViewId
+      this.drawingTimer = null
+      this.pendingDrawingViewId = null
       if (pending) void this.persistDrawings(pending)
     }, 500)
   }
 
-  private async persistDrawings(viewId: string): Promise<void> {
-    if (this.snapshot.replayMode === 'active' && !isEvalActive() && !this.snapshot.sessionId) return
+  private async flushDrawingPersistence(): Promise<boolean> {
+    if (this.drawingTimer) {
+      clearTimeout(this.drawingTimer)
+      this.drawingTimer = null
+    }
+    const pending = this.pendingDrawingViewId
+    this.pendingDrawingViewId = null
+    return pending ? this.persistDrawings(pending) : true
+  }
+
+  private async persistDrawings(viewId: string): Promise<boolean> {
+    if (this.snapshot.replayMode === 'active' && !isEvalActive() && !this.snapshot.sessionId) return true
     const view = this.views.get(viewId)
-    const symbol = this.snapshot.symbol
-    if (!view || !symbol) return
+    const symbol = view?.symbol() ?? null
+    if (!view || !symbol) return true
     const key = this.drawingDocumentKey(symbol.symbol)
     const document = this.drawingDocuments.get(key) ?? this.emptyDrawingDocument()
     const current = document.drawings
@@ -1279,7 +1729,13 @@ export class ReplayEngine {
       if (!document.createdTimeframes.has(drawing.id)) document.createdTimeframes.set(drawing.id, view.timeframe)
     }
     this.drawingDocuments.set(key, document)
-    if (deltas.length > 0) await upsertDrawings(deltas).catch(() => undefined)
+    if (deltas.length === 0) return true
+    try {
+      await upsertDrawings(deltas)
+      return true
+    } catch {
+      return false
+    }
   }
 
   private emptyDrawingDocument(): DrawingDocument {

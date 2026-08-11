@@ -13,7 +13,7 @@ const PRIMARY_PANE_ID = 'primary'
 
 export function ChartPanel() {
   const replay = useReplaySelector((snapshot) => ({
-    priceDecimals: snapshot.symbol?.priceDecimals ?? 2,
+    priceDecimals: (snapshot.activeSymbol ?? snapshot.symbol)?.priceDecimals ?? 2,
     timeframe: snapshot.timeframe,
     status: snapshot.status,
     error: snapshot.error,

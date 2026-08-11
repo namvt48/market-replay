@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EconMeta, EconWeek } from '../../api/types'
+import { useUiStore } from '../../store/ui-store'
 import { EconomicCalendarPanel } from './EconomicCalendarPanel'
 
 const apiMocks = vi.hoisted(() => ({ fetchEconWeek: vi.fn(), fetchEconMeta: vi.fn() }))
@@ -46,6 +47,7 @@ const week: EconWeek = {
 beforeEach(() => {
   vi.clearAllMocks()
   replaySnapshot.cursorTs = week.cursorTs
+  useUiStore.setState({ calendarImportance: 'high', calendarCountry: 'US' })
   apiMocks.fetchEconWeek.mockResolvedValue(week)
 })
 
@@ -58,13 +60,17 @@ describe('EconomicCalendarPanel', () => {
     expect(await screen.findByText('ISM Manufacturing PMI')).toBeVisible()
     expect(screen.getByText('51.0')).toBeVisible()
     expect(screen.getByText('JOLTS Job Openings')).toBeVisible()
-    expect(screen.getByText('NEXT')).toBeVisible()
+    expect(screen.getByLabelText('Next event in 1h')).toHaveTextContent('NEXT · 1h')
     expect(screen.getByLabelText('Actual not released')).toHaveTextContent('—')
     expect(apiMocks.fetchEconWeek).toHaveBeenCalledWith(expect.objectContaining({
       at: week.cursorTs,
       cursorTs: week.cursorTs,
       timeZone: 'America/New_York',
+      minImportance: 'high',
+      countries: ['US'],
     }), expect.any(AbortSignal))
+    expect(screen.getByLabelText('Minimum importance')).toHaveValue('high')
+    expect(screen.getByLabelText('Country')).toHaveValue('US')
   })
 
   it('pages by server-provided week bounds while preserving the replay cursor', async () => {
@@ -81,6 +87,22 @@ describe('EconomicCalendarPanel', () => {
       cursorTs: week.cursorTs,
     }), expect.any(AbortSignal)))
     expect(await screen.findByRole('button', { name: 'Return to replay week' })).toBeVisible()
+  })
+
+  it('highlights every event at the next release time', async () => {
+    const simultaneousWeek: EconWeek = {
+      ...week,
+      events: [
+        ...week.events,
+        { ...week.events[1], id: 'us-cpi', title: 'CPI', importance: 'high' },
+      ],
+    }
+    apiMocks.fetchEconWeek.mockResolvedValue(simultaneousWeek)
+    const view = render(<EconomicCalendarPanel meta={meta} />)
+
+    await screen.findByText('CPI')
+
+    expect(view.container.querySelectorAll('li[aria-current="true"]')).toHaveLength(2)
   })
 
   it('refetches at a known release boundary and then reveals the actual', async () => {
@@ -114,5 +136,6 @@ describe('EconomicCalendarPanel', () => {
       minImportance: 'high',
       countries: ['EU'],
     }), expect.any(AbortSignal)))
+    expect(useUiStore.getState()).toMatchObject({ calendarImportance: 'high', calendarCountry: 'EU' })
   })
 })

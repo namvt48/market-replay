@@ -156,6 +156,7 @@ func TestEconWeek_CursorDefaultsToTheAnchor(t *testing.T) {
 func TestEconWeek_Filters(t *testing.T) {
 	monday := mondayNY(t)
 	s := newEconTestServer(t,
+		econLine("holiday", monday+1800, "none", "UK", ""),
 		econLine("us-high", monday+3600, "high", "US", ""),
 		econLine("us-low", monday+7200, "low", "US", ""),
 		econLine("eu-medium", monday+10800, "medium", "EU", ""),
@@ -175,8 +176,11 @@ func TestEconWeek_Filters(t *testing.T) {
 		return strings.Join(out, ",")
 	}
 
-	if got := ids(base); got != "us-high,us-low,eu-medium" {
+	if got := ids(base); got != "holiday,us-high,us-low,eu-medium" {
 		t.Errorf("unfiltered = %q", got)
+	}
+	if got := ids(base + "&minImportance=low"); got != "us-high,us-low,eu-medium" {
+		t.Errorf("minImportance=low = %q", got)
 	}
 	if got := ids(base + "&minImportance=medium"); got != "us-high,eu-medium" {
 		t.Errorf("minImportance=medium = %q", got)

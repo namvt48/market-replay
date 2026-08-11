@@ -1,10 +1,10 @@
 import type { SymbolMeta, Timeframe } from '../api/types'
 import type { Bar1m } from '../fill-engine/types'
 import { buildDisplayHistory, DisplayAggregator } from './aggregate'
-import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, HistoryUpdateOptions, OrderLine, ReplaySelectionState, TradeMarker, ViewportDirection } from './chart-adapter'
+import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, EconomicEventMarker, HistoryUpdateOptions, OrderLine, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDirection } from './chart-adapter'
 import type { ChartPaneSettings } from './chart-settings-store'
 import type { HoverBarStore } from './hover-bar-store'
-import { isRegularTradingHours, marketSessionIncludes, nextRegularTradingTimestamp } from './market-session'
+import { isRegularTradingHours, marketSessionIncludes, nextRegularTradingTimestamp, type MarketSession } from './market-session'
 import { timeframeSeconds } from './timeframe'
 import { MAX_VIEWPORT_DISPLAY_BARS } from './viewport-data'
 
@@ -18,7 +18,9 @@ export interface ChartViewControllerOptions {
   adapter: ChartAdapter
   timeframe: Timeframe
   settings: ChartPaneSettings
+  marketSession: MarketSession
   hoverStore: HoverBarStore
+  followsReplaySymbol?: boolean
 }
 
 export class ChartViewController {
@@ -28,12 +30,16 @@ export class ChartViewController {
   readonly hoverStore: HoverBarStore
   timeframe: Timeframe
   settings: ChartPaneSettings
+  private marketSession: MarketSession
   private aggregator: DisplayAggregator | null = null
   private displayHistory: DisplayBar[] = []
   private spacerThroughTime = 0
   private spacerInterval = 0
   private initialized = false
   private pendingRawBars: Bar1m[] = []
+  private spacerTimes: number[] = []
+  private economicEventMarkers: EconomicEventMarker[] = []
+  private followsReplay = true
 
   constructor(options: ChartViewControllerOptions) {
     this.id = options.id
@@ -41,11 +47,14 @@ export class ChartViewController {
     this.adapter = options.adapter
     this.timeframe = options.timeframe
     this.settings = options.settings
+    this.marketSession = options.marketSession
     this.hoverStore = options.hoverStore
+    this.followsReplay = options.followsReplaySymbol ?? true
   }
 
   async initialize(symbol: SymbolMeta): Promise<void> {
     await this.adapter.init(this.element, symbol, this.timeframe)
+    this.currentSymbol = symbol
     this.adapter.applyAppearance(this.settings.appearance)
     this.adapter.setDisplayTimezone(this.settings.timezone)
     this.initialized = true
@@ -55,7 +64,7 @@ export class ChartViewController {
 
   rebuild(raw: Bar1m[], symbol: SymbolMeta, preserveViewport = false, displayBars?: DisplayBar[]): void {
     this.pendingRawBars = []
-    const history = buildDisplayHistory(raw, this.timeframe, symbol, symbol.tickSize, this.settings.marketSession)
+    const history = buildDisplayHistory(raw, this.timeframe, symbol, symbol.tickSize, this.marketSession)
     const remoteHistory = this.sessionSafeDisplayBars(displayBars, symbol)
     this.displayHistory = remoteHistory && remoteHistory.length > 0 ? remoteHistory : history.bars
     this.publishHistory({ preserveViewport, resetView: !preserveViewport })
@@ -74,6 +83,7 @@ export class ChartViewController {
     else this.displayHistory = merged.slice(0, MAX_VIEWPORT_DISPLAY_BARS)
     this.publishHistory({ preserveViewport: true })
     this.syncSpacerTimes()
+    this.publishEconomicEventMarkers()
   }
 
   /**
@@ -94,7 +104,7 @@ export class ChartViewController {
     this.pendingRawBars = []
     const displayBars = [] as ReturnType<DisplayAggregator['push']>['forming'][]
     for (const raw of batch) {
-      if (!this.currentSymbol || !marketSessionIncludes(raw.ts, this.settings.marketSession, this.currentSymbol)) continue
+      if (!this.currentSymbol || !marketSessionIncludes(raw.ts, this.marketSession, this.currentSymbol)) continue
       const result = this.aggregator.push(raw)
       const last = displayBars.at(-1)
       if (last?.time === result.forming.time) displayBars[displayBars.length - 1] = result.forming
@@ -151,27 +161,107 @@ export class ChartViewController {
     this.rebuild(raw, symbol, false, displayBars)
   }
 
+  changeSymbol(symbol: SymbolMeta, raw: Bar1m[], displayBars?: DisplayBar[], followsReplaySymbol = false): void {
+    this.followsReplay = followsReplaySymbol
+    this.adapter.setSymbol(symbol)
+    this.rebuild(raw, symbol, false, displayBars)
+  }
+
+  symbol(): SymbolMeta | null { return this.currentSymbol }
+  followsReplaySymbol(): boolean { return this.followsReplay }
+
   applySettings(settings: ChartPaneSettings): void {
     this.settings = settings
     this.adapter.applyAppearance(settings.appearance)
     this.adapter.setDisplayTimezone(settings.timezone)
   }
 
+  setMarketSession(marketSession: MarketSession): void { this.marketSession = marketSession }
+
   private currentSymbol: SymbolMeta | null = null
 
   private sessionSafeDisplayBars(displayBars: DisplayBar[] | undefined, symbol: SymbolMeta): DisplayBar[] | undefined {
     this.currentSymbol = symbol
-    if (!displayBars || this.settings.marketSession === 'eth') return displayBars
-    // A server-side candle above 1m may already mix ETH and RTH values.
-    // Only 1m pages are exact enough to reuse; larger RTH candles are built
-    // from the spoiler-safe raw window in rebuild().
-    if (timeframeSeconds(this.timeframe) !== 60) return undefined
-    return displayBars.filter((bar) => isRegularTradingHours(bar.time, symbol.sessionTz))
+    if (!displayBars || this.marketSession === 'eth') return displayBars
+    // Viewport pages are aggregated for the requested market session by the
+    // server. Keep the defensive timestamp filter for 1m callers while
+    // trusting higher-timeframe RTH OHLC that cannot be reconstructed from
+    // the short replay-side raw window.
+    return timeframeSeconds(this.timeframe) === 60
+      ? displayBars.filter((bar) => isRegularTradingHours(bar.time, symbol.sessionTz))
+      : displayBars
   }
 
-  syncTrading(lines: OrderLine[], markers: TradeMarker[]): void {
+  syncTrading(lines: OrderLine[], markers: TradeMarker[], connections: TradeConnection[]): void {
     this.adapter.setOrderLines(lines)
     this.adapter.setTradeMarkers(markers)
+    this.adapter.setTradeConnections(connections.map((connection) => ({
+      ...connection,
+      entryTime: this.projectTimestamp(connection.entryTime),
+      exitTime: this.projectTimestamp(connection.exitTime),
+    })))
+  }
+
+  syncEconomicEventMarkers(markers: EconomicEventMarker[]): void {
+    this.economicEventMarkers = markers
+    this.publishSpacerTimes()
+    this.publishEconomicEventMarkers()
+  }
+
+  private publishSpacerTimes(): void {
+    const historyTail = this.displayHistory.at(-1)?.time ?? 0
+    const distantEvents = this.economicEventMarkers
+      .map((marker) => marker.time)
+      .filter((time) => Number.isFinite(time) && time > historyTail && time > this.spacerThroughTime)
+    const merged = [...new Set([...this.spacerTimes, ...distantEvents])].sort((left, right) => left - right)
+    this.adapter.setSpacerTimes(merged)
+  }
+
+  private publishEconomicEventMarkers(): void {
+    const times = this.displayHistory.length > 0
+      ? [...this.displayHistory.map((bar) => bar.time), ...this.spacerTimes]
+      : this.spacerTimes
+    if (times.length === 0) {
+      this.adapter.setEconomicEventMarkers([])
+      return
+    }
+    const first = times[0]
+    const last = times.at(-1) ?? first
+    const projected = this.economicEventMarkers.map((marker) => {
+      if (marker.time < first || marker.time > last) return marker
+      let low = 0
+      let high = times.length
+      while (low < high) {
+        const middle = low + Math.floor((high - low) / 2)
+        if (times[middle] < marker.time) low = middle + 1
+        else high = middle
+      }
+      const after = Math.min(times.length - 1, low)
+      const before = Math.max(0, after - 1)
+      const interval = timeframeSeconds(this.timeframe)
+      const gap = times[after] - times[before]
+      const projectedTime = gap <= interval * 1.5
+        ? times[before]
+        : Math.abs(times[after] - marker.time) < Math.abs(times[before] - marker.time) ? times[after] : times[before]
+      return { ...marker, time: projectedTime }
+    })
+    this.adapter.setEconomicEventMarkers(projected.sort((left, right) => left.time - right.time || left.id.localeCompare(right.id)))
+  }
+
+  private projectTimestamp(timestamp: number): number {
+    if (this.displayHistory.length === 0) return timestamp
+    const firstTime = this.displayHistory[0]?.time
+    const lastTime = this.displayHistory.at(-1)?.time
+    const interval = timeframeSeconds(this.timeframe)
+    if (firstTime === undefined || lastTime === undefined || timestamp < firstTime || timestamp >= lastTime + interval) return timestamp
+    let low = 0
+    let high = this.displayHistory.length
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2)
+      if (this.displayHistory[middle].time <= timestamp) low = middle + 1
+      else high = middle
+    }
+    return this.displayHistory[Math.max(0, low - 1)]?.time ?? timestamp
   }
 
   resetView(): void { this.adapter.resetView() }
@@ -198,6 +288,7 @@ export class ChartViewController {
     const lastTime = this.displayHistory.at(-1)?.time
     if (lastTime === undefined) {
       this.adapter.setSpacerTimes([])
+      this.spacerTimes = []
       this.spacerThroughTime = 0
       this.spacerInterval = 0
       return
@@ -210,14 +301,16 @@ export class ChartViewController {
     const times: number[] = []
     let nextTime = lastTime
     for (let index = 0; index < FUTURE_WHITESPACE_BARS; index += 1) {
-      nextTime = this.settings.marketSession === 'rth' && interval < 86_400 && this.currentSymbol
+      nextTime = this.marketSession === 'rth' && interval < 86_400 && this.currentSymbol
         ? nextRegularTradingTimestamp(nextTime, interval, this.currentSymbol.sessionTz)
         : nextTime + interval
       times.push(nextTime)
     }
-    this.adapter.setSpacerTimes(times)
+    this.spacerTimes = times
     this.spacerThroughTime = times.at(-1) ?? lastTime
     this.spacerInterval = interval
+    this.publishSpacerTimes()
+    this.publishEconomicEventMarkers()
   }
 
   destroy(): void {
@@ -225,6 +318,8 @@ export class ChartViewController {
     this.displayHistory = []
     this.spacerThroughTime = 0
     this.spacerInterval = 0
+    this.spacerTimes = []
+    this.economicEventMarkers = []
     this.adapter.destroy()
     this.hoverStore.destroy()
     this.initialized = false

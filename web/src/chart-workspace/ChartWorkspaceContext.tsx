@@ -16,6 +16,8 @@ export function ChartWorkspaceProvider({ children }: ChartWorkspaceProviderProps
   const syncingTimeframeFromLayout = useRef(false)
 
   useEffect(() => { persistChartLayout(state) }, [state])
+  useEffect(() => { replayEngine.setMarketSession(state.marketSession) }, [state.marketSession])
+  useEffect(() => { replayEngine.setSyncFlags(state.syncFlags) }, [state.syncFlags])
   useEffect(() => {
     const pane = state.panes[state.activePaneId]
     if (!pane) return

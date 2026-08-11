@@ -6,7 +6,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api/preferences', () => api)
 
-const { SYNCED_PREFERENCE_KEYS, hydratePreferences, preferenceStorage } = await import('./preference-sync')
+const { SYNCED_PREFERENCE_KEYS, flushPreferenceSync, hydratePreferences, preferenceStorage } = await import('./preference-sync')
 
 function memoryStorage() {
   const values = new Map<string, string>()
@@ -105,5 +105,113 @@ describe('hydratePreferences', () => {
       'replay:eval',
       'replay:eval:accounts',
     ]))
+  })
+})
+
+describe('flushPreferenceSync', () => {
+  it('pushes every queued write immediately and cancels the debounce', async () => {
+    preferenceStorage.setItem('replay:eval', '{"accountId":"eval-ES-new","phase":"ready"}')
+    preferenceStorage.setItem('replay:eval:accounts', '[{"accountId":"eval-ES-new"}]')
+    expect(api.putPreference).not.toHaveBeenCalled()
+
+    await flushPreferenceSync()
+
+    expect(api.putPreference).toHaveBeenCalledTimes(2)
+    expect(api.putPreference).toHaveBeenCalledWith('replay:eval', '{"accountId":"eval-ES-new","phase":"ready"}')
+    expect(api.putPreference).toHaveBeenCalledWith('replay:eval:accounts', '[{"accountId":"eval-ES-new"}]')
+
+    await vi.runAllTimersAsync()
+    expect(api.putPreference).toHaveBeenCalledTimes(2)
+  })
+
+  it('pushes only the latest value of a key written twice', async () => {
+    preferenceStorage.setItem('replay:eval', '{"v":1}')
+    preferenceStorage.setItem('replay:eval', '{"v":2}')
+
+    await flushPreferenceSync()
+
+    expect(api.putPreference).toHaveBeenCalledOnce()
+    expect(api.putPreference).toHaveBeenCalledWith('replay:eval', '{"v":2}')
+  })
+
+  it('resolves when the backend rejects: navigation must not hang on the network', async () => {
+    api.putPreference.mockRejectedValue(new Error('offline'))
+    preferenceStorage.setItem('replay:eval', '{}')
+
+    await expect(flushPreferenceSync()).resolves.toBeUndefined()
+  })
+
+  it('resolves straight away with nothing queued', async () => {
+    await expect(flushPreferenceSync()).resolves.toBeUndefined()
+    expect(api.putPreference).not.toHaveBeenCalled()
+  })
+})
+
+describe('hydratePreferences local-writer-wins keys', () => {
+  it('keeps a differing local eval session and registry instead of resurrecting the stale backend copy', async () => {
+    const storage = memoryStorage()
+    storage.setItem('replay:eval', '{"accountId":"eval-ES-new","phase":"ready"}')
+    storage.setItem('replay:eval:accounts', '[{"accountId":"eval-ES-new"}]')
+    api.fetchPreferences.mockResolvedValue({
+      'replay:eval': '{"accountId":"eval-NQ-old","phase":"running"}',
+      'replay:eval:accounts': '[]',
+    })
+
+    await hydratePreferences(storage)
+
+    expect(storage.getItem('replay:eval')).toBe('{"accountId":"eval-ES-new","phase":"ready"}')
+    expect(storage.getItem('replay:eval:accounts')).toBe('[{"accountId":"eval-ES-new"}]')
+  })
+
+  it('seeds the eval keys from the backend on a browser that has no local copy', async () => {
+    const storage = memoryStorage()
+    api.fetchPreferences.mockResolvedValue({
+      'replay:eval': '{"accountId":"eval-NQ-old"}',
+      'replay:eval:accounts': '[{"accountId":"eval-NQ-old"}]',
+    })
+
+    await hydratePreferences(storage)
+
+    expect(storage.getItem('replay:eval')).toBe('{"accountId":"eval-NQ-old"}')
+    expect(storage.getItem('replay:eval:accounts')).toBe('[{"accountId":"eval-NQ-old"}]')
+  })
+
+  it('still lets the backend win for workspace settings keys', async () => {
+    const storage = memoryStorage()
+    storage.setItem('market-replay:chart-layout', '{"preset":"local"}')
+    api.fetchPreferences.mockResolvedValue({ 'market-replay:chart-layout': '{"preset":"remote"}' })
+
+    await hydratePreferences(storage)
+
+    expect(storage.getItem('market-replay:chart-layout')).toBe('{"preset":"remote"}')
+  })
+
+  it('create → navigate → boot keeps the new account when the flush reached the backend', async () => {
+    preferenceStorage.setItem('replay:eval', '{"accountId":"eval-ES-new","phase":"ready"}')
+    preferenceStorage.setItem('replay:eval:accounts', '[{"accountId":"eval-ES-new"}]')
+    await flushPreferenceSync()
+
+    api.fetchPreferences.mockResolvedValue({
+      'replay:eval': '{"accountId":"eval-ES-new","phase":"ready"}',
+      'replay:eval:accounts': '[{"accountId":"eval-ES-new"}]',
+    })
+    await hydratePreferences()
+
+    expect(preferenceStorage.getItem('replay:eval')).toBe('{"accountId":"eval-ES-new","phase":"ready"}')
+    expect(preferenceStorage.getItem('replay:eval:accounts')).toBe('[{"accountId":"eval-ES-new"}]')
+  })
+
+  it('create → navigate → boot keeps the new account even when the backend still holds the stale copy', async () => {
+    preferenceStorage.setItem('replay:eval', '{"accountId":"eval-ES-new","phase":"ready"}')
+    preferenceStorage.setItem('replay:eval:accounts', '[{"accountId":"eval-ES-new"}]')
+    api.fetchPreferences.mockResolvedValue({
+      'replay:eval': '{"accountId":"eval-NQ-old"}',
+      'replay:eval:accounts': '[]',
+    })
+
+    await hydratePreferences()
+
+    expect(preferenceStorage.getItem('replay:eval')).toBe('{"accountId":"eval-ES-new","phase":"ready"}')
+    expect(preferenceStorage.getItem('replay:eval:accounts')).toBe('[{"accountId":"eval-ES-new"}]')
   })
 })

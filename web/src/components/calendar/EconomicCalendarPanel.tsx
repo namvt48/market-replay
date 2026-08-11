@@ -1,8 +1,9 @@
 import { AlertTriangle, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, LocateFixed, RefreshCw } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchEconWeek } from '../../api/client'
 import type { EconEventView, EconImportance, EconMeta, EconWeek } from '../../api/types'
 import { useReplaySelector } from '../../replay/use-replay'
+import { useUiStore } from '../../store/ui-store'
 
 /*
 THESIS: The replay cursor is the calendar's “now”; the panel refuses a detached news-feed layout.
@@ -32,8 +33,6 @@ interface CalendarErrorPanelProps {
   onRetry: () => void
 }
 
-type ImportanceFilter = '' | Exclude<EconImportance, 'low'>
-
 const WEEK_LABEL_OPTIONS: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric' }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -51,13 +50,15 @@ function timeZoneShortName(timeZone: string): string {
 function importanceLabel(importance: EconImportance): string {
   if (importance === 'high') return 'H'
   if (importance === 'medium') return 'M'
-  return 'L'
+  if (importance === 'low') return 'L'
+  return 'N'
 }
 
 function importanceTone(importance: EconImportance): string {
   if (importance === 'high') return 'border-loss/40 bg-loss/10 text-loss-bright'
   if (importance === 'medium') return 'border-active/40 bg-active/10 text-active-bright'
-  return 'border-line-strong bg-surface-2 text-muted'
+  if (importance === 'low') return 'border-line-strong bg-surface-2 text-muted'
+  return 'border-line bg-surface-0 text-dim'
 }
 
 function dateKey(formatter: Intl.DateTimeFormat, timestamp: number): string {
@@ -66,6 +67,17 @@ function dateKey(formatter: Intl.DateTimeFormat, timestamp: number): string {
   const month = parts.find((part) => part.type === 'month')?.value ?? ''
   const day = parts.find((part) => part.type === 'day')?.value ?? ''
   return `${year}-${month}-${day}`
+}
+
+function timeUntil(timestamp: number, cursorTs: number): string {
+  const minutes = Math.max(0, Math.ceil((timestamp - cursorTs) / 60))
+  if (minutes < 1) return '<1m'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const remainder = minutes % 60
+  if (hours < 24) return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`
+  const days = Math.floor(hours / 24)
+  return `${days}d ${hours % 24}h`
 }
 
 export function CalendarErrorPanel({ onRetry }: CalendarErrorPanelProps) {
@@ -88,10 +100,13 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
   }))
   const [requestCursorTs, setRequestCursorTs] = useState(() => replay.cursorTs)
   const [browsingAt, setBrowsingAt] = useState<number | null>(null)
-  const [importance, setImportance] = useState<ImportanceFilter>('')
-  const [country, setCountry] = useState('')
+  const importance = useUiStore((state) => state.calendarImportance)
+  const country = useUiStore((state) => state.calendarCountry)
+  const setImportance = useUiStore((state) => state.setCalendarImportance)
+  const setCountry = useUiStore((state) => state.setCalendarCountry)
   const [retryVersion, setRetryVersion] = useState(0)
   const [weekState, setWeekState] = useState<WeekState>({ status: 'idle', data: null })
+  const nextEventRef = useRef<HTMLLIElement>(null)
   const week = weekState.data
   const queryAt = browsingAt ?? requestCursorTs
 
@@ -150,13 +165,16 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
     return [...groups.values()]
   }, [formatters.day, formatters.dayKey, week])
 
-  const nextEventId = useMemo(
-    () => week?.events.find((event) => event.ts > replay.cursorTs)?.id ?? null,
+  const nextEventTs = useMemo(
+    () => week?.events.find((event) => event.ts > replay.cursorTs)?.ts ?? null,
     [replay.cursorTs, week],
   )
   const weekLabel = week
     ? formatters.week.formatRange(new Date(week.weekStart * 1000), new Date(week.weekEnd * 1000 - 1))
     : 'Replay week'
+  useEffect(() => {
+    nextEventRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [nextEventTs])
   const showWeek = (at: number): void => {
     setRequestCursorTs(replay.cursorTs)
     setBrowsingAt(at)
@@ -187,7 +205,7 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
 
         <div className="grid grid-cols-2 gap-1.5 border-t border-line px-3 py-2">
           <label className="sr-only" htmlFor="calendar-importance">Minimum importance</label>
-          <select id="calendar-importance" value={importance} onChange={(event) => setImportance(event.target.value as ImportanceFilter)} className="field h-11 px-2 font-mono text-ui-meta lg:h-8">
+          <select id="calendar-importance" value={importance} onChange={(event) => setImportance(event.target.value === 'medium' || event.target.value === 'high' ? event.target.value : '')} className="field h-11 px-2 font-mono text-ui-meta lg:h-8">
             <option value="">All impact</option>
             <option value="medium">Medium +</option>
             <option value="high">High only</option>
@@ -195,7 +213,7 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
           <label className="sr-only" htmlFor="calendar-country">Country</label>
           <select id="calendar-country" value={country} onChange={(event) => setCountry(event.target.value)} className="field h-11 px-2 font-mono text-ui-meta lg:h-8">
             <option value="">All countries</option>
-            {meta.countries.map((item) => <option key={item} value={item}>{item}</option>)}
+            {['US', ...meta.countries.filter((item) => item !== 'US')].map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </div>
 
@@ -231,9 +249,9 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
               <ol className="divide-y divide-line">
                 {day.events.map((event) => {
                   const released = event.released && event.ts <= replay.cursorTs
-                  const next = event.id === nextEventId
+                  const next = event.ts === nextEventTs
                   return (
-                    <li key={event.id} className={`grid grid-cols-[3.25rem_minmax(0,1fr)] gap-2 border-l px-3 py-2.5 [content-visibility:auto] ${next ? 'border-l-active bg-active/5' : 'border-l-transparent'}`}>
+                    <li ref={next ? nextEventRef : undefined} key={event.id} aria-current={next ? 'true' : undefined} className={`grid scroll-mt-8 grid-cols-[3.25rem_minmax(0,1fr)] gap-2 border-l px-3 py-2.5 [content-visibility:auto] ${next ? 'border-l-active bg-active/15 outline outline-1 -outline-offset-1 outline-active/40' : 'border-l-transparent'}`}>
                       <div className="pt-0.5">
                         <time className="block font-mono text-ui-body text-ink" dateTime={new Date(event.ts * 1000).toISOString()}>{formatters.time.format(event.ts * 1000)}</time>
                         <span className={`mt-1 inline-flex min-w-5 items-center justify-center rounded-[3px] border px-1 font-mono text-ui-meta font-semibold ${importanceTone(event.importance)}`} aria-label={`${event.importance} importance`}>{importanceLabel(event.importance)}</span>
@@ -247,7 +265,7 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
                           {released ? (
                             <span className="flex shrink-0 items-center gap-1 text-ui-meta text-profit-bright"><Check size={12} strokeWidth={2} />Released</span>
                           ) : next ? (
-                            <span className="shrink-0 rounded-[3px] bg-active/15 px-1.5 font-mono text-ui-meta font-semibold text-active-bright">NEXT</span>
+                            <span className="shrink-0 rounded-[3px] bg-active px-1.5 font-mono text-ui-meta font-semibold text-white" aria-label={`Next event in ${timeUntil(event.ts, replay.cursorTs)}`}>NEXT · {timeUntil(event.ts, replay.cursorTs)}</span>
                           ) : (
                             <span className="flex shrink-0 items-center gap-1 text-ui-meta text-dim"><Clock3 size={11} />Scheduled</span>
                           )}
