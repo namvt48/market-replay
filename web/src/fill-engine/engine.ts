@@ -176,6 +176,9 @@ function applyFill(state: FillEngineState, order: WorkingOrder, fillTicks: numbe
     entryTs: Math.sign(remainder) === Math.sign(current.qty) ? current.entryTs : bar.ts,
     mfeTicks: 0, maeTicks: 0, initialRiskTicks: null,
   }
+  if (!position || Math.sign(position.qty) !== Math.sign(current.qty)) {
+    ordersWithoutFill = ordersWithoutFill.filter((item) => item.role === 'entry')
+  }
   return {
     ...state,
     sequence,
@@ -239,8 +242,12 @@ export function placeBracket(
 }
 
 export function placeEntryBracket(state: FillEngineState, input: PlaceEntryBracketInput): FillEngineState {
+  const entryInput: PlaceOrderInput = {
+    ...input,
+    priceTicks: input.type === 'market' ? undefined : input.priceTicks,
+  }
   if (input.stopLossTicks === undefined && input.takeProfitTicks === undefined) {
-    return placeOrder(state, input)
+    return placeOrder(state, entryInput)
   }
   const isBuy = input.side === 'buy'
   if (input.stopLossTicks !== undefined && (isBuy ? input.stopLossTicks >= input.priceTicks : input.stopLossTicks <= input.priceTicks)) {
@@ -250,7 +257,7 @@ export function placeEntryBracket(state: FillEngineState, input: PlaceEntryBrack
     throw new Error(`Take profit must be ${isBuy ? 'above' : 'below'} the entry price`)
   }
 
-  const withEntry = placeOrder(state, input)
+  const withEntry = placeOrder(state, entryInput)
   const entry = withEntry.orders.at(-1)
   if (!entry) return withEntry
   const exitSide = isBuy ? 'sell' : 'buy'

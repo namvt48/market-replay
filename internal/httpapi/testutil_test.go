@@ -11,6 +11,7 @@ import (
 
 	"market-replay/internal/bars"
 	"market-replay/internal/econ"
+	"market-replay/internal/indicators"
 	"market-replay/internal/model"
 	"market-replay/internal/storage/sqlite"
 )
@@ -146,5 +147,10 @@ func buildTestServer(t *testing.T, econLines []string) (*Server, string) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	return &Server{Registry: reg, Store: store, Econ: calendar}, dataDir
+	ind := indicators.NewEngine()
+	if err := indicators.RegisterBuiltins(ind); err != nil {
+		t.Fatalf("RegisterBuiltins: %v", err)
+	}
+
+	return &Server{Registry: reg, Store: store, Econ: calendar, Indicators: ind}, dataDir
 }

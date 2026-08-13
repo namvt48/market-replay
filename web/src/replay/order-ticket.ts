@@ -1,6 +1,5 @@
-import type { OrderSide, WorkingOrder } from '../fill-engine/types'
+import type { OrderSide, OrderType, WorkingOrder } from '../fill-engine/types'
 
-export type PendingOrderType = 'limit' | 'stop'
 export type OrderTicketRole = 'entry' | 'stopLoss' | 'takeProfit'
 
 export interface OrderTicketDraft {
@@ -8,7 +7,7 @@ export interface OrderTicketDraft {
   sourceOrderId: string | null
   sourceOrderIds: string[]
   side: OrderSide
-  type: PendingOrderType
+  type: OrderType
   qty: number
   entryPriceTicks: number
   stopLossTicks: number | null
@@ -19,7 +18,7 @@ const DEFAULT_PROTECTION_DISTANCE_TICKS = 20
 
 export function createOrderTicketDraft(
   side: OrderSide,
-  type: PendingOrderType,
+  type: OrderType,
   qty: number,
   entryPriceTicks: number,
 ): OrderTicketDraft {

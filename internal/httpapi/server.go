@@ -11,6 +11,7 @@ import (
 
 	"market-replay/internal/bars"
 	"market-replay/internal/econ"
+	"market-replay/internal/indicators"
 	"market-replay/internal/storage"
 )
 
@@ -21,8 +22,12 @@ type Server struct {
 	// Econ is the optional economic calendar. nil is fine: the endpoints then
 	// report an unavailable calendar rather than failing, so an install with
 	// no calendar data behaves exactly as it did before the feature existed.
-	Econ  *econ.Store
-	WebFS fs.FS // static frontend files; nil is fine (no "/" route registered), used in tests
+	Econ *econ.Store
+	// Indicators runs registered indicator scripts against bars.Registry
+	// data. Never nil in practice (cmd/server always constructs and
+	// registers built-ins into one before wiring the Server).
+	Indicators *indicators.Engine
+	WebFS      fs.FS // static frontend files; nil is fine (no "/" route registered), used in tests
 }
 
 // Handler builds the *http.ServeMux for this Server. Go 1.22+'s enhanced
@@ -60,6 +65,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/preferences", s.handleListPreferences)
 	mux.HandleFunc("PUT /api/v1/preferences/{key}", s.handlePutPreference)
 	mux.HandleFunc("DELETE /api/v1/preferences/{key}", s.handleDeletePreference)
+
+	mux.HandleFunc("GET /api/v1/indicators", s.handleListIndicators)
+	mux.HandleFunc("POST /api/v1/indicators/run", s.handleRunIndicator)
 
 	if s.WebFS != nil {
 		mux.Handle("GET /", withStaticCacheControl(http.FileServerFS(s.WebFS)))

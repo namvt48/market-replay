@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { decodeBarFrame, type BarFrame } from './binary-frame'
-import type { CalendarEntry, ChartBarTicks, ClosedTrade, EconMeta, EconWeek, EconWeekQuery, PersistedDrawing, ReplaySession, SymbolMeta, Timeframe } from './types'
+import type { CalendarEntry, ChartBarTicks, ClosedTrade, EconMeta, EconWeek, EconWeekQuery, IndicatorDescriptor, IndicatorRunResult, IndicatorInputValue, PersistedDrawing, ReplaySession, SymbolMeta, Timeframe } from './types'
 import { timeframeSchema } from '../replay/timeframe'
 import type { MarketSession } from '../replay/market-session'
 
@@ -49,6 +49,29 @@ const econWeekSchema = z.object({
   weekStart: z.number().int(), weekEnd: z.number().int(), timeZone: z.string(),
   cursorTs: z.number().int(), events: z.array(econEventViewSchema),
 })
+const indicatorColorSchema = z.object({
+  r: z.number().int().min(0).max(255), g: z.number().int().min(0).max(255),
+  b: z.number().int().min(0).max(255), a: z.number().min(0).max(1),
+})
+const indicatorInputValueSchema = z.union([z.string(), z.number(), z.boolean(), indicatorColorSchema])
+const indicatorInputSchema = z.object({
+  kind: z.enum(['session', 'time', 'str', 'float', 'int', 'bool', 'color']),
+  key: z.string(), label: z.string(), group: z.string().optional(), tooltip: z.string().optional(),
+  default: indicatorInputValueSchema, min: z.number().optional(), max: z.number().optional(),
+  step: z.number().optional(), options: z.array(z.string()).optional(),
+})
+const indicatorDescriptorSchema = z.object({
+  id: z.string(), name: z.string(), version: z.number().int(),
+  meta: z.object({ onMainPanel: z.boolean(), format: z.string().optional() }),
+  inputs: z.array(indicatorInputSchema),
+})
+const indicatorDrawSchema = z.object({
+  id: z.number().int(), kind: z.enum(['ray', 'rectangle', 'vline', 'marker']), label: z.string().optional(),
+  t0: z.number(), y0: z.number(), t1: z.number().optional(), y1: z.number().optional(),
+  style: z.record(z.string(), z.unknown()),
+})
+const indicatorPlotSchema = z.object({ key: z.string(), time: z.number(), value: z.number() })
+const indicatorRunSchema = z.object({ draws: z.array(indicatorDrawSchema), plots: z.array(indicatorPlotSchema) })
 
 const TRANSIENT_GET_RETRY_DELAYS_MS = [150, 450, 900] as const
 
@@ -149,6 +172,26 @@ export async function fetchEconWeek(query: EconWeekQuery, signal?: AbortSignal):
   for (const country of query.countries ?? []) params.append('country', country)
   const response = await checkedFetch(`/api/v1/econ/week?${params}`, { signal })
   return econWeekSchema.parse(await response.json()) as EconWeek
+}
+
+export async function fetchIndicators(signal?: AbortSignal): Promise<IndicatorDescriptor[]> {
+  const response = await checkedFetch('/api/v1/indicators', { signal })
+  return z.array(indicatorDescriptorSchema).parse(await response.json()) as IndicatorDescriptor[]
+}
+
+export async function runIndicator(
+  symbol: string,
+  tf: Timeframe,
+  script: string,
+  at: number,
+  inputs: Record<string, IndicatorInputValue>,
+  signal?: AbortSignal,
+): Promise<IndicatorRunResult> {
+  const query = new URLSearchParams({ symbol, tf, script, at: String(at), before: '1500', after: '0', to: String(at) })
+  const response = await checkedFetch(`/api/v1/indicators/run?${query}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inputs }), signal,
+  })
+  return indicatorRunSchema.parse(await response.json()) as IndicatorRunResult
 }
 
 export async function fetchWatchlist(): Promise<string[]> {

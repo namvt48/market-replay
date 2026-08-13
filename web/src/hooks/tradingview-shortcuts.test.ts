@@ -62,8 +62,8 @@ const RESOLVER_CASES: readonly ResolverCase[] = [
   { label: 'Delete removes drawing', input: { key: 'Delete' }, command: 'delete-drawing' },
   { label: 'Backspace removes drawing', input: { key: 'Backspace' }, command: 'delete-drawing' },
   { label: 'Escape cancels current action', input: { key: 'Escape' }, command: 'cancel' },
-  { label: 'Ctrl+Shift+B places market buy', input: { key: 'b', ctrlKey: true, shiftKey: true }, command: 'market-buy' },
-  { label: 'Ctrl+Shift+S places market sell', input: { key: 's', ctrlKey: true, shiftKey: true }, command: 'market-sell' },
+  { label: 'Alt+Q places market buy', input: { key: 'q', altKey: true }, command: 'market-buy' },
+  { label: 'Shift+Alt+Q places market sell', input: { key: 'q', altKey: true, shiftKey: true }, command: 'market-sell' },
   { label: 'Shift+B opens limit buy', input: { key: 'b', shiftKey: true }, command: 'limit-buy' },
   { label: 'Shift+S opens limit sell', input: { key: 's', shiftKey: true }, command: 'limit-sell' },
   { label: 'Space toggles replay', input: { key: ' ' }, command: 'toggle-replay' },
@@ -108,11 +108,11 @@ describe('TradingView shortcut resolver', () => {
     expect(shortcut({ key: '5' })).toBeNull()
   })
 
-  it('maps Shift for limit tickets and Ctrl/Shift for market orders', () => {
+  it('maps Shift for limit tickets and Alt+Q for market orders', () => {
     expect(shortcut({ key: 'b', shiftKey: true })).toBe('limit-buy')
     expect(shortcut({ key: 'S', shiftKey: true })).toBe('limit-sell')
-    expect(shortcut({ key: 'b', ctrlKey: true, shiftKey: true })).toBe('market-buy')
-    expect(shortcut({ key: 'S', ctrlKey: true, shiftKey: true })).toBe('market-sell')
+    expect(shortcut({ key: 'q', altKey: true })).toBe('market-buy')
+    expect(shortcut({ key: 'Q', altKey: true, shiftKey: true })).toBe('market-sell')
     expect(shortcut({ key: 'S', ctrlKey: true })).toBe('save-layout')
   })
 

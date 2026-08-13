@@ -3,6 +3,7 @@ import {
   cancelAllOrders,
   cancelOrder,
   createFillEngine,
+  flattenPosition,
   placeBracket,
   placeEntryBracket,
   placeOrder,
@@ -93,6 +94,29 @@ describe('fill engine rules', () => {
       { role: 'stopLoss', active: true },
       { role: 'takeProfit', active: true },
     ])
+  })
+
+  it('activates a market ticket bracket on fill and removes protection after flattening', () => {
+    const pending = placeEntryBracket(visibleState(), {
+      side: 'buy', type: 'market', qty: 1, priceTicks: 101,
+      stopLossTicks: 95, takeProfitTicks: 105,
+    })
+    expect(pending.orders.map((order) => ({ role: order.role, active: order.active }))).toEqual([
+      { role: 'entry', active: true },
+      { role: 'stopLoss', active: false },
+      { role: 'takeProfit', active: false },
+    ])
+
+    const opened = stepFillEngine(pending, bar(120, 100, 103, 99, 102))
+    expect(opened.position?.qty).toBe(1)
+    expect(opened.orders.map((order) => ({ role: order.role, active: order.active }))).toEqual([
+      { role: 'stopLoss', active: true },
+      { role: 'takeProfit', active: true },
+    ])
+
+    const flattened = stepFillEngine(flattenPosition(opened), bar(180, 102, 103, 101, 102))
+    expect(flattened.position).toBeNull()
+    expect(flattened.orders).toEqual([])
   })
 
   it('cancels an unfilled entry together with its contingent protection', () => {

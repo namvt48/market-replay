@@ -12,6 +12,7 @@ import {
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
+  type LineData,
   type LogicalRange,
   type MouseEventParams,
   type SeriesMarker,
@@ -28,7 +29,7 @@ import {
   type SerializedDrawing,
 } from 'lightweight-charts-drawing'
 import type { SymbolMeta, Timeframe } from '../api/types'
-import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, DrawingNudgeDirection, EconomicEventMarker, HistoryUpdateOptions, OrderLine, OrderLineAction, PriceScaleToggle, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDemand } from './chart-adapter'
+import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, DrawingNudgeDirection, EconomicEventMarker, HistoryUpdateOptions, IndicatorRenderResult, OrderLine, OrderLineAction, PriceScaleToggle, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDemand } from './chart-adapter'
 import {
   DEFAULT_DRAWING_METADATA,
   appearanceOptions,
@@ -42,6 +43,7 @@ import {
 } from './drawing-appearance'
 import { DrawingLabelsPrimitive } from './drawing-labels-primitive'
 import { EconomicEventMarkersPrimitive } from './economic-event-markers-primitive'
+import { IndicatorDrawingsPrimitive } from './indicator-drawings-primitive'
 import { projectDrawingsToHistory } from './drawing-projection'
 import { DEFAULT_CHART_APPEARANCE, type ChartAppearanceSettings } from './chart-settings'
 import { DEFAULT_CHART_TIMEZONE, formatChartTime, type ChartTimezone } from './chart-timezone'
@@ -65,6 +67,7 @@ const UI_FONT_FAMILY = '"Roboto Variable", -apple-system, BlinkMacSystemFont, "S
 const MAX_ADAPTER_HISTORY_BARS = 6_000
 const BULK_PUSH_BARS = 32
 const MAX_PRICE_LABEL_CACHE = 4_096
+const INDICATOR_PLOT_COLORS = ['#5b8cff', '#22ab94', '#ffb74d', '#c084fc', '#ff5563'] as const
 
 interface DrawingDragState {
   drawingId: string
@@ -94,6 +97,28 @@ interface ManualPriceRange {
 interface DrawingPriceScaleLock {
   range: ManualPriceRange
   restoreAutoScale: boolean
+}
+
+interface FreehandGesture {
+  pointerId: number
+  tool: 'brush'
+  anchors: PlacementAnchor[]
+  lastX: number
+  lastY: number
+}
+
+interface AreaZoomGesture {
+  pointerId: number
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
+}
+
+interface AreaZoomRestoreState {
+  logicalRange: LogicalRange
+  priceRange: ManualPriceRange
+  priceAutoScale: boolean
 }
 
 /**
@@ -137,7 +162,10 @@ export class LwcAdapter implements ChartAdapter {
   private spacer: ISeriesApi<'Line'> | null = null
   private markers: ISeriesMarkersPluginApi<Time> | null = null
   private container: HTMLElement | null = null
+  private chartRoot: HTMLElement | null = null
   private resizeObserver: ResizeObserver | null = null
+  private lastWidth = 0
+  private lastHeight = 0
   private history: DisplayBar[] = []
   /** @internal Exposed for deterministic adapter interaction tests. */
   readonly orderPrimitive = new OrderLinesPrimitive()
@@ -145,6 +173,8 @@ export class LwcAdapter implements ChartAdapter {
   readonly tradeConnectionsPrimitive = new TradeConnectionsPrimitive()
   /** @internal Exposed for deterministic adapter interaction tests. */
   readonly economicEventMarkersPrimitive = new EconomicEventMarkersPrimitive()
+  readonly indicatorDrawingsPrimitive = new IndicatorDrawingsPrimitive()
+  private indicatorSeries = new Map<string, ISeriesApi<'Line'>>()
   private replaySelectionPrimitive = new ReplaySelectionPrimitive()
   private replaySelectionState: ReplaySelectionState = { mode: 'inactive' }
   private replaySelectionHandler: (timestamp: number) => void = () => undefined
@@ -157,6 +187,7 @@ export class LwcAdapter implements ChartAdapter {
   private drawingSelectionHandler: (drawing: DrawingAppearance | null) => void = () => undefined
   private drawingEditRequestHandler: (drawing: DrawingAppearance) => void = () => undefined
   private drawingToolChangedHandler: (tool: string | null) => void = () => undefined
+  private areaZoomChangedHandler: (state: { selecting: boolean; zoomed: boolean }) => void = () => undefined
   private viewportDemandHandler: (demand: ViewportDemand) => void = () => undefined
   private crosshairSyncHandler: (state: ChartCrosshairSync | null) => void = () => undefined
   private viewportSyncHandler: (state: ChartViewportSync) => void = () => undefined
@@ -173,6 +204,10 @@ export class LwcAdapter implements ChartAdapter {
   )
   private activeTool: string | null = null
   private placement: DrawingPlacementState = IDLE_DRAWING_PLACEMENT
+  private pathAnchors: PlacementAnchor[] = []
+  private freehandGesture: FreehandGesture | null = null
+  private suppressNextDrawingClick = false
+  private suppressNextDrawingDoubleClick = false
   private preview: IDrawing | null = null
   private measurementGesture: { pointerId: number; startX: number; startY: number; dragged: boolean; transient: boolean } | null = null
   private measurementClickAnchored = false
@@ -184,6 +219,12 @@ export class LwcAdapter implements ChartAdapter {
   private draggingDrawing: DrawingDragState | null = null
   private drawingPriceScaleLock: DrawingPriceScaleLock | null = null
   private drawingsHidden = false
+  private drawingsLocked = false
+  private keepDrawing = false
+  private areaZoomSelecting = false
+  private areaZoomGesture: AreaZoomGesture | null = null
+  private areaZoomRestoreState: AreaZoomRestoreState | null = null
+  private areaZoomOverlay: HTMLDivElement | null = null
   private drawingUndoStack: SerializedDrawing[][] = []
   private drawingRedoStack: SerializedDrawing[][] = []
   private drawingHistorySnapshot: SerializedDrawing[] = []
@@ -206,14 +247,29 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   async init(element: HTMLElement, symbol: SymbolMeta, _tf: Timeframe): Promise<void> {
+    // ReplayEngine applies global drawing controls before a newly-created pane
+    // is initialized. Preserve those externally-owned controls while clearing
+    // any chart-owned resources from a previous initialization.
+    const drawingControls = {
+      hidden: this.drawingsHidden,
+      locked: this.drawingsLocked,
+      keepDrawing: this.keepDrawing,
+    }
     this.destroy()
+    this.drawingsHidden = drawingControls.hidden
+    this.drawingsLocked = drawingControls.locked
+    this.keepDrawing = drawingControls.keepDrawing
     this.drawingManager = new DrawingManager()
     this.container = element
     this.pricePrecision = symbol.priceDecimals
     this.tickSize = symbol.tickSize
     this.symbolCode = symbol.symbol
+    const existingChildren = new Set(element.children)
     this.chart = createChart(element, {
-      autoSize: true,
+      // This adapter already owns one guarded ResizeObserver below. Keeping
+      // Lightweight Charts autoSize enabled creates a second observer whose
+      // queued callback can outlive a chart moved back from a pop-out window.
+      autoSize: false,
       layout: { background: { type: ColorType.Solid, color: this.appearance.backgroundColor }, textColor: this.appearance.textColor, fontFamily: UI_FONT_FAMILY, fontSize: 12, attributionLogo: false, panes: { separatorColor: '#2a2e39', enableResize: true } },
       grid: { vertLines: { color: this.appearance.verticalGridColor, visible: this.appearance.showGrid }, horzLines: { color: this.appearance.horizontalGridColor, visible: this.appearance.showGrid } },
       crosshair: { mode: CrosshairMode.Normal, vertLine: { color: '#787b8688', labelBackgroundColor: '#2a2e39' }, horzLine: { color: '#787b8688', labelBackgroundColor: '#2a2e39' } },
@@ -223,6 +279,9 @@ export class LwcAdapter implements ChartAdapter {
       handleScale: true,
       handleScroll: true,
     })
+    const chartRoot = Array.from(element.children).find((child) => !existingChildren.has(child))
+    this.chartRoot = chartRoot && 'style' in chartRoot ? chartRoot as HTMLElement : null
+    this.fillChartContainer()
     this.candles = this.chart.addSeries(CandlestickSeries, {
       upColor: this.appearance.upColor, downColor: this.appearance.downColor, wickUpColor: this.appearance.wickUpColor, wickDownColor: this.appearance.wickDownColor,
       borderUpColor: this.appearance.borderUpColor, borderDownColor: this.appearance.borderDownColor, borderVisible: this.appearance.borderVisible,
@@ -236,6 +295,7 @@ export class LwcAdapter implements ChartAdapter {
     this.candles.attachPrimitive(this.drawingLabelsPrimitive)
     this.candles.attachPrimitive(this.replaySelectionPrimitive)
     this.candles.attachPrimitive(this.economicEventMarkersPrimitive)
+    this.candles.attachPrimitive(this.indicatorDrawingsPrimitive)
     this.drawingManager.attach(this.chart, this.candles, element)
     this.bindDrawingEvents()
     this.bindInteractions()
@@ -244,8 +304,34 @@ export class LwcAdapter implements ChartAdapter {
     this.chart.timeScale().subscribeVisibleTimeRangeChange(this.handleVisibleTimeRangeChange)
     this.applyAppearance(this.appearance)
     this.applyReplaySelectionState()
-    this.resizeObserver = new ResizeObserver(() => this.chart?.applyOptions({ width: element.clientWidth, height: element.clientHeight }))
+    // ResizeObserver is the fallback path for size changes we don't drive
+    // ourselves (window resize, a pop-out window's own OS-level resize). It
+    // always fires at least one tick after the DOM has already resized, so
+    // relying on it alone during an active split-drag left the canvas
+    // visibly trailing the container's current width. ChartTile also calls
+    // syncContainerSize() from a layout effect on every commit, which runs
+    // synchronously right after the drag's own re-render resizes this
+    // element — closing that gap for the case that actually matters.
+    this.resizeObserver = new ResizeObserver(() => this.syncContainerSize())
     this.resizeObserver.observe(element)
+  }
+
+  syncContainerSize(): void {
+    if (!this.chart || !this.container) return
+    const width = this.container.clientWidth
+    const height = this.container.clientHeight
+    if (width === this.lastWidth && height === this.lastHeight) return
+    this.lastWidth = width
+    this.lastHeight = height
+    // Resizing this pane's own width changes how many bars fit at a fixed
+    // barSpacing, which fires the same visible-range callbacks a real user
+    // pan/zoom would; route it through the same guard as any other
+    // programmatic viewport change so it doesn't echo out as a sync event
+    // and fight a sibling pane resizing at the same time.
+    this.withExternalSync(() => {
+      this.chart?.resize(width, height, true)
+      this.fillChartContainer()
+    })
   }
 
   setSymbol(symbol: SymbolMeta): void {
@@ -493,6 +579,45 @@ export class LwcAdapter implements ChartAdapter {
     this.economicEventMarkersPrimitive.setMarkers(markers)
   }
 
+  setIndicators(results: IndicatorRenderResult[]): void {
+    const draws = results.flatMap((result) => result.draws)
+    this.indicatorDrawingsPrimitive.setDraws(draws)
+    if (!this.chart) return
+
+    const grouped = new Map<string, Map<number, LineData<Time>>>()
+    for (const result of results) {
+      for (const point of result.plots) {
+        if (!Number.isFinite(point.time) || !Number.isFinite(point.value)) continue
+        const key = `${result.indicatorId}:${point.key}`
+        const points = grouped.get(key) ?? new Map<number, LineData<Time>>()
+        points.set(point.time, { time: toTime(point.time), value: point.value })
+        grouped.set(key, points)
+      }
+    }
+
+    for (const [key, series] of this.indicatorSeries) {
+      if (grouped.has(key)) continue
+      this.chart.removeSeries(series)
+      this.indicatorSeries.delete(key)
+    }
+    let colorIndex = 0
+    for (const [key, points] of grouped) {
+      let series = this.indicatorSeries.get(key)
+      if (!series) {
+        series = this.chart.addSeries(LineSeries, {
+          color: INDICATOR_PLOT_COLORS[colorIndex % INDICATOR_PLOT_COLORS.length],
+          lineWidth: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        })
+        this.indicatorSeries.set(key, series)
+      }
+      series.setData([...points.values()].sort((left, right) => Number(left.time) - Number(right.time)))
+      colorIndex += 1
+    }
+  }
+
   setTradeConnections(connections: TradeConnection[]): void {
     this.tradeConnectionsPrimitive.setConnections(connections)
   }
@@ -523,9 +648,12 @@ export class LwcAdapter implements ChartAdapter {
 
   setDrawingTool(tool: string | null): void {
     if (tool && this.drawingsHidden) this.toggleDrawingsVisibility()
+    if (this.areaZoomSelecting) this.cancelAreaZoomSelection()
     this.cancelPreview()
     this.measurementGesture = null
     this.measurementClickAnchored = false
+    this.pathAnchors = []
+    this.freehandGesture = null
     if (tool) this.drawingManager.deselectAll()
     this.activeTool = tool
     const definition = tool ? getToolRegistry().get(tool) : undefined
@@ -642,7 +770,12 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   toggleDrawingsVisibility(): void {
-    this.drawingsHidden = !this.drawingsHidden
+    this.setDrawingsHidden(!this.drawingsHidden)
+  }
+
+  setDrawingsHidden(hidden: boolean): void {
+    if (this.drawingsHidden === hidden) return
+    this.drawingsHidden = hidden
     if (this.drawingsHidden) this.drawingManager.deselectAll()
     for (const drawing of this.drawingManager.getAllDrawings()) {
       if (drawing.id === PREVIEW_ID) continue
@@ -651,6 +784,22 @@ export class LwcAdapter implements ChartAdapter {
     }
     this.drawingLabelsPrimitive.requestUpdate()
   }
+
+  setAllDrawingsLocked(locked: boolean): void {
+    if (this.drawingsLocked === locked) return
+    this.drawingsLocked = locked
+    if (locked) this.drawingManager.deselectAll()
+    for (const drawing of this.drawingManager.getAllDrawings()) {
+      if (drawing.id !== PREVIEW_ID) drawing.updateOptions({ locked })
+    }
+    this.recordDrawingHistory('drawing:updated')
+    this.drawingLabelsPrimitive.requestUpdate()
+    this.drawingChangedHandler()
+    this.applyChartInteractionLock()
+  }
+
+  setKeepDrawing(enabled: boolean): void { this.keepDrawing = enabled }
+  drawingCount(): number { return this.getDrawings().length }
 
   private captureDrawingState(): SerializedDrawing[] {
     return structuredClone(this.getDrawings())
@@ -680,6 +829,7 @@ export class LwcAdapter implements ChartAdapter {
       this.drawingManager.clearAll()
       const registry = getToolRegistry()
       this.drawingManager.importDrawings(structuredClone(drawings), (type, data) => registry.createDrawing(type, data.id, data.anchors, data.style, data.options))
+      if (this.drawingsLocked) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.updateOptions({ locked: true }))
       if (this.drawingsHidden) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.detach())
       this.drawingHistorySnapshot = this.captureDrawingState()
       this.lastDrawingUpdate = null
@@ -706,6 +856,7 @@ export class LwcAdapter implements ChartAdapter {
       const registry = getToolRegistry()
       const projected = projectDrawingsToHistory(drawings, this.history)
       this.drawingManager.importDrawings(projected, (type, data) => registry.createDrawing(type, data.id, data.anchors, data.style, data.options))
+      if (this.drawingsLocked) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.updateOptions({ locked: true }))
       if (this.drawingsHidden) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.detach())
       this.drawingHistorySnapshot = this.captureDrawingState()
       this.lastDrawingUpdate = null
@@ -721,6 +872,39 @@ export class LwcAdapter implements ChartAdapter {
   onDrawingSelection(handler: (drawing: DrawingAppearance | null) => void): void { this.drawingSelectionHandler = handler }
   onDrawingEditRequest(handler: (drawing: DrawingAppearance) => void): void { this.drawingEditRequestHandler = handler }
   onDrawingToolChanged(handler: (tool: string | null) => void): void { this.drawingToolChangedHandler = handler }
+  onAreaZoomChanged(handler: (state: { selecting: boolean; zoomed: boolean }) => void): void { this.areaZoomChangedHandler = handler }
+  areaZoomState(): { selecting: boolean; zoomed: boolean } { return { selecting: this.areaZoomSelecting, zoomed: this.areaZoomRestoreState !== null } }
+
+  beginAreaZoom(): void {
+    if (!this.chart || !this.candles) return
+    this.setDrawingTool(null)
+    this.drawingManager.deselectAll()
+    this.areaZoomSelecting = true
+    this.areaZoomGesture = null
+    this.removeAreaZoomOverlay()
+    this.container?.classList.add('chart-area-zoom-active')
+    this.applyChartInteractionLock()
+    if (this.container) {
+      if (this.container.tabIndex < 0) this.container.tabIndex = 0
+      this.container.focus({ preventScroll: true })
+    }
+    this.areaZoomChangedHandler({ selecting: true, zoomed: this.areaZoomRestoreState !== null })
+  }
+
+  resetAreaZoom(): void {
+    const restore = this.areaZoomRestoreState
+    if (!restore || !this.chart || !this.candles) return
+    this.cancelAreaZoomSelection()
+    this.withExternalSync(() => {
+      this.chart?.timeScale().setVisibleLogicalRange(restore.logicalRange)
+      const scale = this.candles?.priceScale()
+      scale?.setVisibleRange(restore.priceRange)
+      scale?.setAutoScale(restore.priceAutoScale)
+    })
+    this.areaZoomRestoreState = null
+    queueMicrotask(() => this.scheduleViewportSync())
+    this.areaZoomChangedHandler({ selecting: false, zoomed: false })
+  }
 
   visibleRange(): { from: number; to: number } {
     const range = this.chart?.timeScale().getVisibleRange()
@@ -847,9 +1031,14 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   destroy(): void {
+    const chart = this.chart
+    const chartWindow = this.container?.ownerDocument.defaultView
+    this.removeAreaZoomOverlay()
     this.closeQuantityEditor()
     this.resizeObserver?.disconnect()
     this.resizeObserver = null
+    this.lastWidth = 0
+    this.lastHeight = 0
     this.drawingManager.detach()
     if (this.chart) this.chart.unsubscribeCrosshairMove(this.handleCrosshairMove)
     if (this.chart) this.chart.timeScale().unsubscribeVisibleLogicalRangeChange(this.handleVisibleLogicalRangeChange)
@@ -869,22 +1058,40 @@ export class LwcAdapter implements ChartAdapter {
     }
     if (this.viewportSyncFrame) window.cancelAnimationFrame(this.viewportSyncFrame)
     if (this.drawingSyncFrame) window.cancelAnimationFrame(this.drawingSyncFrame)
-    this.chart?.remove()
     this.chart = null
+    this.chartRoot = null
     this.candles = null
     this.volume = null
     this.spacer = null
     this.markers = null
+    this.indicatorSeries.clear()
+    this.indicatorDrawingsPrimitive.setDraws([])
     this.container = null
     this.activeTool = null
     this.placement = IDLE_DRAWING_PLACEMENT
+    this.pathAnchors = []
+    this.freehandGesture = null
+    this.suppressNextDrawingClick = false
+    this.suppressNextDrawingDoubleClick = false
     this.preview = null
     this.measurementGesture = null
     this.measurementClickAnchored = false
+    // Lightweight Charts can still have one invalidation frame queued after
+    // its public API has finished an update. Let that frame drain while the
+    // canvas bindings are alive, then remove the chart. Pop-out windows wait
+    // one additional frame before closing for the same reason.
+    if (chart) window.requestAnimationFrame(() => {
+      if (!chartWindow?.closed) chart.remove()
+    })
     this.measurementPreviewPinned = false
     this.draggingDrawing = null
     this.drawingPriceScaleLock = null
     this.drawingsHidden = false
+    this.drawingsLocked = false
+    this.keepDrawing = false
+    this.areaZoomSelecting = false
+    this.areaZoomGesture = null
+    this.areaZoomRestoreState = null
     this.drawingUndoStack = []
     this.drawingRedoStack = []
     this.drawingHistorySnapshot = []
@@ -1019,6 +1226,20 @@ export class LwcAdapter implements ChartAdapter {
     try { action() } finally { queueMicrotask(() => { this.applyingExternalSync = false }) }
   }
 
+  private fillChartContainer(): void {
+    if (!this.chartRoot) return
+    // A split pane can be a fractional CSS-pixel wide on a scaled display.
+    // Lightweight Charts snaps its explicit width and writes that integer
+    // onto the outer chart element. On the second pane, whose right edge is
+    // fixed, the rounded shell then alternates between a small gap and a
+    // small overflow while the divider moves. Keep the internal canvases
+    // snapped, but make their outer shell cover the pane exactly. This
+    // mirrors the library's autoSize layout without giving up the adapter's
+    // guarded ResizeObserver ownership.
+    this.chartRoot.style.width = '100%'
+    this.chartRoot.style.height = '100%'
+  }
+
   private handleReplaySelectionClick = (event: MouseEvent): void => {
     if (this.replaySelectionState.mode !== 'selecting' || !this.container || !this.chart) return
     const bar = this.nearestReplayBarAt(event.clientX - this.container.getBoundingClientRect().left)
@@ -1030,6 +1251,35 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   private handleReplaySelectionKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape' && this.areaZoomSelecting) {
+      this.cancelAreaZoomSelection()
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (event.key === 'Enter' && this.areaZoomSelecting && this.container) {
+      const { width, height } = this.container.getBoundingClientRect()
+      if (width >= 16 && height >= 16) {
+        this.areaZoomGesture = {
+          pointerId: -1,
+          startX: width * 0.25,
+          startY: height * 0.25,
+          currentX: width * 0.75,
+          currentY: height * 0.75,
+        }
+        this.completeAreaZoom()
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (this.activeTool === 'path' && (event.key === 'Enter' || event.key === 'Escape')) {
+      if (event.key === 'Enter' && this.pathAnchors.length >= 2) this.completeDrawing('path', this.pathAnchors)
+      else this.setDrawingTool(null)
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     if (this.replaySelectionState.mode !== 'selecting' || this.history.length === 0) return
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
       const direction = event.key === 'ArrowLeft' ? -1 : 1
@@ -1050,8 +1300,14 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   private handleDrawingClick = (event: MouseEvent): void => {
+    if (this.suppressNextDrawingClick) {
+      this.suppressNextDrawingClick = false
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
     if (!this.activeTool || event.shiftKey || event.ctrlKey || !this.container || !this.chart || !this.candles) return
-    if (this.activeTool === 'date-price-range') return
+    if (this.activeTool === 'date-price-range' || this.activeTool === 'brush') return
     const rect = this.container.getBoundingClientRect()
     const x = event.clientX - rect.left
     const y = event.clientY - rect.top
@@ -1060,22 +1316,41 @@ export class LwcAdapter implements ChartAdapter {
     if (time === null || price === null) return
     if (typeof time !== 'number') return
     const anchor: PlacementAnchor = { time, price }
+    if (this.activeTool === 'path') {
+      if (event.detail >= 2) {
+        if (this.pathAnchors.length >= 2) {
+          this.completeDrawing('path', this.pathAnchors)
+          this.suppressNextDrawingDoubleClick = true
+        }
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        return
+      }
+      this.pathAnchors.push(anchor)
+      this.renderFreeformPreview('path', this.pathAnchors.length === 1 ? [anchor, anchor] : this.pathAnchors)
+      return
+    }
     const nextPlacement = commitDrawingAnchor(this.placement, anchor)
     this.placement = nextPlacement
     if (nextPlacement.status !== 'complete') {
       this.renderPlacementPreview(anchor)
       return
     }
+    this.completeDrawing(this.activeTool, nextPlacement.anchors)
+  }
+
+  private completeDrawing(tool: string, anchors: PlacementAnchor[]): void {
     const registry = getToolRegistry()
     this.removePreview()
     const creationOptions: DrawingWorkbenchOptions & { text?: string; note?: string; pricePrecision?: number; displayTimezone?: string } = {
       workbench: { ...DEFAULT_DRAWING_METADATA },
-      text: this.activeTool.includes('text') ? '' : undefined,
-      note: this.activeTool.includes('note') ? '' : undefined,
+      text: tool.includes('text') ? '' : undefined,
+      note: tool.includes('note') ? '' : undefined,
       pricePrecision: this.pricePrecision,
       displayTimezone: 'UTC',
+      locked: this.drawingsLocked,
     }
-    const drawing = registry.createDrawing(this.activeTool, `drawing-${crypto.randomUUID()}`, nextPlacement.anchors.map((point) => ({ time: toTime(point.time), price: point.price })), {
+    const drawing = registry.createDrawing(tool, `drawing-${crypto.randomUUID()}`, anchors.map((point) => ({ time: toTime(point.time), price: point.price })), {
       lineColor: colorWithOpacity(DEFAULT_DRAWING_METADATA.strokeColor, DEFAULT_DRAWING_METADATA.strokeOpacity),
       lineWidth: 2,
       lineDash: [],
@@ -1085,14 +1360,14 @@ export class LwcAdapter implements ChartAdapter {
     }, creationOptions)
     if (drawing) {
       this.drawingManager.addDrawing(drawing)
-      this.drawingManager.selectDrawing(drawing.id)
+      if (!this.drawingsLocked) this.drawingManager.selectDrawing(drawing.id)
       if (this.nextDrawingAppearance) {
         this.updateSelectedDrawing(this.nextDrawingAppearance)
         this.nextDrawingAppearance = null
       }
-      if (drawing.type === 'fib-retracement') this.drawingEditRequestHandler(getDrawingAppearance(drawing))
     }
-    this.setDrawingTool(null)
+    this.pathAnchors = []
+    this.setDrawingTool(this.keepDrawing ? tool : null)
   }
 
   private handleModifiedClick = (event: MouseEvent): void => {
@@ -1198,6 +1473,18 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   private handleDrawingDoubleClick = (event: MouseEvent): void => {
+    if (this.suppressNextDrawingDoubleClick) {
+      this.suppressNextDrawingDoubleClick = false
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
+    if (this.activeTool === 'path') {
+      if (this.pathAnchors.length >= 2) this.completeDrawing('path', this.pathAnchors)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
     if (this.activeTool || !this.container) return
     const rect = this.container.getBoundingClientRect()
     const drawing = this.drawingManager.hitTest({ x: event.clientX - rect.left, y: event.clientY - rect.top })
@@ -1209,9 +1496,30 @@ export class LwcAdapter implements ChartAdapter {
 
   private handlePointerDown = (event: PointerEvent): void => {
     if (this.replaySelectionState.mode === 'selecting' || event.button !== 0 || !this.container || !this.chart || !this.candles) return
+    if (this.areaZoomSelecting) {
+      const rect = this.container.getBoundingClientRect()
+      const point = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+      this.areaZoomGesture = { pointerId: event.pointerId, startX: point.x, startY: point.y, currentX: point.x, currentY: point.y }
+      this.ensureAreaZoomOverlay()
+      this.updateAreaZoomOverlay()
+      this.container.setPointerCapture(event.pointerId)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
     if (this.measurementPreviewPinned) this.cancelPreview()
     const initialRect = this.container.getBoundingClientRect()
     const initialPoint = { x: event.clientX - initialRect.left, y: event.clientY - initialRect.top }
+    if (this.activeTool === 'brush') {
+      const time = this.chart.timeScale().coordinateToTime(initialPoint.x)
+      const price = this.candles.coordinateToPrice(initialPoint.y)
+      if (typeof time !== 'number' || price === null) return
+      this.freehandGesture = { pointerId: event.pointerId, tool: 'brush', anchors: [{ time, price }], lastX: initialPoint.x, lastY: initialPoint.y }
+      this.container.setPointerCapture(event.pointerId)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
     const transientMeasurement = event.shiftKey && !this.activeTool && this.drawingManager.hitTest(initialPoint) === null
     if (this.activeTool === 'date-price-range' || transientMeasurement) {
       if (transientMeasurement) this.setDrawingTool('date-price-range')
@@ -1304,6 +1612,31 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   private handlePointerMove = (event: PointerEvent): void => {
+    if (this.areaZoomGesture?.pointerId === event.pointerId && this.container) {
+      const rect = this.container.getBoundingClientRect()
+      this.areaZoomGesture.currentX = Math.max(0, Math.min(rect.width, event.clientX - rect.left))
+      this.areaZoomGesture.currentY = Math.max(0, Math.min(rect.height, event.clientY - rect.top))
+      this.updateAreaZoomOverlay()
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (this.freehandGesture?.pointerId === event.pointerId && this.container && this.chart && this.candles) {
+      const rect = this.container.getBoundingClientRect()
+      const x = event.clientX - rect.left
+      const y = event.clientY - rect.top
+      if (Math.hypot(x - this.freehandGesture.lastX, y - this.freehandGesture.lastY) < 2) return
+      const time = this.chart.timeScale().coordinateToTime(x)
+      const price = this.candles.coordinateToPrice(y)
+      if (typeof time !== 'number' || price === null) return
+      this.freehandGesture.anchors.push({ time, price })
+      this.freehandGesture.lastX = x
+      this.freehandGesture.lastY = y
+      this.renderFreeformPreview('brush', this.freehandGesture.anchors.length === 1 ? [...this.freehandGesture.anchors, { time, price }] : this.freehandGesture.anchors)
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     if (event.buttons !== 0 && !this.draggingOrder) this.handleViewportGesture()
     if (this.replaySelectionState.mode === 'selecting' && this.container) {
       const bar = this.nearestReplayBarAt(event.clientX - this.container.getBoundingClientRect().left)
@@ -1321,7 +1654,10 @@ export class LwcAdapter implements ChartAdapter {
       const rect = this.container.getBoundingClientRect()
       const time = this.chart.timeScale().coordinateToTime(event.clientX - rect.left)
       const price = this.candles.coordinateToPrice(event.clientY - rect.top)
-      if (typeof time === 'number' && price !== null) this.renderPlacementPreview({ time, price })
+      if (typeof time === 'number' && price !== null) {
+        if (this.activeTool === 'path' && this.pathAnchors.length > 0) this.renderFreeformPreview('path', [...this.pathAnchors, { time, price }])
+        else this.renderPlacementPreview({ time, price })
+      }
       return
     }
     if (this.draggingDrawing && this.draggingDrawing.pointerId === event.pointerId && this.container && this.chart && this.candles) {
@@ -1375,6 +1711,27 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   private handlePointerUp = (event: PointerEvent): void => {
+    if (this.areaZoomGesture?.pointerId === event.pointerId && this.container) {
+      if (this.container.hasPointerCapture(event.pointerId)) this.container.releasePointerCapture(event.pointerId)
+      const cancelled = event.type === 'pointercancel'
+      if (cancelled) this.cancelAreaZoomSelection()
+      else this.completeAreaZoom()
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (this.freehandGesture?.pointerId === event.pointerId && this.container) {
+      if (this.container.hasPointerCapture(event.pointerId)) this.container.releasePointerCapture(event.pointerId)
+      const gesture = this.freehandGesture
+      this.freehandGesture = null
+      if (event.type === 'pointercancel' || gesture.anchors.length < 2) this.setDrawingTool(this.keepDrawing ? gesture.tool : null)
+      else this.completeDrawing(gesture.tool, gesture.anchors)
+      this.suppressNextDrawingClick = true
+      window.setTimeout(() => { this.suppressNextDrawingClick = false }, 0)
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     if (this.measurementGesture?.pointerId === event.pointerId && this.container) {
       const transient = this.measurementGesture.transient
       const cancelled = event.type === 'pointercancel'
@@ -1503,8 +1860,107 @@ export class LwcAdapter implements ChartAdapter {
     this.drawingManager.addDrawing(drawing)
   }
 
+  private renderFreeformPreview(tool: 'brush' | 'path', anchors: PlacementAnchor[]): void {
+    if (anchors.length < 2) return
+    const drawingAnchors: Anchor[] = anchors.map((anchor) => ({ time: toTime(anchor.time), price: anchor.price }))
+    if (this.preview?.type === tool) {
+      this.preview.setAnchors(drawingAnchors)
+      return
+    }
+    this.removePreview()
+    const previewOptions: DrawingWorkbenchOptions & { pricePrecision: number; displayTimezone: string } = {
+      visible: true, locked: true, zIndex: 10_000, pricePrecision: this.pricePrecision, displayTimezone: 'UTC',
+    }
+    const drawing = getToolRegistry().createDrawing(tool, PREVIEW_ID, drawingAnchors, {
+      lineColor: 'rgba(41, 98, 255, 0.82)', lineWidth: 2, lineDash: [],
+      fillColor: 'rgba(41, 98, 255, 0.08)', fillOpacity: 0.08, labelColor: 'rgba(209, 212, 220, 0.72)',
+    }, previewOptions)
+    if (!drawing) return
+    this.preview = drawing
+    this.drawingManager.addDrawing(drawing)
+  }
+
+  private ensureAreaZoomOverlay(): void {
+    if (this.areaZoomOverlay || !this.container) return
+    const overlay = document.createElement('div')
+    overlay.className = 'chart-area-zoom-selection'
+    overlay.dataset.label = 'Zoom range'
+    overlay.style.left = '0px'
+    overlay.style.top = '0px'
+    overlay.setAttribute('aria-hidden', 'true')
+    this.container.append(overlay)
+    this.areaZoomOverlay = overlay
+  }
+
+  private updateAreaZoomOverlay(): void {
+    const gesture = this.areaZoomGesture
+    const overlay = this.areaZoomOverlay
+    if (!gesture || !overlay) return
+    const left = Math.min(gesture.startX, gesture.currentX)
+    const top = Math.min(gesture.startY, gesture.currentY)
+    overlay.style.transform = `translate3d(${left}px, ${top}px, 0)`
+    overlay.style.width = `${Math.abs(gesture.currentX - gesture.startX)}px`
+    overlay.style.height = `${Math.abs(gesture.currentY - gesture.startY)}px`
+  }
+
+  private completeAreaZoom(): void {
+    const gesture = this.areaZoomGesture
+    const chart = this.chart
+    const candles = this.candles
+    this.areaZoomGesture = null
+    this.removeAreaZoomOverlay()
+    if (!gesture || !chart || !candles) return
+    const width = Math.abs(gesture.currentX - gesture.startX)
+    const height = Math.abs(gesture.currentY - gesture.startY)
+    if (width < 8 || height < 8) {
+      this.areaZoomSelecting = true
+      this.container?.classList.add('chart-area-zoom-active')
+      this.applyChartInteractionLock()
+      return
+    }
+    const logicalFrom = chart.timeScale().coordinateToLogical(Math.min(gesture.startX, gesture.currentX))
+    const logicalTo = chart.timeScale().coordinateToLogical(Math.max(gesture.startX, gesture.currentX))
+    const priceAtTop = candles.coordinateToPrice(Math.min(gesture.startY, gesture.currentY))
+    const priceAtBottom = candles.coordinateToPrice(Math.max(gesture.startY, gesture.currentY))
+    const currentLogicalRange = chart.timeScale().getVisibleLogicalRange()
+    const scale = candles.priceScale()
+    const currentPriceRange = scale.getVisibleRange()
+    if (logicalFrom === null || logicalTo === null || priceAtTop === null || priceAtBottom === null || !currentLogicalRange || !currentPriceRange) return
+    if (!this.areaZoomRestoreState) {
+      this.areaZoomRestoreState = {
+        logicalRange: currentLogicalRange,
+        priceRange: currentPriceRange,
+        priceAutoScale: scale.options().autoScale,
+      }
+    }
+    this.areaZoomSelecting = false
+    this.withExternalSync(() => {
+      chart.timeScale().setVisibleLogicalRange({ from: Math.min(logicalFrom, logicalTo), to: Math.max(logicalFrom, logicalTo) })
+      scale.setAutoScale(false)
+      scale.setVisibleRange({ from: Math.min(priceAtTop, priceAtBottom), to: Math.max(priceAtTop, priceAtBottom) })
+    })
+    this.applyChartInteractionLock()
+    queueMicrotask(() => this.scheduleViewportSync())
+    this.areaZoomChangedHandler({ selecting: false, zoomed: true })
+  }
+
+  private cancelAreaZoomSelection(): void {
+    if (!this.areaZoomSelecting && !this.areaZoomGesture) return
+    this.areaZoomSelecting = false
+    this.areaZoomGesture = null
+    this.removeAreaZoomOverlay()
+    this.applyChartInteractionLock()
+    this.areaZoomChangedHandler({ selecting: false, zoomed: this.areaZoomRestoreState !== null })
+  }
+
+  private removeAreaZoomOverlay(): void {
+    this.areaZoomOverlay?.remove()
+    this.areaZoomOverlay = null
+    this.container?.classList.remove('chart-area-zoom-active')
+  }
+
   private applyChartInteractionLock(): void {
-    const locked = this.replaySelectionState.mode === 'selecting' || this.activeTool !== null || this.drawingManager.getSelectedDrawing() !== null || this.draggingOrder !== null
+    const locked = this.replaySelectionState.mode === 'selecting' || this.areaZoomSelecting || this.activeTool !== null || this.drawingManager.getSelectedDrawing() !== null || this.draggingOrder !== null
     this.chart?.applyOptions({ handleScroll: !locked, handleScale: !locked })
   }
 

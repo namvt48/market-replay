@@ -1,6 +1,6 @@
 import type { SymbolMeta } from '../api/types'
 import type { Bar1m } from '../fill-engine/types'
-import type { ChartCrosshairSync, ChartViewportSync, DisplayBar, EconomicEventMarker, OrderLine, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDirection } from './chart-adapter'
+import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, EconomicEventMarker, IndicatorRenderResult, OrderLine, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDirection } from './chart-adapter'
 import { ChartViewController } from './chart-view-controller'
 
 export class ChartViewRegistry {
@@ -15,9 +15,10 @@ export class ChartViewRegistry {
     if (this.requestedActiveId === view.id || this.activeId === null) this.activeId = view.id
   }
 
-  unregister(id: string): void {
+  unregister(id: string, expectedAdapter?: ChartAdapter): void {
     const view = this.views.get(id)
     if (!view) return
+    if (expectedAdapter && view.adapter !== expectedAdapter) return
     view.destroy()
     this.views.delete(id)
     if (this.activeId === id) this.activeId = this.views.keys().next().value ?? null
@@ -66,6 +67,7 @@ export class ChartViewRegistry {
     })
   }
   syncEconomicEventMarkers(markers: EconomicEventMarker[]): void { this.views.forEach((view) => view.syncEconomicEventMarkers(markers)) }
+  syncIndicators(id: string, results: IndicatorRenderResult[]): void { this.views.get(id)?.syncIndicators(results) }
   focusTime(timestamp: number): void { this.views.forEach((view) => view.focusTime(timestamp)) }
   resetView(id: string): void { this.views.get(id)?.resetView() }
   syncCrosshair(sourceId: string, state: ChartCrosshairSync | null): void {

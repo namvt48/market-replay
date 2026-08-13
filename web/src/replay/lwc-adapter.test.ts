@@ -83,6 +83,7 @@ const chartMocks = vi.hoisted(() => {
   const priceScaleState = { autoScale: true, range: { from: 90, to: 110 }, invertScale: false, mode: 0 }
   return {
   chartApplyOptions: vi.fn(),
+  chartResize: vi.fn(),
   candleApplyOptions: vi.fn(),
   volumeApplyOptions: vi.fn(),
   paneSetHeight: vi.fn(),
@@ -112,6 +113,8 @@ const chartMocks = vi.hoisted(() => {
   clearCrosshairPosition: vi.fn(),
   fitContent: vi.fn(),
   takeScreenshot: vi.fn(),
+  createChartOptions: null as Record<string, unknown> | null,
+  chartRoot: null as HTMLDivElement | null,
   }
 })
 
@@ -127,6 +130,7 @@ vi.mock('lightweight-charts-drawing', () => ({
 vi.mock('lightweight-charts', () => {
   const timeScale = {
     coordinateToTime: (x: number) => Math.round(x),
+    coordinateToLogical: (x: number) => x,
     getVisibleRange: () => ({ from: 0, to: 100 }), getVisibleLogicalRange: () => ({ from: 10, to: 20 }),
     fitContent: chartMocks.fitContent, setVisibleLogicalRange: chartMocks.setVisibleLogicalRange,
     setVisibleRange: chartMocks.setVisibleRange,
@@ -165,7 +169,7 @@ vi.mock('lightweight-charts', () => {
     removeSeries: chartMocks.removeSeries,
     panes: () => Array.from({ length: chartMocks.paneCount }),
     timeScale: () => timeScale,
-    applyOptions: chartMocks.chartApplyOptions, remove: vi.fn(),
+    applyOptions: chartMocks.chartApplyOptions, resize: chartMocks.chartResize, remove: vi.fn(),
     subscribeCrosshairMove: vi.fn((handler: typeof chartMocks.crosshairHandler) => { chartMocks.crosshairHandler = handler }),
     unsubscribeCrosshairMove: vi.fn(),
     setCrosshairPosition: chartMocks.setCrosshairPosition,
@@ -175,7 +179,12 @@ vi.mock('lightweight-charts', () => {
   return {
     CandlestickSeries: 'CandlestickSeries', HistogramSeries: 'HistogramSeries', LineSeries: 'LineSeries',
     ColorType: { Solid: 'solid' }, CrosshairMode: { Normal: 0 }, PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2 },
-    createChart: () => chart,
+    createChart: (element: HTMLElement, options: Record<string, unknown>) => {
+      chartMocks.createChartOptions = options
+      chartMocks.chartRoot = document.createElement('div')
+      element.appendChild(chartMocks.chartRoot)
+      return chart
+    },
     createSeriesMarkers: () => ({ setMarkers: vi.fn() }),
   }
 })
@@ -202,6 +211,40 @@ beforeEach(() => {
   chartMocks.priceScaleState.invertScale = false
   chartMocks.priceScaleState.mode = 0
   chartMocks.paneCount = 1
+  chartMocks.createChartOptions = null
+  chartMocks.chartRoot = null
+  chartMocks.chartResize.mockImplementation((width: number, height: number) => {
+    if (!chartMocks.chartRoot) return
+    chartMocks.chartRoot.style.width = `${width}px`
+    chartMocks.chartRoot.style.height = `${height}px`
+  })
+})
+
+describe('LwcAdapter lifecycle', () => {
+  it('keeps resize ownership in the adapter so detached-window cleanup cannot race an internal observer', async () => {
+    const adapter = new LwcAdapter()
+    await adapter.init(document.createElement('div'), symbol, '1m')
+
+    expect(chartMocks.createChartOptions).toMatchObject({ autoSize: false })
+    adapter.destroy()
+  })
+
+  it('keeps the chart shell filling a fractional split pane after a snapped resize', async () => {
+    const container = document.createElement('div')
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 531 },
+      clientHeight: { configurable: true, value: 480 },
+    })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+    chartMocks.chartResize.mockClear()
+
+    adapter.syncContainerSize()
+
+    expect(chartMocks.chartResize).toHaveBeenCalledWith(531, 480, true)
+    expect(chartMocks.chartRoot).toHaveStyle({ width: '100%', height: '100%' })
+    adapter.destroy()
+  })
 })
 
 describe('LwcAdapter drawing preview', () => {
@@ -580,6 +623,183 @@ describe('LwcAdapter drawing preview', () => {
     click.mockRestore()
   })
 
+  it('creates Path with every clicked point and finishes on double click', async () => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+
+    adapter.setDrawingTool('path')
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 10, clientY: 100 }))
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 20, clientY: 115 }))
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1, clientX: 35, clientY: 108 }))
+    expect(adapter.getDrawings()).toEqual([])
+
+    container.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, detail: 2, clientX: 35, clientY: 108 }))
+    expect(adapter.getDrawings()).toHaveLength(1)
+    expect(adapter.getDrawings()[0]).toMatchObject({
+      type: 'path',
+      anchors: [{ time: 10, price: 100 }, { time: 20, price: 115 }, { time: 35, price: 108 }],
+    })
+  })
+
+  it('samples Brush points during pointer drag and keeps the tool armed when requested', async () => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    Object.defineProperties(container, {
+      setPointerCapture: { value: vi.fn() },
+      hasPointerCapture: { value: vi.fn().mockReturnValue(true) },
+      releasePointerCapture: { value: vi.fn() },
+    })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+    const toolChanged = vi.fn()
+    adapter.onDrawingToolChanged(toolChanged)
+    adapter.setKeepDrawing(true)
+    adapter.setDrawingTool('brush')
+
+    container.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, buttons: 1, pointerId: 41, clientX: 10, clientY: 100 }))
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, buttons: 1, pointerId: 41, clientX: 18, clientY: 105 }))
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, buttons: 1, pointerId: 41, clientX: 28, clientY: 112 }))
+    container.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 41, clientX: 28, clientY: 112 }))
+
+    expect(adapter.getDrawings()[0]).toMatchObject({
+      type: 'brush',
+      anchors: [{ time: 10, price: 100 }, { time: 18, price: 105 }, { time: 28, price: 112 }],
+    })
+    expect(toolChanged).toHaveBeenLastCalledWith('brush')
+  })
+
+  it('locks every drawing and reports a count without including previews', async () => {
+    const adapter = new LwcAdapter()
+    await adapter.init(document.createElement('div'), symbol, '1m')
+    adapter.loadDrawings([{
+      id: 'line-1', type: 'trend-line', anchors: [{ time: 0 as UTCTimestamp, price: 100 }, { time: 60 as UTCTimestamp, price: 105 }],
+      style: { lineColor: '#2962ff', lineWidth: 2 }, options: {},
+    }])
+
+    adapter.setAllDrawingsLocked(true)
+    expect(adapter.drawingCount()).toBe(1)
+    expect(adapter.getDrawings()[0].options).toMatchObject({ locked: true })
+    adapter.setAllDrawingsLocked(false)
+    expect(adapter.getDrawings()[0].options).toMatchObject({ locked: false })
+  })
+
+  it('preserves hidden and locked drawing controls configured before initialization', async () => {
+    const adapter = new LwcAdapter()
+    adapter.setAllDrawingsLocked(true)
+    adapter.setDrawingsHidden(true)
+
+    await adapter.init(document.createElement('div'), symbol, '1m')
+    adapter.loadDrawings([{
+      id: 'line-1', type: 'trend-line', anchors: [{ time: 0 as UTCTimestamp, price: 100 }, { time: 60 as UTCTimestamp, price: 105 }],
+      style: { lineColor: '#2962ff', lineWidth: 2 }, options: {},
+    }])
+
+    const drawing = drawingMocks.managers.at(-1)?.drawings[0]
+    expect(drawing?.options).toMatchObject({ locked: true })
+    expect(drawing?.detached).toBe(true)
+  })
+
+  it('preserves keep drawing configured before initialization', async () => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    const adapter = new LwcAdapter()
+    adapter.setKeepDrawing(true)
+
+    await adapter.init(container, symbol, '1m')
+    adapter.setDrawingTool('trend-line')
+    for (const [clientX, clientY] of [[10, 100], [20, 110], [30, 120], [40, 130]]) {
+      container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX, clientY }))
+    }
+
+    expect(adapter.getDrawings()).toHaveLength(2)
+  })
+
+  it('zooms to a dragged chart rectangle and restores the original viewport', async () => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    Object.defineProperties(container, {
+      setPointerCapture: { value: vi.fn() },
+      hasPointerCapture: { value: vi.fn().mockReturnValue(true) },
+      releasePointerCapture: { value: vi.fn() },
+    })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+    const zoomChanged = vi.fn()
+    adapter.onAreaZoomChanged(zoomChanged)
+    chartMocks.setVisibleLogicalRange.mockClear()
+    chartMocks.priceScaleSetVisibleRange.mockClear()
+
+    adapter.beginAreaZoom()
+    expect(container).toHaveClass('chart-area-zoom-active')
+    container.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, buttons: 1, pointerId: 42, clientX: 100, clientY: 80 }))
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, buttons: 1, pointerId: 42, clientX: 300, clientY: 220 }))
+    container.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 42, clientX: 300, clientY: 220 }))
+
+    expect(chartMocks.setVisibleLogicalRange).toHaveBeenLastCalledWith({ from: 100, to: 300 })
+    expect(chartMocks.priceScaleSetVisibleRange).toHaveBeenLastCalledWith({ from: 80, to: 220 })
+    expect(adapter.areaZoomState()).toEqual({ selecting: false, zoomed: true })
+    expect(zoomChanged).toHaveBeenLastCalledWith({ selecting: false, zoomed: true })
+
+    adapter.resetAreaZoom()
+    expect(chartMocks.setVisibleLogicalRange).toHaveBeenLastCalledWith({ from: 10, to: 20 })
+    expect(chartMocks.priceScaleSetVisibleRange).toHaveBeenLastCalledWith({ from: 90, to: 110 })
+    expect(adapter.areaZoomState()).toEqual({ selecting: false, zoomed: false })
+  })
+
+  it('shows a labelled zoom range while the pointer is dragging', async () => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    Object.defineProperties(container, {
+      setPointerCapture: { value: vi.fn() },
+      hasPointerCapture: { value: vi.fn().mockReturnValue(true) },
+      releasePointerCapture: { value: vi.fn() },
+    })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+
+    adapter.beginAreaZoom()
+    container.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, buttons: 1, pointerId: 52, clientX: 100, clientY: 80 }))
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, buttons: 1, pointerId: 52, clientX: 300, clientY: 220 }))
+
+    const range = container.querySelector<HTMLElement>('.chart-area-zoom-selection')
+    expect(range).not.toBeNull()
+    expect(range?.dataset.label).toBe('Zoom range')
+    expect(range?.style.left).toBe('0px')
+    expect(range?.style.top).toBe('0px')
+    expect(range?.style.width).toBe('200px')
+    expect(range?.style.height).toBe('140px')
+
+    container.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 52, clientX: 300, clientY: 220 }))
+    expect(container.querySelector('.chart-area-zoom-selection')).toBeNull()
+    expect(container).not.toHaveClass('chart-area-zoom-active')
+  })
+
+  it('zooms to the centered chart region when Enter is pressed', async () => {
+    const container = document.createElement('div')
+    container.tabIndex = 0
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    document.body.append(container)
+    const focus = vi.spyOn(container, 'focus')
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+    const zoomChanged = vi.fn()
+    adapter.onAreaZoomChanged(zoomChanged)
+    chartMocks.setVisibleLogicalRange.mockClear()
+    chartMocks.priceScaleSetVisibleRange.mockClear()
+
+    adapter.beginAreaZoom()
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true })
+    container.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+
+    expect(chartMocks.setVisibleLogicalRange).toHaveBeenLastCalledWith({ from: 150, to: 450 })
+    expect(chartMocks.priceScaleSetVisibleRange).toHaveBeenLastCalledWith({ from: 100, to: 300 })
+    expect(adapter.areaZoomState()).toEqual({ selecting: false, zoomed: true })
+    expect(zoomChanged).toHaveBeenLastCalledWith({ selecting: false, zoomed: true })
+    container.remove()
+  })
+
   it('publishes a moved drawing during drag so sibling timeframes update before pointerup', async () => {
     const container = document.createElement('div')
     container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
@@ -686,7 +906,7 @@ describe('LwcAdapter drawing preview', () => {
     expect(changed).not.toHaveBeenCalled()
   })
 
-  it('opens Fibonacci properties when placement completes', async () => {
+  it('does not open Fibonacci properties when placement completes', async () => {
     const container = document.createElement('div')
     container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
     const adapter = new LwcAdapter()
@@ -698,7 +918,7 @@ describe('LwcAdapter drawing preview', () => {
     container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 10, clientY: 100 }))
     container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 20, clientY: 110 }))
 
-    expect(editRequested).toHaveBeenCalledWith(expect.objectContaining({ type: 'fib-retracement', fibonacciLevels: expect.any(Array) }))
+    expect(editRequested).not.toHaveBeenCalled()
   })
 
   it('removes the volume pane and its separator when volume is hidden', async () => {
@@ -1045,6 +1265,68 @@ describe('LwcAdapter drawing preview', () => {
     container.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 1 }))
     chartMocks.timeRangeHandler?.({ from: 120, to: 7_320 })
     expect(viewport).toHaveBeenLastCalledWith({ time: { from: 120, to: 7_320 }, logicalSpan: 10 })
+  })
+
+  it('does not echo a resize-triggered range change as a viewport-sync event', async () => {
+    // Resizing this pane's own width makes Lightweight Charts fire the same
+    // visible-range callback a real pan/zoom would (more/fewer bars fit at a
+    // fixed barSpacing). Left unguarded, that used to echo out as a viewport
+    // sync and fight a sibling pane resizing at the same time.
+    const resizeRef: { current: (() => void) | null } = { current: null }
+    class CapturingResizeObserver { constructor(callback: () => void) { resizeRef.current = callback }; observe(): void {}; disconnect(): void {} }
+    vi.stubGlobal('ResizeObserver', CapturingResizeObserver)
+    try {
+      const container = document.createElement('div')
+      Object.defineProperties(container, {
+        clientWidth: { configurable: true, value: 600 },
+        clientHeight: { configurable: true, value: 400 },
+      })
+      const adapter = new LwcAdapter()
+      await adapter.init(container, symbol, '1m')
+      adapter.setHistory([
+        { time: 60, open: 100, high: 103, low: 99, close: 101, volume: 10 },
+        { time: 120, open: 101, high: 104, low: 100, close: 103, volume: 11 },
+      ])
+      await Promise.resolve()
+      const viewport = vi.fn()
+      adapter.onViewportSync(viewport)
+
+      // A real gesture on this pane unlocks sync, reproducing the state a
+      // pane is normally in once the user has already interacted with it.
+      container.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 1 }))
+
+      // Widening the container is what makes the resize observer actually
+      // call chart.resize() below — syncContainerSize() no-ops when nothing
+      // measured has changed since the last call.
+      Object.defineProperty(container, 'clientWidth', { configurable: true, value: 900 })
+      resizeRef.current?.()
+      chartMocks.timeRangeHandler?.({ from: 60, to: 3_660 })
+
+      expect(viewport).not.toHaveBeenCalled()
+    } finally {
+      vi.stubGlobal('ResizeObserver', class { observe(): void {}; disconnect(): void {} })
+    }
+  })
+
+  it('repaints synchronously when its container resizes', async () => {
+    const resizeRef: { current: (() => void) | null } = { current: null }
+    class CapturingResizeObserver { constructor(callback: () => void) { resizeRef.current = callback }; observe(): void {}; disconnect(): void {} }
+    vi.stubGlobal('ResizeObserver', CapturingResizeObserver)
+    try {
+      const container = document.createElement('div')
+      Object.defineProperties(container, {
+        clientWidth: { configurable: true, value: 640 },
+        clientHeight: { configurable: true, value: 480 },
+      })
+      const adapter = new LwcAdapter()
+      await adapter.init(container, symbol, '1m')
+
+      resizeRef.current?.()
+
+      expect(chartMocks.chartResize).toHaveBeenCalledWith(640, 480, true)
+    } finally {
+      vi.stubGlobal('ResizeObserver', class { observe(): void {}; disconnect(): void {} })
+    }
   })
 
   it('re-centers a sibling on source center-time while preserving the sibling logical span and price scale', async () => {

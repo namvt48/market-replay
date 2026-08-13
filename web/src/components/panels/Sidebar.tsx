@@ -57,8 +57,8 @@ function TradePanel() {
           </div>
 
           <div className="grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => replayEngine.placeMarket('buy')} disabled={!tradingEnabled} className="trade-button bg-profit text-[#04120f] hover:bg-profit-bright disabled:opacity-40"><span>BUY MKT</span><kbd>⇧B</kbd></button>
-            <button type="button" onClick={() => replayEngine.placeMarket('sell')} disabled={!tradingEnabled} className="trade-button bg-loss text-[#190707] hover:bg-loss-bright disabled:opacity-40"><span>SELL MKT</span><kbd>⇧S</kbd></button>
+            <button type="button" onClick={() => replayEngine.placeMarket('buy')} disabled={!tradingEnabled} className="trade-button bg-profit text-[#04120f] hover:bg-profit-bright disabled:opacity-40"><span>BUY MKT</span><kbd>Alt Q</kbd></button>
+            <button type="button" onClick={() => replayEngine.placeMarket('sell')} disabled={!tradingEnabled} className="trade-button bg-loss text-[#190707] hover:bg-loss-bright disabled:opacity-40"><span>SELL MKT</span><kbd>⇧ Alt Q</kbd></button>
           </div>
 
           <fieldset>
@@ -90,7 +90,7 @@ function TradePanel() {
             <button type="button" disabled={!position || !tradingEnabled} onClick={() => replayEngine.flatten()} className="secondary-button">Flatten <kbd>⇧F</kbd></button>
             <button type="button" disabled={!position || !tradingEnabled} onClick={() => replayEngine.reverse()} className="secondary-button">Reverse <kbd>⇧R</kbd></button>
           </div>
-          <p className="text-ui-meta leading-relaxed text-dim">Hold Shift for mouse-down, then release it and drag to measure; the result clears on your next chart interaction. Shift+B/S creates a limit ticket at last price; Ctrl+Shift+B/S places a market order; Ctrl-click chart still places a stop. Fills always evaluate on real 1m bars.</p>
+          <p className="text-ui-meta leading-relaxed text-dim">Hold Shift for mouse-down, then release it and drag to measure; the result clears on your next chart interaction. Shift+B/S creates a limit ticket at last price; Alt+Q buys market and Shift+Alt+Q sells market; Ctrl-click chart still places a stop. Fills always evaluate on real 1m bars.</p>
         </div>
       </section>
 

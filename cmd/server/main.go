@@ -18,6 +18,7 @@ import (
 	"market-replay/internal/config"
 	"market-replay/internal/econ"
 	"market-replay/internal/httpapi"
+	"market-replay/internal/indicators"
 	"market-replay/internal/storage/sqlite"
 	"market-replay/web"
 )
@@ -58,7 +59,12 @@ func main() {
 		log.Fatalf("storage init: %v", err)
 	}
 
-	srv := &httpapi.Server{Registry: reg, Store: store, Econ: calendar, WebFS: web.DistFS}
+	ind := indicators.NewEngine()
+	if err := indicators.RegisterBuiltins(ind); err != nil {
+		log.Fatalf("indicators: %v", err)
+	}
+
+	srv := &httpapi.Server{Registry: reg, Store: store, Econ: calendar, Indicators: ind, WebFS: web.DistFS}
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           srv.Handler(),
