@@ -26,7 +26,7 @@ describe('useHotkeys TradingView compatibility', () => {
   beforeEach(() => localStorage.clear())
   afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
-  it('routes bare letters to symbol search, Shift for limit tickets, and Ctrl+Shift for market orders', async () => {
+  it('routes bare letters to symbol search, Shift for limit tickets, and Alt+Q for market orders', async () => {
     const user = userEvent.setup()
     const placeMarket = vi.spyOn(replayEngine, 'placeMarket').mockImplementation(() => undefined)
     const placePendingAtLast = vi.spyOn(replayEngine, 'placePendingAtLast').mockImplementation(() => undefined)
@@ -46,11 +46,7 @@ describe('useHotkeys TradingView compatibility', () => {
     expect(placeMarket).not.toHaveBeenCalled()
     expect(setDrawingTool).not.toHaveBeenCalled()
 
-    fireEvent.keyDown(window, { key: 'Control', ctrlKey: true })
-    fireEvent.keyDown(window, { key: 'Shift', ctrlKey: true, shiftKey: true })
-    fireEvent.keyDown(window, { key: 'b', ctrlKey: true, shiftKey: true })
-    fireEvent.keyUp(window, { key: 'Shift', ctrlKey: true })
-    fireEvent.keyUp(window, { key: 'Control' })
+    fireEvent.keyDown(window, { key: 'q', altKey: true })
     expect(placeMarket).toHaveBeenCalledWith('buy')
   })
 
@@ -73,8 +69,8 @@ describe('useHotkeys TradingView compatibility', () => {
 
     fireEvent.keyDown(chart, { key: 'b', shiftKey: true })
     fireEvent.keyDown(chart, { key: 's', shiftKey: true })
-    fireEvent.keyDown(chart, { key: 'b', ctrlKey: true, shiftKey: true })
-    fireEvent.keyDown(chart, { key: 's', ctrlKey: true, shiftKey: true })
+    fireEvent.keyDown(chart, { key: 'q', altKey: true })
+    fireEvent.keyDown(chart, { key: 'q', altKey: true, shiftKey: true })
 
     expect(placePendingAtLast).toHaveBeenNthCalledWith(1, 'buy', 'limit')
     expect(placePendingAtLast).toHaveBeenNthCalledWith(2, 'sell', 'limit')

@@ -4,7 +4,7 @@
 // lightweight-charts (LwcAdapter), but everything
 // upstream of this interface (BarBuffer, Aggregator, logical clock,
 // FillEngine) never changes if the chart library ever does.
-import type { EconImportance, Timeframe, SymbolMeta } from '../api/types'
+import type { EconImportance, IndicatorRunResult, Timeframe, SymbolMeta } from '../api/types'
 import type { SerializedDrawing, DrawingToolDefinition } from 'lightweight-charts-drawing'
 import type { DrawingAppearance, DrawingAppearancePatch } from './drawing-appearance'
 import type { ChartAppearanceSettings } from './chart-settings'
@@ -76,13 +76,18 @@ export interface EconomicEventMarker {
   state: 'past' | 'next' | 'scheduled'
 }
 
+export interface IndicatorRenderResult extends IndicatorRunResult {
+  indicatorId: string
+}
+
 export interface OrderLine {
   id: string
   price: number
   label: string
   color: string
-  kind: 'position' | 'stopLoss' | 'takeProfit' | 'limit' | 'stop'
+  kind: 'position' | 'stopLoss' | 'takeProfit' | 'market' | 'limit' | 'stop'
   editable: boolean
+  side?: 'buy' | 'sell'
   role: 'entry' | 'stopLoss' | 'takeProfit' | 'position'
   stage: 'draft' | 'working' | 'position'
   qty: number
@@ -106,6 +111,12 @@ export interface ChartAdapter {
   pushBars(bars: DisplayBar[]): void // conflated hot path; one chart mutation per series
   truncateTo(ts: number): void // rewind
   setSpacerTimes(times: number[]): void // right-side whitespace
+  // Re-measures the host element and repaints immediately if its size
+  // changed. The adapter also watches its host with a ResizeObserver as a
+  // fallback, but that fires a tick after the DOM actually resizes; calling
+  // this from a layout effect keyed to the same commit that resized the
+  // container (e.g. dragging a split) keeps the canvas from trailing behind.
+  syncContainerSize(): void
   applyAppearance(settings: ChartAppearanceSettings): void
   setDisplayTimezone(timezone: ChartTimezone): void
   onHoveredBar(handler: (bar: HoverBarSnapshot | null) => void): void
@@ -119,6 +130,7 @@ export interface ChartAdapter {
 
   setTradeMarkers(markers: TradeMarker[]): void // entry/exit
   setEconomicEventMarkers(markers: EconomicEventMarker[]): void
+  setIndicators(results: IndicatorRenderResult[]): void
   setTradeConnections(connections: TradeConnection[]): void
   setOrderLines(lines: OrderLine[]): void
   onOrderLineMove(handler: (id: string, price: number) => void): void
@@ -139,12 +151,20 @@ export interface ChartAdapter {
   redoDrawing(): boolean
   nudgeSelectedDrawing(direction: DrawingNudgeDirection): boolean
   toggleDrawingsVisibility(): void
+  setDrawingsHidden(hidden: boolean): void
+  setAllDrawingsLocked(locked: boolean): void
+  setKeepDrawing(enabled: boolean): void
+  drawingCount(): number
   getDrawings(): SerializedDrawing[]
   loadDrawings(drawings: SerializedDrawing[]): void
   onDrawingsChanged(handler: (drawingId?: string) => void): void
   onDrawingSelection(handler: (drawing: DrawingAppearance | null) => void): void
   onDrawingEditRequest(handler: (drawing: DrawingAppearance) => void): void
   onDrawingToolChanged(handler: (tool: string | null) => void): void
+  beginAreaZoom(): void
+  resetAreaZoom(): void
+  areaZoomState(): { selecting: boolean; zoomed: boolean }
+  onAreaZoomChanged(handler: (state: { selecting: boolean; zoomed: boolean }) => void): void
   visibleRange(): { from: number; to: number }
   focusTime(timestamp: number): void
   panView(logicalBars: number): void

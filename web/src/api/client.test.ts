@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchChartBarsAt, fetchEconWeek } from './client'
+import { fetchChartBarsAt, fetchEconWeek, fetchIndicators, runIndicator } from './client'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -84,5 +84,36 @@ describe('API client transient recovery', () => {
       cursorTs: 1_786_377_600,
       timeZone: 'America/New_York',
     })).rejects.toThrow()
+  })
+
+  it('loads indicator descriptors and runs one at the spoiler-safe cursor', async () => {
+    const descriptor = [{
+      id: 'gb69-cbmor', name: 'GB69 CBMOR', version: 1,
+      meta: { onMainPanel: true, format: 'inherit' },
+      inputs: [{ kind: 'bool', key: 'show_lines', label: 'Show lines', default: true }],
+    }]
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(descriptor), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        draws: [
+          { id: 1, kind: 'ray', label: 'NY EQ', t0: 120, y0: 20_000, style: { linecolor: '#5b8cff' } },
+          { id: 2, kind: 'vline', t0: 180, y0: 0, style: { linecolor: '#898c96' } },
+          { id: 3, kind: 'marker', label: '⮝', t0: 240, y0: 20_100, style: { color: '#ff5563' } },
+        ],
+        plots: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchIndicators()).resolves.toEqual(descriptor)
+    await expect(runIndicator('NQ', '5m', 'gb69-cbmor', 600, { show_lines: false })).resolves.toMatchObject({
+      draws: [{ kind: 'ray' }, { kind: 'vline' }, { kind: 'marker' }],
+    })
+
+    const request = new URL(String(fetchMock.mock.calls[1]?.[0]), 'http://localhost')
+    expect(request.searchParams.get('symbol')).toBe('NQ')
+    expect(request.searchParams.get('tf')).toBe('5m')
+    expect(request.searchParams.get('at')).toBe('600')
+    expect(request.searchParams.get('to')).toBe('600')
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ inputs: { show_lines: false } })
   })
 })

@@ -3,7 +3,7 @@ import { timeframeSchema } from '../replay/timeframe'
 import { chartPaneSettingsSchema } from '../replay/chart-settings-store'
 import { DEFAULT_MARKET_SESSION, marketSessionSchema } from '../replay/market-session'
 import { createLayoutPreset, paneIds } from './layout-presets'
-import { DEFAULT_CHART_SYNC_FLAGS, type ChartWorkspaceState, type LayoutNode } from './types'
+import { DEFAULT_CHART_SYNC_FLAGS, LAYOUT_PRESET_IDS, type ChartWorkspaceState, type LayoutNode } from './types'
 import { preferenceStorage } from '../store/preference-sync'
 
 const STORAGE_KEY = 'market-replay:chart-layout'
@@ -28,7 +28,10 @@ const chartSyncFlagsV3Schema = z.object({
 export const chartSyncFlagsSchema = chartSyncFlagsV3Schema.extend({ lockZoom: z.boolean() })
 const chartWorkspaceStateV3Schema = chartWorkspaceStateV2Schema.extend({ syncFlags: chartSyncFlagsV3Schema })
 const chartWorkspaceStateV4Schema = chartWorkspaceStateV2Schema.extend({ syncFlags: chartSyncFlagsSchema })
-export const chartWorkspaceStateSchema = chartWorkspaceStateV4Schema.extend({ panes: z.record(z.string(), paneStateSchema) })
+export const chartWorkspaceStateSchema = chartWorkspaceStateV4Schema.extend({
+  panes: z.record(z.string(), paneStateSchema),
+  preset: z.union([z.enum(LAYOUT_PRESET_IDS), z.literal('custom')]),
+})
 
 const legacyPaneSettingsSchema = chartPaneSettingsSchema.extend({
   marketSession: marketSessionSchema.default(DEFAULT_MARKET_SESSION),

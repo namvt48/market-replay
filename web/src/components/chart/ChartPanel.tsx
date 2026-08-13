@@ -31,17 +31,19 @@ export function ChartPanel() {
 
   useEffect(() => {
     let active = true
+    let registeredAdapter: ChartAdapter | null = null
     void import('../../replay/lwc-adapter').then(({ LwcAdapter }) => {
       if (!active) return
       const adapter = new LwcAdapter(hoverStore)
+      registeredAdapter = adapter
       adapterRef.current = adapter
       const element = document.querySelector<HTMLElement>('[data-chart-host="primary"]')
       if (element) void replayEngine.registerChartView(PRIMARY_PANE_ID, element, adapter, initialTimeframeRef.current, initialSettingsRef.current, hoverStore)
     })
     return () => {
       active = false
-      adapterRef.current = null
-      replayEngine.unregisterChartView(PRIMARY_PANE_ID)
+      if (adapterRef.current === registeredAdapter) adapterRef.current = null
+      if (registeredAdapter) replayEngine.unregisterChartView(PRIMARY_PANE_ID, registeredAdapter)
     }
   }, [hoverStore])
 
@@ -57,9 +59,9 @@ export function ChartPanel() {
 
   return (
     <section id="chart-workspace" className="relative min-h-[300px] min-w-0 flex-1 overflow-hidden bg-chart" aria-label="Market chart">
-      <div data-chart-host="primary" className="absolute inset-0" />
+      <div data-chart-host="primary" tabIndex={0} aria-label="Primary interactive market chart" className="absolute inset-0 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-active" />
       <div className="pointer-events-none absolute left-14 right-12 top-2 z-20 flex min-w-0 items-start">
-        <OhlcLegend store={hoverStore} precision={replay.priceDecimals} timezone={settings.timezone} />
+        <OhlcLegend store={hoverStore} precision={replay.priceDecimals} />
       </div>
       <button type="button" onClick={() => setSettingsOpen(true)} className="tool-button absolute right-2 top-2 z-30 border border-line bg-surface-1/95" aria-label="Chart settings" title="Chart settings"><Settings size={16} strokeWidth={1.75} /></button>
       {replay.status === 'loading' || replay.status === 'idle' ? (

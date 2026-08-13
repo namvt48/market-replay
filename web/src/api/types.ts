@@ -123,3 +123,68 @@ export interface PersistedDrawing {
   deleted: boolean
   updatedAt: number
 }
+
+export type IndicatorInputKind = 'session' | 'time' | 'str' | 'float' | 'int' | 'bool' | 'color'
+
+export interface IndicatorColor {
+  r: number
+  g: number
+  b: number
+  a: number
+}
+
+export type IndicatorInputValue = string | number | boolean | IndicatorColor
+
+export interface IndicatorInputDescriptor {
+  kind: IndicatorInputKind
+  key: string
+  label: string
+  group?: string
+  tooltip?: string
+  default: IndicatorInputValue
+  min?: number
+  max?: number
+  step?: number
+  options?: string[]
+}
+
+export interface IndicatorDescriptor {
+  id: string
+  name: string
+  version: number
+  meta: {
+    onMainPanel: boolean
+    format?: string
+  }
+  inputs: IndicatorInputDescriptor[]
+}
+
+export interface IndicatorDrawIntent {
+  id: number
+  kind: 'ray' | 'rectangle' | 'vline' | 'marker'
+  label?: string
+  t0: number
+  y0: number
+  t1?: number
+  y1?: number
+  style: Record<string, unknown>
+}
+
+export interface IndicatorPlotPoint {
+  key: string
+  time: number
+  value: number
+}
+
+export interface IndicatorRunResult {
+  draws: IndicatorDrawIntent[]
+  plots: IndicatorPlotPoint[]
+}
+
+export interface ActiveIndicator {
+  id: string
+  scriptId: string
+  name: string
+  visible: boolean
+  inputs: Record<string, IndicatorInputValue>
+}

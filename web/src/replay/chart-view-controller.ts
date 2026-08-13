@@ -1,7 +1,7 @@
 import type { SymbolMeta, Timeframe } from '../api/types'
 import type { Bar1m } from '../fill-engine/types'
 import { buildDisplayHistory, DisplayAggregator } from './aggregate'
-import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, EconomicEventMarker, HistoryUpdateOptions, OrderLine, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDirection } from './chart-adapter'
+import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, EconomicEventMarker, HistoryUpdateOptions, IndicatorRenderResult, OrderLine, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDirection } from './chart-adapter'
 import type { ChartPaneSettings } from './chart-settings-store'
 import type { HoverBarStore } from './hover-bar-store'
 import { isRegularTradingHours, marketSessionIncludes, nextRegularTradingTimestamp, type MarketSession } from './market-session'
@@ -207,6 +207,8 @@ export class ChartViewController {
     this.publishSpacerTimes()
     this.publishEconomicEventMarkers()
   }
+
+  syncIndicators(results: IndicatorRenderResult[]): void { this.adapter.setIndicators(results) }
 
   private publishSpacerTimes(): void {
     const historyTail = this.displayHistory.at(-1)?.time ?? 0

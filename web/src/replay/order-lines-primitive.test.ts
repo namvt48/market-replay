@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OrderLine } from './chart-adapter'
-import { draftOrderRangePairs } from './order-lines-primitive'
+import { draftOrderControls, draftOrderRangePairs } from './order-lines-primitive'
 
 const line = (patch: Partial<OrderLine>): OrderLine => ({
   id: 'ticket-entry', price: 100, label: 'Buy Limit', color: '#2962ff', kind: 'limit', editable: true,
@@ -8,6 +8,17 @@ const line = (patch: Partial<OrderLine>): OrderLine => ({
 })
 
 describe('order range overlay', () => {
+  it('uses the compact Buy/Sell, TP, SL control sequence from the original ticket', () => {
+    expect(draftOrderControls(line({ side: 'buy', protectionEnabled: { takeProfit: false, stopLoss: false } }))).toEqual([
+      { label: 'Buy', type: 'confirm', width: 38, active: true, color: '#2962ff' },
+      { label: 'TP', type: 'toggle-take-profit', width: 34, active: false, color: '#089981' },
+      { label: 'SL', type: 'toggle-stop-loss', width: 34, active: false, color: '#ff9800' },
+    ])
+    expect(draftOrderControls(line({ side: 'sell' }))[0]).toEqual({
+      label: 'Sell', type: 'confirm', width: 38, active: true, color: '#f23645',
+    })
+  })
+
   it('pairs draft TP and SL with entry using their semantic translucent colors', () => {
     expect(draftOrderRangePairs([
       line({}),

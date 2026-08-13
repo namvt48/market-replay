@@ -22,6 +22,13 @@ describe('order ticket state', () => {
     expect(validateOrderTicket(sell)).toBeNull()
   })
 
+  it('uses the same draggable protection draft for market tickets', () => {
+    let market = createOrderTicketDraft('buy', 'market', 1, 100)
+    market = toggleOrderTicketProtection(toggleOrderTicketProtection(market, 'takeProfit'), 'stopLoss')
+    expect(market).toMatchObject({ type: 'market', takeProfitTicks: 120, stopLossTicks: 80 })
+    expect(validateOrderTicket(market)).toBeNull()
+  })
+
   it('clamps quantity and updates only the dragged leg', () => {
     let draft = createOrderTicketDraft('buy', 'limit', 1, 100)
     draft = toggleOrderTicketProtection(draft, 'takeProfit')

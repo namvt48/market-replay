@@ -115,8 +115,7 @@ export function resolveHotkey(event: KeyboardShortcutEvent): HotkeyCommand | nul
   if (event.altKey && !primary && !event.shiftKey && key === 'f') return 'draw-fib-retracement'
   if (event.altKey && !primary && event.shiftKey && key === 'r') return 'draw-rectangle'
 
-  if (primary && !event.altKey && event.shiftKey && key === 'b') return 'market-buy'
-  if (primary && !event.altKey && event.shiftKey && key === 's') return 'market-sell'
+  if (!primary && event.altKey && key === 'q') return event.shiftKey ? 'market-sell' : 'market-buy'
   if (!primary && !event.altKey && event.shiftKey && key === 'b') return 'limit-buy'
   if (!primary && !event.altKey && event.shiftKey && key === 's') return 'limit-sell'
 
@@ -178,7 +177,7 @@ export const TRADINGVIEW_SHORTCUTS: readonly TradingViewShortcut[] = [
   { id: 'trend', category: 'Drawings', action: 'Trend line', keys: ['Alt/⌥', 'T'], support: 'supported' },
   { id: 'horizontal', category: 'Drawings', action: 'Horizontal line', keys: ['Alt/⌥', 'H'], support: 'supported' },
   { id: 'vertical', category: 'Drawings', action: 'Vertical line', keys: ['Alt/⌥', 'V'], support: 'supported' },
-  { id: 'cross-line', category: 'Drawings', action: 'Cross line', keys: ['Alt/⌥', 'C'], support: 'unavailable', note: 'Cross-line drawing is not in the current tool registry.' },
+  { id: 'cross-line', category: 'Drawings', action: 'Cross line', keys: ['Alt/⌥', 'C'], support: 'unavailable', note: 'Cross Line is available from the drawing rail; this keyboard shortcut is not mapped yet.' },
   { id: 'fib', category: 'Drawings', action: 'Fib retracement', keys: ['Alt/⌥', 'F'], support: 'supported' },
   { id: 'rectangle', category: 'Drawings', action: 'Rectangle', keys: ['Alt/⌥', 'Shift', 'R'], support: 'supported' },
   { id: 'square', category: 'Drawings', action: 'Square constraint', keys: ['Rectangle', 'Shift'], support: 'unavailable', note: 'Rectangle currently uses free coordinates.' },
@@ -190,8 +189,8 @@ export const TRADINGVIEW_SHORTCUTS: readonly TradingViewShortcut[] = [
   { id: 'maximize-click', category: 'Multi-chart', action: 'Maximize/restore chart', keys: ['Alt/⌥', 'Click'], support: 'supported' },
   { id: 'watchlist', category: 'Multi-chart', action: 'Add symbol to watchlist', keys: ['Alt/⌥', 'W'], support: 'unavailable', note: 'Market Replay has no watchlist.' },
 
-  { id: 'buy-market', category: 'Trading', action: 'Buy market', keys: ['Ctrl/⌘', 'Shift', 'B'], support: 'supported' },
-  { id: 'sell-market', category: 'Trading', action: 'Sell market', keys: ['Ctrl/⌘', 'Shift', 'S'], support: 'supported' },
+  { id: 'buy-market', category: 'Trading', action: 'Buy market', keys: ['Alt/⌥', 'Q'], support: 'supported' },
+  { id: 'sell-market', category: 'Trading', action: 'Sell market', keys: ['Shift', 'Alt/⌥', 'Q'], support: 'supported' },
   { id: 'buy-limit', category: 'Trading', action: 'Buy limit ticket at last price', keys: ['Shift', 'B'], support: 'adapted', note: 'Creates a draggable order ticket on the active chart.' },
   { id: 'sell-limit', category: 'Trading', action: 'Sell limit ticket at last price', keys: ['Shift', 'S'], support: 'adapted', note: 'Creates a draggable order ticket on the active chart.' },
   { id: 'dom-limit', category: 'Trading', action: 'Place limit order from DOM', keys: ['DOM cell click'], support: 'unavailable', note: 'Market Replay has no DOM panel.' },

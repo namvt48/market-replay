@@ -20,6 +20,23 @@ interface HitRegion {
   action: OrderPrimitiveAction
 }
 
+export interface DraftOrderControl {
+  label: 'Buy' | 'Sell' | 'TP' | 'SL'
+  type: 'confirm' | 'toggle-take-profit' | 'toggle-stop-loss'
+  width: number
+  active: boolean
+  color: string
+}
+
+export function draftOrderControls(line: OrderLine): DraftOrderControl[] {
+  const side = line.side ?? (line.label.startsWith('Sell') ? 'sell' : 'buy')
+  return [
+    { label: side === 'sell' ? 'Sell' : 'Buy', type: 'confirm', width: 38, active: true, color: side === 'sell' ? '#f23645' : '#2962ff' },
+    { label: 'TP', type: 'toggle-take-profit', width: 34, active: line.protectionEnabled?.takeProfit ?? false, color: '#089981' },
+    { label: 'SL', type: 'toggle-stop-loss', width: 34, active: line.protectionEnabled?.stopLoss ?? false, color: '#ff9800' },
+  ]
+}
+
 export interface DraftOrderRangePair {
   role: 'takeProfit' | 'stopLoss'
   entryPrice: number
@@ -129,13 +146,18 @@ class OrderLinesRenderer implements IPrimitivePaneRenderer {
         context.fillStyle = line.stage === 'position' ? '#ffffff' : line.color
         context.fillText(`◀ ${line.qty}`, (ticketX + qtyWidth / 2) * hx, bitmapY)
         context.fillStyle = line.stage === 'position' ? '#ffffff' : '#d1d4dc'
-        context.fillText(line.label, (ticketX + qtyWidth + (ticketWidth - qtyWidth - 22) / 2) * hx, bitmapY)
+        const ticketLabel = line.showControls && line.role === 'entry'
+          ? line.label.replace(/^(Buy|Sell) /, '')
+          : line.label
+        context.fillText(ticketLabel, (ticketX + qtyWidth + (ticketWidth - qtyWidth - 22) / 2) * hx, bitmapY)
         context.fillStyle = line.stage === 'position' ? '#ffffff' : line.color
         context.fillText('×', (ticketRight - 11) * hx, bitmapY)
 
         this.primitive.addHitRegion({ x: ticketX, y: y - height / 2, width: qtyWidth, height, action: { type: 'quantity', orderId: line.id, x: ticketX, y: y + height / 2 } })
         this.primitive.addHitRegion({ x: ticketRight - 22, y: y - height / 2, width: 22, height, action: { type: 'cancel', orderId: line.id, x: ticketRight - 22, y } })
-        this.primitive.addHitRegion({ x: ticketX + qtyWidth, y: y - height / 2, width: ticketWidth - qtyWidth - 22, height, action: { type: 'edit', orderId: line.id, x: ticketX, y } })
+        if (line.editable) {
+          this.primitive.addHitRegion({ x: ticketX + qtyWidth, y: y - height / 2, width: ticketWidth - qtyWidth - 22, height, action: { type: 'edit', orderId: line.id, x: ticketX, y } })
+        }
 
         const priceWidth = Math.max(70, context.measureText(line.priceLabel).width / hx + 12)
         const priceX = width - priceWidth
@@ -145,12 +167,7 @@ class OrderLinesRenderer implements IPrimitivePaneRenderer {
         context.fillText(line.priceLabel, (priceX + priceWidth / 2) * hx, bitmapY)
 
         if (line.showControls && line.role === 'entry') {
-          const controls = [
-            { label: 'Discard', type: 'discard' as const, width: 58, active: true, color: '#d1d4dc' },
-            { label: 'Confirm', type: 'confirm' as const, width: 60, active: true, color: '#2962ff' },
-            { label: 'TP', type: 'toggle-take-profit' as const, width: 34, active: line.protectionEnabled?.takeProfit ?? false, color: '#089981' },
-            { label: 'SL', type: 'toggle-stop-loss' as const, width: 34, active: line.protectionEnabled?.stopLoss ?? false, color: '#ff9800' },
-          ]
+          const controls = draftOrderControls(line)
           const total = controls.reduce((sum, control) => sum + control.width + 4, 0)
           let controlX = width < 520 ? Math.max(6, (width - total) / 2) : Math.max(6, ticketX - total - 6)
           const controlY = width < 520 ? y - 34 : y - 10

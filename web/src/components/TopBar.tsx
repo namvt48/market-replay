@@ -10,6 +10,8 @@ import { useTimeframePreferences } from './timeframe/use-timeframe-preferences'
 import { LayoutMenu } from './chart/LayoutMenu'
 import { ChartWorkspaceControls } from './chart/ChartWorkspaceControls'
 import { useChartWorkspace } from '../chart-workspace/use-chart-workspace'
+import { IndicatorMenu } from './indicators/IndicatorMenu'
+import { paneIds } from '../chart-workspace/layout-presets'
 
 interface TopBarProps {
   layoutMenuRequest?: number
@@ -32,6 +34,9 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
   const setActiveTf = useUiStore((state) => state.setActiveTf)
   const preferences = useTimeframePreferences()
   const visibleTimeframes = sortTimeframes([...new Set([...preferences.starredTimeframes, activeTf])])
+  const targetPaneId = chartWorkspace.panes[chartWorkspace.activePaneId]
+    ? chartWorkspace.activePaneId
+    : paneIds(chartWorkspace.root)[0]
 
   return (
     <header className="flex h-11 shrink-0 items-stretch border-b border-line bg-[#101114]" aria-label="Workspace controls">
@@ -48,12 +53,10 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
             value={replay.symbol}
             onChange={(event) => {
               const symbol = event.target.value
-              if (evalLocked) {
-                dispatchChartWorkspace({ type: 'set-pane-symbol', paneId: chartWorkspace.activePaneId, symbol })
-                replayEngine.requestChartViewSymbol(chartWorkspace.activePaneId, symbol)
-                return
-              }
-              void replayEngine.selectSymbol(symbol)
+              if (!targetPaneId) return
+              dispatchChartWorkspace({ type: 'set-pane-symbol', paneId: targetPaneId, symbol })
+              if (evalLocked) replayEngine.requestChartViewSymbol(targetPaneId, symbol)
+              else void replayEngine.selectSymbol(symbol).then(() => replayEngine.requestChartViewSymbol(targetPaneId, symbol))
             }}
             className="h-8 appearance-none rounded-control border border-line bg-surface-2 pl-8 pr-8 text-ui-title font-semibold text-ink outline-none transition-colors hover:border-line-strong focus-visible:border-active"
           >
@@ -97,6 +100,7 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
       </div>
 
       <div className="flex shrink-0 items-center gap-1 border-l border-line bg-[#101114] px-2 text-ui-body text-muted md:gap-2 md:px-3">
+        <IndicatorMenu />
         <LayoutMenu openRequest={layoutMenuRequest} />
         <button type="button" onClick={onOpenShortcuts} className="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts · ?"><Keyboard size={16} strokeWidth={1.7} /></button>
         <button

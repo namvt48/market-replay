@@ -2,8 +2,21 @@ import type { Timeframe } from '../api/types'
 import type { ChartPaneSettings } from '../replay/chart-settings-store'
 import type { MarketSession } from '../replay/market-session'
 
-export type LayoutPreset = 'single' | '2v' | '2h' | '3' | '4'
+export const LAYOUT_PRESET_IDS = [
+  'single',
+  '2v', '2h',
+  '3', '3-columns', '3-rows', '3-main-right', '3-main-top',
+  '4', '4-columns', '4-rows', '4-main-left', '4-main-right', '4-main-top', '4-main-bottom', '4-left-stack', '4-right-stack', '4-center-main',
+  '5', '5-columns', '5-rows', '5-main-left', '5-main-right', '5-main-top', '5-main-bottom', '5-left-two', '5-right-two', '5-center-main',
+  '6', '6-columns', '6-rows', '6-two-columns', '6-three-columns', '6-main-left',
+  '7', '7-columns', '7-main-left',
+  '8', '8-columns', '8-rows', '8-two-columns',
+] as const
+
+export type BuiltInLayoutPreset = (typeof LAYOUT_PRESET_IDS)[number]
+export type LayoutPreset = BuiltInLayoutPreset | 'custom'
 export type SplitOrientation = 'horizontal' | 'vertical'
+export const CHART_SPLIT_SEPARATOR_SIZE_PX = 4
 
 export interface ChartSyncFlags {
   crosshair: boolean

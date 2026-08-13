@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ClosedTrade, ReplaySession } from '../api/types'
 import { createFillEngine } from '../fill-engine/engine'
-import { restoreReplayRuntime, serializeReplayRuntime, shortReplaySessionHash } from './session-state'
+import { restoreReplayIndicators, restoreReplayRuntime, serializeReplayRuntime, shortReplaySessionHash } from './session-state'
 
 const session: ReplaySession = {
   id: '018f08de-1111-7222-8333-abcdef123456', symbol: 'NQ', tf: '1m', startTs: 100,
@@ -36,5 +36,12 @@ describe('replay session state', () => {
     const restored = restoreReplayRuntime(baseFill(), session, [trade])
     expect(restored).toMatchObject({ realizedCents: 25_000, equityCents: 1_025_000 })
     expect(restored.trades).toHaveLength(1)
+  })
+
+  it('round-trips active indicators inside the replay session config', () => {
+    const indicators = [{ id: 'gb69-cbmor', scriptId: 'gb69-cbmor', name: 'GB69 CBMOR', visible: true, inputs: { show_lines: false } }]
+    const config = serializeReplayRuntime(baseFill(), indicators)
+
+    expect(restoreReplayIndicators({ ...session, config })).toEqual(indicators)
   })
 })

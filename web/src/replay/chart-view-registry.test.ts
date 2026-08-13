@@ -49,6 +49,21 @@ describe('ChartViewRegistry', () => {
     expect(registry.active()?.id).toBe('a')
   })
 
+  it('does not let stale effect cleanup destroy a newer chart registered with the same pane id', () => {
+    const registry = new ChartViewRegistry()
+    const detached = controller('a', '1m')
+    const restored = controller('a', '1m')
+    registry.register(detached.view)
+    registry.register(restored.view)
+
+    registry.unregister('a', detached.view.adapter)
+
+    expect(registry.get('a')).toBe(restored.view)
+    expect(restored.mock.destroy).not.toHaveBeenCalled()
+    registry.unregister('a', restored.view.adapter)
+    expect(restored.mock.destroy).toHaveBeenCalledOnce()
+  })
+
   it('fans one canonical epoch viewport and crosshair out to every sibling pane', () => {
     const registry = new ChartViewRegistry()
     const oneMinute = controller('a', '1m')

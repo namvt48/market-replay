@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"market-replay/internal/bars"
+	"market-replay/internal/indicators"
 	"market-replay/internal/storage"
 )
 
@@ -29,9 +30,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, bars.ErrUnknownSymbolTF), errors.Is(err, storage.ErrSessionNotFound):
+	case errors.Is(err, bars.ErrUnknownSymbolTF), errors.Is(err, storage.ErrSessionNotFound), errors.Is(err, indicators.ErrUnknownScript):
 		status = http.StatusNotFound
-	case errors.Is(err, errBadRequest):
+	case errors.Is(err, errBadRequest), errors.Is(err, indicators.ErrInvalidInput):
 		status = http.StatusBadRequest
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})

@@ -27,17 +27,35 @@ const percentage = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 1,
 })
 
-const tradeTime = new Intl.DateTimeFormat('en-US', {
+const tradeDate = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
+})
+
+const tradeClock = new Intl.DateTimeFormat('en-US', {
   hour: '2-digit',
   minute: '2-digit',
   hour12: false,
 })
 
-function formatTradeTime(timestamp: number | undefined): string {
-  if (timestamp === undefined) return '—'
-  return tradeTime.format(timestamp * 1000)
+function formatTradeRange(entryTime: number | undefined, exitTime: number | undefined): string {
+  if (entryTime === undefined && exitTime === undefined) return '—'
+  if (entryTime === undefined) {
+    const exit = new Date((exitTime ?? 0) * 1000)
+    return `— → ${tradeDate.format(exit)} ${tradeClock.format(exit)}`
+  }
+
+  const entry = new Date(entryTime * 1000)
+  if (exitTime === undefined) return `${tradeDate.format(entry)} ${tradeClock.format(entry)} → —`
+
+  const exit = new Date(exitTime * 1000)
+  const entryDate = tradeDate.format(entry)
+  const exitDate = tradeDate.format(exit)
+  const sameDay = entry.getFullYear() === exit.getFullYear()
+    && entry.getMonth() === exit.getMonth()
+    && entry.getDate() === exit.getDate()
+  if (sameDay) return `${entryDate} · ${tradeClock.format(entry)}–${tradeClock.format(exit)}`
+  return `${entryDate} ${tradeClock.format(entry)} → ${exitDate} ${tradeClock.format(exit)}`
 }
 
 interface AccountView {
@@ -101,17 +119,22 @@ function ProgressLine({ label, value, pct, tone = 'accent' }: { label: string; v
 
 function TradeHistoryRow({ trade }: { trade: EvalTradeRecord }) {
   const pnl = (trade.realizedCents ?? 0) / 100
+  const mfe = Math.abs(trade.mfeTicks ?? 0)
+  const mae = Math.abs(trade.maeTicks ?? 0)
+  const timeRange = formatTradeRange(trade.entryTime, trade.exitTime)
   return (
-    <li className="flex items-center gap-2.5 px-3 py-2">
-      <span className={`w-12 shrink-0 font-mono text-ui-meta font-semibold ${trade.side === 'short' ? 'text-loss-bright' : 'text-profit-bright'}`}>{trade.side === 'short' ? 'SHORT' : 'LONG'}</span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-ui-meta text-ink">{trade.qty ?? 1} {trade.symbol ?? '—'}</span>
-        <span className="mt-0.5 block font-mono text-ui-meta text-dim">{formatTradeTime(trade.entryTime)} → {formatTradeTime(trade.exitTime)}</span>
-      </span>
-      <span className="shrink-0 text-right">
-        <span className={`block font-mono text-ui-meta font-semibold tabular-nums ${pnl >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{pnl >= 0 ? '+' : ''}{currency.format(pnl)}</span>
-        <span className="mt-0.5 block font-mono text-ui-meta text-dim">MFE {trade.mfeTicks ?? 0} · MAE {trade.maeTicks ?? 0}</span>
-      </span>
+    <li className="px-3 py-1.5">
+      <div className="grid grid-cols-[auto_1fr_auto] items-baseline gap-x-2 font-mono text-ui-meta">
+        <span className={`min-w-11 font-semibold ${trade.side === 'short' ? 'text-loss-bright' : 'text-profit-bright'}`}>{trade.side === 'short' ? 'SHORT' : 'LONG'}</span>
+        <span className="whitespace-nowrap text-ink">{trade.qty ?? 1} {trade.symbol ?? '—'}</span>
+        <span className={`whitespace-nowrap text-right font-semibold tabular-nums ${pnl >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{pnl >= 0 ? '+' : ''}{currency.format(pnl)}</span>
+      </div>
+      <div className="mt-0.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 font-mono text-ui-meta">
+        <span className="whitespace-nowrap text-dim" aria-label={`Entry and exit time: ${timeRange}`}>{timeRange}</span>
+        <span className="whitespace-nowrap text-dim" aria-label={`Maximum favorable excursion: ${mfe} ticks. Maximum adverse excursion: ${mae} ticks.`}>
+          MFE <strong className="font-medium text-muted">+{mfe}t</strong> · MAE <strong className="font-medium text-muted">−{mae}t</strong>
+        </span>
+      </div>
     </li>
   )
 }

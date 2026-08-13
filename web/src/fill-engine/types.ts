@@ -84,7 +84,7 @@ export interface PlaceOrderInput {
 
 export interface PlaceEntryBracketInput {
   side: OrderSide
-  type: Exclude<OrderType, 'market'>
+  type: OrderType
   qty: number
   priceTicks: number
   stopLossTicks?: number

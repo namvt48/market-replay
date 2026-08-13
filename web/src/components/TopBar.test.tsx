@@ -1,12 +1,19 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useUiStore } from '../store/ui-store'
 import { useEvalStore } from '../store/eval-store'
 import { TopBar } from './TopBar'
 
-const replayMocks = vi.hoisted(() => ({ beginReplaySelection: vi.fn(), requestChartViewSymbol: vi.fn() }))
-const workspaceMocks = vi.hoisted(() => ({ dispatch: vi.fn() }))
+const replayMocks = vi.hoisted(() => ({ beginReplaySelection: vi.fn(), requestChartViewSymbol: vi.fn(), selectSymbol: vi.fn().mockResolvedValue(undefined) }))
+const workspaceMocks = vi.hoisted(() => ({
+  dispatch: vi.fn(),
+  state: {
+    activePaneId: 'pane-1',
+    panes: { 'pane-1': { id: 'pane-1' }, 'pane-2': { id: 'pane-2' } },
+    root: { kind: 'split', id: 'root', orientation: 'horizontal', ratio: 0.5, first: { kind: 'pane', paneId: 'pane-1' }, second: { kind: 'pane', paneId: 'pane-2' } },
+  },
+}))
 const snapshot = {
   status: 'ready',
   symbols: [{ symbol: 'NQ' }, { symbol: 'ES' }],
@@ -19,9 +26,9 @@ vi.mock('../replay/use-replay', () => ({
   useReplaySnapshot: () => snapshot,
   useReplaySelector: (select: (value: typeof snapshot) => unknown) => select(snapshot),
 }))
-vi.mock('../replay/replay-engine', () => ({ replayEngine: { selectSymbol: vi.fn(), requestChartViewSymbol: replayMocks.requestChartViewSymbol, beginReplaySelection: replayMocks.beginReplaySelection } }))
+vi.mock('../replay/replay-engine', () => ({ replayEngine: { selectSymbol: replayMocks.selectSymbol, requestChartViewSymbol: replayMocks.requestChartViewSymbol, beginReplaySelection: replayMocks.beginReplaySelection } }))
 vi.mock('../chart-workspace/use-chart-workspace', () => ({
-  useChartWorkspace: () => ({ state: { activePaneId: 'pane-1' }, dispatch: workspaceMocks.dispatch }),
+  useChartWorkspace: () => ({ state: workspaceMocks.state, dispatch: workspaceMocks.dispatch }),
 }))
 vi.mock('./timeframe/use-timeframe-preferences', () => ({
   useTimeframePreferences: () => ({ starredTimeframes: ['1m', '5m', '15m', '1h', '1d'], customTimeframes: [] }),
@@ -33,7 +40,9 @@ describe('TopBar timeframe visibility', () => {
   beforeEach(() => {
     replayMocks.beginReplaySelection.mockReset()
     replayMocks.requestChartViewSymbol.mockReset()
+    replayMocks.selectSymbol.mockReset().mockResolvedValue(undefined)
     workspaceMocks.dispatch.mockReset()
+    workspaceMocks.state.activePaneId = 'pane-1'
     useUiStore.setState({ activeTf: '1w' })
     useEvalStore.setState({ phase: 'idle' })
   })
@@ -80,5 +89,27 @@ describe('TopBar timeframe visibility', () => {
     await user.selectOptions(symbol, 'ES')
     expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-pane-symbol', paneId: 'pane-1', symbol: 'ES' })
     expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-1', 'ES')
+  })
+
+  it('routes the top symbol selector to the active chart while preserving its timeframe', async () => {
+    const user = userEvent.setup()
+    workspaceMocks.state.activePaneId = 'pane-2'
+    render(<TopBar />)
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Symbol' }), 'ES')
+
+    expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-pane-symbol', paneId: 'pane-2', symbol: 'ES' })
+    await waitFor(() => expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-2', 'ES'))
+  })
+
+  it('falls back to the top-left chart when the stored active chart is unavailable', async () => {
+    const user = userEvent.setup()
+    workspaceMocks.state.activePaneId = 'missing-pane'
+    render(<TopBar />)
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Symbol' }), 'ES')
+
+    expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-pane-symbol', paneId: 'pane-1', symbol: 'ES' })
+    await waitFor(() => expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-1', 'ES'))
   })
 })

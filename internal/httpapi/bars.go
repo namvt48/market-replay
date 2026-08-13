@@ -207,22 +207,15 @@ func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, fmt.Errorf("%w: invalid market session", errBadRequest))
 		return
 	}
-	var meta *model.SymbolMeta
-	for _, candidate := range s.Registry.Symbols() {
-		if candidate.Symbol == symbol {
-			copy := candidate
-			meta = &copy
-			break
-		}
-	}
-	if meta == nil {
+	meta, ok := lookupSymbolMeta(s, symbol)
+	if !ok {
 		writeError(w, fmt.Errorf("%w: unknown symbol %s", bars.ErrUnknownSymbolTF, symbol))
 		return
 	}
 	var output []bars.ChartBar
 	err = s.Registry.WithDataset(symbol, "1m", func(file *bars.BarFile, calendar *bars.Calendar, _ string) error {
 		var aggregateErr error
-		output, aggregateErr = bars.AggregateChartWindowForSession(file, calendar, *meta, tf, at, before, after, maxTs, marketSession)
+		output, aggregateErr = bars.AggregateChartWindowForSession(file, calendar, meta, tf, at, before, after, maxTs, marketSession)
 		return aggregateErr
 	})
 	if err != nil {
@@ -232,6 +225,19 @@ func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=30")
 	w.Header().Set("X-Chart-Bars-Count", strconv.Itoa(len(output)))
 	writeJSON(w, http.StatusOK, output)
+}
+
+// lookupSymbolMeta finds symbol's metadata among s.Registry.Symbols(), the
+// same linear scan handleChartBarsAt and handleRunIndicator both need —
+// small enough that a map index would only add bookkeeping this list
+// never needs elsewhere.
+func lookupSymbolMeta(s *Server, symbol string) (model.SymbolMeta, bool) {
+	for _, candidate := range s.Registry.Symbols() {
+		if candidate.Symbol == symbol {
+			return candidate, true
+		}
+	}
+	return model.SymbolMeta{}, false
 }
 
 // handleCalendar serves GET /api/v1/calendar?symbol=&tf=&from=&to=. `tf`

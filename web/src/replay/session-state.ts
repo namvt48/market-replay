@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ClosedTrade, ReplaySession } from '../api/types'
+import type { ActiveIndicator, ClosedTrade, ReplaySession } from '../api/types'
 import type { EngineTrade, FillEngineState } from '../fill-engine/types'
 
 const orderSchema = z.object({
@@ -24,6 +24,16 @@ const positionSchema = z.object({
   initialRiskTicks: z.number().nullable(),
 }).nullable()
 
+const indicatorColorSchema = z.object({
+  r: z.number().int().min(0).max(255), g: z.number().int().min(0).max(255),
+  b: z.number().int().min(0).max(255), a: z.number().min(0).max(1),
+})
+const indicatorInputValueSchema = z.union([z.string(), z.number(), z.boolean(), indicatorColorSchema])
+const activeIndicatorSchema = z.object({
+  id: z.string(), scriptId: z.string(), name: z.string(), visible: z.boolean(),
+  inputs: z.record(z.string(), indicatorInputValueSchema),
+})
+
 const runtimeSchema = z.object({
   version: z.literal(1),
   fill: z.object({
@@ -35,6 +45,7 @@ const runtimeSchema = z.object({
     lastTs: z.number(),
     sequence: z.number().int().nonnegative(),
   }),
+  indicators: z.array(activeIndicatorSchema).optional(),
 })
 
 /** Stable, compact display id. The canonical UUID remains the API identity. */
@@ -47,7 +58,7 @@ export function shortReplaySessionHash(sessionId: string): string {
   return (hash >>> 0).toString(36).toUpperCase().padStart(6, '0').slice(-6)
 }
 
-export function serializeReplayRuntime(fill: FillEngineState): Record<string, unknown> {
+export function serializeReplayRuntime(fill: FillEngineState, indicators: ActiveIndicator[] = []): Record<string, unknown> {
   return {
     version: 1,
     fill: {
@@ -59,7 +70,13 @@ export function serializeReplayRuntime(fill: FillEngineState): Record<string, un
       lastTs: fill.lastTs,
       sequence: fill.sequence,
     },
+    indicators,
   }
+}
+
+export function restoreReplayIndicators(session: ReplaySession): ActiveIndicator[] {
+  const parsed = runtimeSchema.safeParse(session.config)
+  return parsed.success ? parsed.data.indicators ?? [] : []
 }
 
 function toEngineTrade(trade: ClosedTrade): EngineTrade {

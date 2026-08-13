@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BarFrame } from '../api/binary-frame'
-import type { ClosedTrade, ReplaySession, SymbolMeta } from '../api/types'
-import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, OrderLineAction, ReplaySelectionState, TradeMarker, ViewportDemand } from './chart-adapter'
+import type { ClosedTrade, IndicatorRunResult, ReplaySession, SymbolMeta } from '../api/types'
+import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, OrderLine, OrderLineAction, ReplaySelectionState, TradeMarker, ViewportDemand } from './chart-adapter'
 import { aggregateRange } from './aggregate'
 import { DEFAULT_CHART_PANE_SETTINGS } from './chart-settings-store'
 import { HoverBarStore } from './hover-bar-store'
@@ -20,6 +20,7 @@ const engineMocks = vi.hoisted(() => ({
   fetchDrawings: vi.fn().mockResolvedValue([]),
   createSession: vi.fn().mockResolvedValue('session-1'),
   patchSession: vi.fn().mockResolvedValue(undefined),
+  runIndicator: vi.fn().mockResolvedValue({ draws: [], plots: [] }),
 }))
 const apiData = vi.hoisted(() => ({
   symbol: { symbol: 'NQ', name: 'Nasdaq', kind: 'future', tickSize: 0.25, pointValue: 20, currency: 'USD', priceDecimals: 2, sessionTz: 'America/New_York', rollRule: '', commissionPerSide: 0, defaultSlippageTicks: 0, ranges: { '1m': { from: 0, to: 300 } } } as SymbolMeta,
@@ -40,6 +41,7 @@ vi.mock('../api/client', () => ({
   fetchSessions: vi.fn().mockResolvedValue([]), fetchTrades: engineMocks.fetchTrades,
   createSession: engineMocks.createSession, fetchDrawings: engineMocks.fetchDrawings,
   patchSession: engineMocks.patchSession, upsertDrawings: vi.fn().mockResolvedValue(undefined), putTrades: engineMocks.putTrades,
+  runIndicator: engineMocks.runIndicator,
 }))
 
 vi.mock('../fill-engine/engine', async (importOriginal) => {
@@ -61,10 +63,12 @@ function adapter(drawings: object[] = []) {
   const loadDrawings = vi.fn()
   const setTradeMarkers = vi.fn()
   const setEconomicEventMarkers = vi.fn()
+  const setIndicators = vi.fn()
   const setTradeConnections = vi.fn()
   const setOrderLines = vi.fn()
   const setDrawingTool = vi.fn()
   const focusTime = vi.fn()
+  const visibleRange = vi.fn().mockReturnValue({ from: 0, to: 0 })
   let drawingChanged = (_drawingId?: string): void => undefined
   let viewportDemand = (_demand: ViewportDemand): void => undefined
   let crosshairSync = (_state: ChartCrosshairSync | null): void => undefined
@@ -76,24 +80,24 @@ function adapter(drawings: object[] = []) {
   let orderDragStart = (_id: string): void => undefined
   const setReplaySelection = vi.fn()
   const value = {
-    init, setSymbol, setHistory, pushBar: vi.fn(), pushBars, truncateTo: vi.fn(), setSpacerTimes: vi.fn(),
+    init, setSymbol, setHistory, pushBar: vi.fn(), pushBars, truncateTo: vi.fn(), setSpacerTimes: vi.fn(), syncContainerSize: vi.fn(),
     applyAppearance: vi.fn(), setDisplayTimezone: vi.fn(), onHoveredBar: vi.fn(), onViewportDemand: vi.fn((handler: typeof viewportDemand) => { viewportDemand = handler }),
     onCrosshairSync: vi.fn((handler: typeof crosshairSync) => { crosshairSync = handler }), setCrosshairSync: vi.fn(),
     onViewportSync: vi.fn((handler: typeof viewportSync) => { viewportSync = handler }), setViewportSync: vi.fn(),
-    setReplaySelection, onReplayBarSelect: vi.fn((handler: typeof replayBarSelect) => { replayBarSelect = handler }), setTradeMarkers, setEconomicEventMarkers, setTradeConnections, setOrderLines,
+    setReplaySelection, onReplayBarSelect: vi.fn((handler: typeof replayBarSelect) => { replayBarSelect = handler }), setTradeMarkers, setEconomicEventMarkers, setIndicators, setTradeConnections, setOrderLines,
     onOrderLineMove: vi.fn((handler: typeof orderMove) => { orderMove = handler }),
     onOrderLineDragStart: vi.fn((handler: typeof orderDragStart) => { orderDragStart = handler }),
     onOrderLineAction: vi.fn((handler: typeof orderAction) => { orderAction = handler }),
     onChartOrder: vi.fn((handler: typeof chartOrder) => { chartOrder = handler }), drawingTools: vi.fn().mockReturnValue([]), setDrawingTool, deselectDrawing: vi.fn(),
     deleteSelectedDrawing: vi.fn(), deleteAllDrawings: vi.fn(), updateSelectedDrawing: vi.fn(), setNextDrawingAppearance: vi.fn(),
     copySelectedDrawing: vi.fn().mockReturnValue(null), pasteDrawing: vi.fn(), undoDrawing: vi.fn().mockReturnValue(false), redoDrawing: vi.fn().mockReturnValue(false),
-    nudgeSelectedDrawing: vi.fn().mockReturnValue(false), toggleDrawingsVisibility: vi.fn(),
+    nudgeSelectedDrawing: vi.fn().mockReturnValue(false), toggleDrawingsVisibility: vi.fn(), setDrawingsHidden: vi.fn(), setAllDrawingsLocked: vi.fn(), setKeepDrawing: vi.fn(), drawingCount: vi.fn().mockReturnValue(drawings.length),
     getDrawings: vi.fn().mockReturnValue(drawings), loadDrawings, onDrawingsChanged: vi.fn((handler: (drawingId?: string) => void) => { drawingChanged = handler }), onDrawingSelection: vi.fn(),
-    onDrawingEditRequest: vi.fn(), onDrawingToolChanged: vi.fn(), visibleRange: vi.fn().mockReturnValue({ from: 0, to: 0 }), destroy: vi.fn(),
+    onDrawingEditRequest: vi.fn(), onDrawingToolChanged: vi.fn(), beginAreaZoom: vi.fn(), resetAreaZoom: vi.fn(), areaZoomState: vi.fn().mockReturnValue({ selecting: false, zoomed: false }), onAreaZoomChanged: vi.fn(), visibleRange, destroy: vi.fn(),
     focusTime, panView: vi.fn(), zoomView: vi.fn(), toggleInvertScale: vi.fn(), togglePriceScaleMode: vi.fn(), takeSnapshot: vi.fn(), resetView: vi.fn(),
   }
   return {
-    value: value as ChartAdapter, init, setSymbol, setHistory, pushBars, loadDrawings, setTradeMarkers, setTradeConnections, setOrderLines, setDrawingTool, setReplaySelection, focusTime,
+    value: value as ChartAdapter, init, setSymbol, setHistory, pushBars, loadDrawings, setTradeMarkers, setTradeConnections, setIndicators, setOrderLines, setDrawingTool, setReplaySelection, focusTime, visibleRange,
     fireDrawingChanged: (drawingId?: string) => drawingChanged(drawingId),
     fireViewportDemand: (demand: ViewportDemand) => viewportDemand(demand),
     fireCrosshairSync: (state: ChartCrosshairSync | null) => crosshairSync(state),
@@ -122,9 +126,67 @@ beforeEach(() => {
   engineMocks.fetchBarsAt.mockResolvedValue(apiData.frame)
   engineMocks.fetchCalendar.mockReset()
   engineMocks.fetchCalendar.mockResolvedValue([{ date: '1970-01-01', firstTs: 0, lastTs: 240, bars: 5 }])
+  engineMocks.runIndicator.mockReset()
+  engineMocks.runIndicator.mockResolvedValue({ draws: [], plots: [] })
 })
 
 describe('ReplayEngine multi-view invariant', () => {
+  it('runs an added indicator against every registered chart view', async () => {
+    const engine = new ReplayEngine()
+    const first = adapter()
+    const second = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), first.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), second.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.seek(120)
+    engineMocks.runIndicator.mockClear()
+    first.setIndicators.mockClear()
+    second.setIndicators.mockClear()
+
+    engine.addIndicator({
+      id: 'gb69-cbmor', name: 'GB69 CBMOR', version: 1, meta: { onMainPanel: true },
+      inputs: [{ kind: 'bool', key: 'show_lines', label: 'Show lines', default: true }],
+    })
+
+    await vi.waitFor(() => expect(engineMocks.runIndicator).toHaveBeenCalledTimes(2))
+    expect(engineMocks.runIndicator).toHaveBeenCalledWith('NQ', '1m', 'gb69-cbmor', 120, { show_lines: true }, expect.any(AbortSignal))
+    expect(engineMocks.runIndicator).toHaveBeenCalledWith('NQ', '5m', 'gb69-cbmor', 120, { show_lines: true }, expect.any(AbortSignal))
+    await vi.waitFor(() => expect(first.setIndicators).toHaveBeenLastCalledWith([expect.objectContaining({ indicatorId: 'gb69-cbmor' })]))
+    expect(second.setIndicators).toHaveBeenLastCalledWith([expect.objectContaining({ indicatorId: 'gb69-cbmor' })])
+    engine.destroy()
+  })
+
+  it('clears stale indicator output before rendering the next replay cursor', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.seek(120)
+    engineMocks.runIndicator.mockResolvedValueOnce({
+      draws: [{ id: 1, kind: 'ray', label: 'old', t0: 60, y0: 100, style: {} }],
+      plots: [],
+    })
+
+    engine.addIndicator({
+      id: 'cursor-study', name: 'Cursor Study', version: 1, meta: { onMainPanel: true }, inputs: [],
+    })
+    await vi.waitFor(() => expect(view.setIndicators).toHaveBeenLastCalledWith([
+      expect.objectContaining({ indicatorId: 'cursor-study', draws: [expect.objectContaining({ label: 'old' })] }),
+    ]))
+
+    let resolveRun: (result: IndicatorRunResult) => void = () => undefined
+    engineMocks.runIndicator.mockImplementationOnce(() => new Promise<IndicatorRunResult>((resolve) => { resolveRun = resolve }))
+    view.setIndicators.mockClear()
+
+    engine.stepForward()
+
+    await vi.waitFor(() => expect(view.setIndicators).toHaveBeenCalledWith([]))
+    expect(view.setIndicators).toHaveBeenCalledTimes(1)
+    resolveRun({ draws: [{ id: 2, kind: 'marker', label: 'new', t0: 180, y0: 101, style: {} }], plots: [] })
+    await vi.waitFor(() => expect(view.setIndicators).toHaveBeenLastCalledWith([
+      expect.objectContaining({ indicatorId: 'cursor-study', draws: [expect.objectContaining({ label: 'new' })] }),
+    ]))
+    engine.destroy()
+  })
+
   it('surfaces why trading shortcuts cannot place orders before bar replay is active', async () => {
     const engine = new ReplayEngine()
     const view = adapter()
@@ -234,15 +296,18 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot().qty).toBe(6)
     expect(engine.getSnapshot().fill?.config.maxContracts).toBe(6)
     engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
     engine.stepForward()
     expect(engine.getSnapshot().fill?.position?.qty).toBe(6)
 
     engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
     expect(engine.getSnapshot().error).toBe('Position size cannot exceed 6 contracts')
     expect(engine.getSnapshot().fill?.orders).toEqual([])
 
     engine.setQty(1)
     engine.placeMarket('sell')
+    view.fireOrderAction({ type: 'confirm' })
     expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
     engine.destroy()
   })
@@ -319,12 +384,16 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 120, replayStartTs: 120, sessionId: 'session-1', sessionStatus: 'active' })
     expect(engineMocks.createSession).toHaveBeenCalledOnce()
     engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
     engine.stepForward()
     engine.flatten()
     engine.stepForward()
     expect(engine.getSnapshot().fill?.trades).toHaveLength(1)
     engine.placeMarket('buy')
-    expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
+    expect(engine.getSnapshot().fill?.orders).toHaveLength(0)
+    expect(view.setOrderLines).toHaveBeenLastCalledWith([
+      expect.objectContaining({ id: 'ticket-entry', kind: 'market', stage: 'draft' }),
+    ])
     expect(view.setReplaySelection).toHaveBeenLastCalledWith({ mode: 'active', timestamp: 120 } satisfies ReplaySelectionState)
 
     await engine.pauseReplaySession()
@@ -364,6 +433,7 @@ describe('ReplayEngine multi-view invariant', () => {
     const view = adapter()
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
     expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
 
     await engine.exitEvaluation()
@@ -392,11 +462,60 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot()).toMatchObject({ sessionId: null, sessionStatus: null })
     expect(engineMocks.createSession).not.toHaveBeenCalled()
     engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
     expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
     engine.exitReplay()
     await vi.waitFor(() => expect(engine.getSnapshot()).toMatchObject({ replayMode: 'inactive', cursorTs: 240 }))
     expect(engine.getSnapshot().fill?.orders).toEqual([])
     expect(engineMocks.patchSession).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('opens a market order in the original compact inline ticket', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.beginReplaySelection()
+    view.fireReplayBarSelect(120)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    engine.placeMarket('buy')
+
+    expect(engine.getSnapshot().fill?.orders).toEqual([])
+    expect(view.setOrderLines).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        id: 'ticket-entry',
+        role: 'entry',
+        stage: 'draft',
+        kind: 'market',
+        label: 'Buy Market',
+        showControls: true,
+        protectionEnabled: { stopLoss: false, takeProfit: false },
+      }),
+    ])
+
+    view.fireOrderAction({ type: 'quantity', qty: 2 })
+    view.fireOrderAction({ type: 'toggle-take-profit' })
+    view.fireOrderAction({ type: 'toggle-stop-loss' })
+    view.fireOrderMove('ticket-take-profit', 110)
+    view.fireOrderMove('ticket-stop-loss', 95)
+    view.fireOrderAction({ type: 'confirm' })
+
+    expect(engine.getSnapshot().fill?.orders.map((order) => ({ role: order.role, type: order.type, qty: order.qty, active: order.active }))).toEqual([
+      { role: 'entry', type: 'market', qty: 2, active: true },
+      { role: 'stopLoss', type: 'stop', qty: 2, active: false },
+      { role: 'takeProfit', type: 'limit', qty: 2, active: false },
+    ])
+    const confirmedLines = (view.setOrderLines.mock.calls.at(-1)?.[0] ?? []) as OrderLine[]
+    expect(confirmedLines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'stopLoss', editable: true }),
+      expect.objectContaining({ role: 'takeProfit', editable: true }),
+    ]))
+    expect(confirmedLines.some((line) => line.kind === 'market')).toBe(false)
+
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(2)
+    expect(engine.getSnapshot().fill?.orders.every((order) => order.active)).toBe(true)
     engine.destroy()
   })
 
@@ -529,6 +648,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
 
     engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
     engine.stepForward()
     expect(engine.getSnapshot().fill?.position).not.toBeNull()
     engine.flatten()
@@ -559,6 +679,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
 
     engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
     engine.stepForward()
     engine.flatten()
     engine.stepForward()
@@ -759,6 +880,7 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot().fill?.config.symbol).toBe('ES')
 
     engine.placeMarket('buy')
+    esView.fireOrderAction({ type: 'confirm' })
     engine.stepForward()
 
     expect(engine.getSnapshot().fill?.config.symbol).toBe('ES')
@@ -768,6 +890,7 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot().fill?.config.symbol).toBe('NQ')
     expect(engine.getSnapshot().fill?.position).toBeNull()
     engine.placeMarket('buy')
+    nqView.fireOrderAction({ type: 'confirm' })
     engine.stepForward()
     expect(engine.getSnapshot().fill?.position?.qty).toBe(1)
 
@@ -775,6 +898,53 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot().fill?.config.symbol).toBe('ES')
     expect(engine.getSnapshot().fill?.position?.qty).toBe(1)
     expect(engine.getSnapshot().evalFill).not.toBeNull()
+    engine.destroy()
+  })
+
+  it('routes ordinary replay trading to the active alternate-symbol pane', async () => {
+    const ym: SymbolMeta = { ...apiData.symbol, symbol: 'YM', name: 'Mini Dow' }
+    engineMocks.fetchSymbols.mockResolvedValueOnce([apiData.symbol, ym])
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const nqView = adapter()
+    const ymView = adapter()
+    await engine.registerChartView('pane-nq', document.createElement('div'), nqView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore(), 'NQ')
+    await engine.registerChartView('pane-ym', document.createElement('div'), ymView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore(), 'YM')
+    engine.activateChartView('pane-ym')
+    engine.beginReplaySelection()
+    ymView.fireReplayBarSelect(120)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+    nqView.setOrderLines.mockClear()
+    ymView.setOrderLines.mockClear()
+
+    engine.placeMarket('buy')
+
+    expect(engine.getSnapshot().activeSymbol?.symbol).toBe('YM')
+    expect(engine.getSnapshot().fill?.config.symbol).toBe('YM')
+    expect(nqView.setOrderLines).toHaveBeenLastCalledWith([])
+    expect(ymView.setOrderLines).toHaveBeenLastCalledWith([
+      expect.objectContaining({ id: 'ticket-entry', kind: 'market', stage: 'draft', label: 'Buy Market' }),
+    ])
+    expect(engine.getSnapshot().fill?.orders).toEqual([])
+
+    ymView.fireOrderAction({ type: 'confirm' })
+    expect(engine.getSnapshot().fill?.orders).toEqual([
+      expect.objectContaining({ role: 'entry', type: 'market', active: true, priceTicks: null }),
+    ])
+
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(1)
+    engine.stepBack()
+    expect(engine.getSnapshot().fill?.position).toBeNull()
+    expect(engine.getSnapshot().fill?.orders).toHaveLength(1)
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(1)
+    engine.activateChartView('pane-nq')
+    expect(engine.getSnapshot().fill?.config.symbol).toBe('NQ')
+    expect(engine.getSnapshot().fill?.position).toBeNull()
+    engine.activateChartView('pane-ym')
+    expect(engine.getSnapshot().fill?.config.symbol).toBe('YM')
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(1)
     engine.destroy()
   })
 
@@ -896,6 +1066,23 @@ describe('ReplayEngine multi-view invariant', () => {
     engine.destroy()
   })
 
+  it('aligns sibling charts immediately when date-range sync is enabled', async () => {
+    const engine = new ReplayEngine()
+    const source = adapter()
+    const target = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), source.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), target.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    source.visibleRange.mockReturnValue({ from: 120, to: 7_320 })
+
+    engine.setSyncFlags({ crosshair: false, dateRange: false, lockZoom: false })
+    engine.setSyncFlags({ crosshair: false, dateRange: true, lockZoom: false })
+
+    expect(target.value.setViewportSync).toHaveBeenCalledOnce()
+    expect(target.value.setViewportSync).toHaveBeenCalledWith({ time: { from: 120, to: 7_320 } })
+    expect(source.value.setViewportSync).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
   it('projects one symbol-level drawing document to every pane across timeframes', async () => {
     const drawing = { id: 'shared-1', type: 'trend-line', anchors: [{ time: 60, price: 100 }], style: {}, options: {} }
     const engine = new ReplayEngine()
@@ -906,6 +1093,23 @@ describe('ReplayEngine multi-view invariant', () => {
     second.loadDrawings.mockClear()
     first.fireDrawingChanged('shared-1')
     expect(second.loadDrawings).toHaveBeenCalledWith([drawing])
+    engine.destroy()
+  })
+
+  it('restores the in-memory drawing document when a layout remounts a chart', async () => {
+    const drawing = { id: 'layout-drawing', type: 'trend-line', anchors: [{ time: 60, price: 100 }], style: {}, options: {} }
+    const engine = new ReplayEngine()
+    const original = adapter([drawing])
+    await engine.registerChartView('pane-a', document.createElement('div'), original.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    original.fireDrawingChanged('layout-drawing')
+    const fetchCountBeforeRemount = engineMocks.fetchDrawings.mock.calls.length
+
+    engine.unregisterChartView('pane-a', original.value)
+    const restored = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), restored.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    expect(restored.loadDrawings).toHaveBeenLastCalledWith([drawing])
+    expect(engineMocks.fetchDrawings).toHaveBeenCalledTimes(fetchCountBeforeRemount)
     engine.destroy()
   })
 

@@ -3,7 +3,6 @@ import { KeyboardCommandDialogs } from './components/KeyboardCommandDialogs'
 import { EvalProgressPanel } from './components/eval/EvalProgressPanel'
 import { EvalSetupScreen } from './components/eval/EvalSetupScreen'
 import { Sidebar } from './components/panels/Sidebar'
-import { ReplayBar } from './components/replay-bar/ReplayBar'
 import { TopBar } from './components/TopBar'
 import { useHotkeys } from './hooks/use-hotkeys'
 import { ChartWorkspaceProvider } from './chart-workspace/ChartWorkspaceContext'
@@ -41,7 +40,6 @@ function WorkspaceShell() {
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <ChartWorkspace />
-          <ReplayBar />
         </div>
         <Sidebar />
       </main>

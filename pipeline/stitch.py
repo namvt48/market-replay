@@ -345,16 +345,33 @@ def main() -> int:
         ):
             ts_ns = chunk.index.to_numpy(dtype=np.int64)
             iids = chunk["instrument_id"].to_numpy(dtype=np.int32)
+            o_np = chunk["open"].to_numpy(dtype=np.int64)
+            h_np = chunk["high"].to_numpy(dtype=np.int64)
+            l_np = chunk["low"].to_numpy(dtype=np.int64)
+            c_np = chunk["close"].to_numpy(dtype=np.int64)
+            v_np = chunk["volume"].to_numpy(dtype=np.int64)
+            # Drop multi-leg spreads (e.g. "GCV2-GCZ2"): their price is the
+            # inter-leg difference, often negative — never a real outright price.
+            keep = ~chunk["symbol"].astype(str).str.contains("-", regex=False)
+            if not keep.all():
+                keep_np = keep.to_numpy()
+                ts_ns = ts_ns[keep_np]
+                iids = iids[keep_np]
+                o_np = o_np[keep_np]
+                h_np = h_np[keep_np]
+                l_np = l_np[keep_np]
+                c_np = c_np[keep_np]
+                v_np = v_np[keep_np]
             payloads.append(
                 {
                     "ts": ts_ns // NS_PER_SEC,
                     "code": iids,
                     "day": _day_codes(ts_ns),
-                    "o": chunk["open"].to_numpy(dtype=np.int64),
-                    "h": chunk["high"].to_numpy(dtype=np.int64),
-                    "l": chunk["low"].to_numpy(dtype=np.int64),
-                    "c": chunk["close"].to_numpy(dtype=np.int64),
-                    "v": chunk["volume"].to_numpy(dtype=np.int64),
+                    "o": o_np,
+                    "h": h_np,
+                    "l": l_np,
+                    "c": c_np,
+                    "v": v_np,
                 }
             )
             n_records += len(ts_ns)

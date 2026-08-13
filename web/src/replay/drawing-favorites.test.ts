@@ -20,11 +20,11 @@ describe('drawing favorites', () => {
       getItem: (key: string): string | null => values.get(key) ?? null,
       setItem: (key: string, value: string): void => { values.set(key, value) },
     }
-    const favorites = toggleDrawingFavorite(toggleDrawingFavorite([], 'fib-retracement'), 'path')
+    const favorites = toggleDrawingFavorite(toggleDrawingFavorite(toggleDrawingFavorite([], 'fib-retracement'), 'path'), 'trend-angle')
     persistDrawingFavorites(favorites, storage)
 
     expect(values.has(DRAWING_FAVORITES_STORAGE_KEY)).toBe(true)
-    expect(loadDrawingFavorites(storage)).toEqual(['fib-retracement', 'path'])
-    expect(toggleDrawingFavorite(favorites, 'fib-retracement')).toEqual(['path'])
+    expect(loadDrawingFavorites(storage)).toEqual(['fib-retracement', 'path', 'trend-angle'])
+    expect(toggleDrawingFavorite(favorites, 'fib-retracement')).toEqual(['path', 'trend-angle'])
   })
 })

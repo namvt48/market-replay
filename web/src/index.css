@@ -151,9 +151,63 @@ select:focus-visible {
   @media (pointer: coarse) { width: 2.75rem; height: 2.75rem; }
 }
 
+@utility chart-action-button {
+  width: 1.75rem;
+  height: 1.75rem;
+  @media (pointer: coarse) { width: 2.75rem; height: 2.75rem; }
+}
+
 @utility drawing-toolbar {
-  width: 2.5rem;
+  width: 3rem;
   @media (pointer: coarse) { width: 3.25rem; }
+}
+
+@utility drawing-tool-button {
+  display: grid;
+  width: 2.125rem;
+  height: 2.125rem;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 4px;
+  color: #d1d4dc;
+  transition: color 100ms ease-out, background-color 100ms ease-out;
+  &:hover:not(:disabled) { color: #ffffff; background-color: #1e222d; }
+  &[aria-pressed="true"], &[aria-expanded="true"] { color: #ffffff; background-color: #2a2e39; }
+  @media (pointer: coarse) { width: 2.75rem; height: 2.75rem; }
+}
+
+.chart-area-zoom-selection {
+  position: absolute;
+  z-index: 45;
+  box-sizing: border-box;
+  contain: layout paint;
+  pointer-events: none;
+  border: 2px solid #7aa2ff;
+  background: rgb(41 98 255 / 20%);
+  box-shadow: 0 5px 18px rgb(0 0 0 / 34%), inset 0 0 0 1px rgb(255 255 255 / 14%);
+  will-change: transform, width, height;
+}
+
+.chart-area-zoom-selection::before {
+  position: absolute;
+  inset: 5px auto auto 5px;
+  content: attr(data-label);
+  border: 1px solid rgb(255 255 255 / 24%);
+  border-radius: 3px;
+  background: #2962ff;
+  color: #fff;
+  padding: 2px 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 28%);
+}
+
+.chart-area-zoom-active,
+.chart-area-zoom-active * {
+  cursor: crosshair !important;
 }
 
 @utility trade-button {

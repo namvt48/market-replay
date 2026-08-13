@@ -1,5 +1,5 @@
-import { AlertTriangle, ChartCandlestick, ChevronDown, LoaderCircle, Maximize2, Minimize2, MousePointer2, RotateCcw, Settings, X } from 'lucide-react'
-import { useEffect, useRef, useState, type MouseEvent } from 'react'
+import { AlertTriangle, ChartCandlestick, ChevronDown, ExternalLink, LoaderCircle, Maximize2, Minimize2, MousePointer2, RotateCcw, Settings, X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import type { Timeframe } from '../../api/types'
 import type { ChartPaneState } from '../../chart-workspace/types'
@@ -14,6 +14,7 @@ import { useReplaySelector } from '../../replay/use-replay'
 import { useTimeframePreferences } from '../timeframe/use-timeframe-preferences'
 import { ChartSettingsDialog } from './ChartSettingsDialog'
 import { OhlcLegend } from './OhlcLegend'
+import { IndicatorLegend } from '../indicators/IndicatorLegend'
 
 interface ChartTileProps {
   pane: ChartPaneState
@@ -26,11 +27,13 @@ interface ChartTileProps {
   onSymbolChange: (symbol: string) => void
   onTimeframeChange: (timeframe: Timeframe) => void
   onSettingsChange: (settings: ChartPaneSettings) => void
+  onPopOut?: () => void
+  detached?: boolean
 }
 
 interface ContextMenuPosition { left: number; top: number }
 
-export function ChartTile({ pane, active, removable, maximized, onActivate, onToggleMaximize, onRemove, onSymbolChange, onTimeframeChange, onSettingsChange }: ChartTileProps) {
+export function ChartTile({ pane, active, removable, maximized, onActivate, onToggleMaximize, onRemove, onSymbolChange, onTimeframeChange, onSettingsChange, onPopOut, detached = false }: ChartTileProps) {
   // A tile renders two <select>s and the OHLC legend host; none of that
   // depends on the replay cursor, so it must not
   // re-render at emit rate while playing.
@@ -64,17 +67,19 @@ export function ChartTile({ pane, active, removable, maximized, onActivate, onTo
     const paneId = latestPaneRef.current.id
     if (!host) return
     let mounted = true
+    let registeredAdapter: ChartAdapter | null = null
     void import('../../replay/lwc-adapter').then(({ LwcAdapter }) => {
       if (!mounted) return
       const initial = latestPaneRef.current
       const adapter = new LwcAdapter(hoverStore)
+      registeredAdapter = adapter
       adapterRef.current = adapter
       void replayEngine.registerChartView(initial.id, host, adapter, initial.timeframe, initial.settings, hoverStore, initial.symbol ?? undefined)
     })
     return () => {
       mounted = false
-      adapterRef.current = null
-      replayEngine.unregisterChartView(paneId)
+      if (adapterRef.current === registeredAdapter) adapterRef.current = null
+      if (registeredAdapter) replayEngine.unregisterChartView(paneId, registeredAdapter)
     }
   }, [hoverStore])
 
@@ -83,6 +88,12 @@ export function ChartTile({ pane, active, removable, maximized, onActivate, onTo
     if (pane.symbol) replayEngine.requestChartViewSymbol(pane.id, pane.symbol)
   }, [pane.id, pane.symbol])
   useEffect(() => { replayEngine.updateChartViewSettings(pane.id, pane.settings) }, [pane.id, pane.settings])
+
+  // Runs after every commit (no deps), synchronously right after the DOM
+  // has resized — e.g. the same render that moves a split's ratio while
+  // dragging. syncContainerSize() no-ops when the size is unchanged, so
+  // this stays cheap on renders that have nothing to do with layout.
+  useLayoutEffect(() => { adapterRef.current?.syncContainerSize() })
 
   const activate = (): void => {
     if (active) return
@@ -117,40 +128,57 @@ export function ChartTile({ pane, active, removable, maximized, onActivate, onTo
         if (!event.defaultPrevented && !(event.target instanceof Element && event.target.closest('button, input, select, textarea, [role="dialog"], [role="menu"]'))) onToggleMaximize()
       }}
       onContextMenu={openContextMenu}
-      className={`relative h-full min-h-0 min-w-0 overflow-hidden bg-chart ${active ? 'ring-1 ring-inset ring-active' : 'ring-1 ring-inset ring-line'}`}
+      className="relative h-full min-h-0 min-w-0 overflow-hidden bg-chart ring-1 ring-inset ring-line"
+      data-active-chart={active}
       aria-label={`${pane.timeframe} market chart${active ? ', active' : ''}`}
     >
-      <div ref={hostRef} data-chart-host={pane.id} className="absolute inset-0" />
-      <div className="pointer-events-none absolute left-14 right-32 top-1.5 z-20 flex min-w-0 flex-col items-start gap-0.5 sm:flex-row sm:gap-2">
-        <div ref={identityMenuRef} className="pointer-events-auto relative shrink-0">
-          <button type="button" onClick={() => setIdentityOpen((open) => !open)} aria-label={`${paneSymbol || 'No symbol'} ${pane.timeframe} chart symbol and timeframe`} aria-expanded={identityOpen} aria-haspopup="dialog" className="flex h-7 items-center gap-1.5 rounded-control bg-surface-1/90 px-1.5 text-ui-meta font-semibold text-ink transition-colors hover:bg-surface-3 focus-visible:bg-surface-3">
-            <ChartCandlestick size={14} strokeWidth={1.75} className="text-active-bright" />
-            <span>{paneSymbol || '—'} · {pane.timeframe}</span>
-            <ChevronDown size={12} className="text-muted" />
-          </button>
-          {identityOpen ? (
-            <div role="dialog" aria-label="Chart symbol and timeframe" className="absolute left-0 top-8 z-50 w-56 rounded-panel border border-line-strong bg-[#111214] p-3 shadow-overlay">
-              <label className="mb-3 block text-ui-meta font-medium text-muted">
-                <span className="mb-1 block">Symbol</span>
-                <select aria-label="Chart symbol" disabled={replay.symbols.length === 0} value={paneSymbol} onChange={(event) => { const symbol = event.target.value; onSymbolChange(symbol); replayEngine.requestChartViewSymbol(pane.id, symbol) }} className="field-input h-9 w-full font-semibold">
-                  {replay.symbols.map((symbol) => <option key={symbol.symbol} value={symbol.symbol}>{symbol.symbol} — {symbol.name}</option>)}
-                </select>
-              </label>
-              <label className="block text-ui-meta font-medium text-muted">
-                <span className="mb-1 block">Interval</span>
-                <select aria-label="Chart timeframe" value={pane.timeframe} onChange={(event) => { onTimeframeChange(event.target.value as Timeframe); setIdentityOpen(false) }} className="field-input h-9 w-full font-semibold">
-                  {timeframes.map((timeframe) => <option key={timeframe} value={timeframe}>{timeframe}</option>)}
-                </select>
-              </label>
-            </div>
-          ) : null}
+      <div
+        ref={hostRef}
+        data-chart-host={pane.id}
+        tabIndex={0}
+        aria-label={`${paneSymbol || 'Market'} ${pane.timeframe} interactive chart`}
+        className="absolute inset-0 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-active"
+      />
+      {active ? (
+        <div data-active-chart-outline aria-hidden="true" className="pointer-events-none absolute inset-0 z-40 border border-active/80">
+          <span className="absolute left-0 top-0 size-4 border-l-2 border-t-2 border-active" />
+          <span className="absolute bottom-0 right-0 size-4 border-b-2 border-r-2 border-active" />
         </div>
-        <OhlcLegend store={hoverStore} precision={paneSymbolMeta?.priceDecimals ?? replay.priceDecimals} timezone={pane.settings.timezone} />
+      ) : null}
+      <div className="pointer-events-none absolute left-1.5 right-32 top-1.5 z-20 flex min-w-0 flex-col items-start gap-0.5">
+        <div className="flex w-full min-w-0 items-start gap-2">
+          <div ref={identityMenuRef} className="pointer-events-auto relative shrink-0">
+            <button type="button" onClick={() => setIdentityOpen((open) => !open)} aria-label={`${paneSymbol || 'No symbol'} ${pane.timeframe} chart symbol and timeframe`} aria-expanded={identityOpen} aria-haspopup="dialog" className="flex h-7 items-center gap-1.5 rounded-control bg-surface-1/90 px-1.5 text-ui-meta font-semibold text-ink transition-colors hover:bg-surface-3 focus-visible:bg-surface-3">
+              <ChartCandlestick size={16} strokeWidth={1.75} className="text-active-bright" />
+              <span>{paneSymbol || '—'} · {pane.timeframe}</span>
+              <ChevronDown size={12} className="text-muted" />
+            </button>
+            {identityOpen ? (
+              <div role="dialog" aria-label="Chart symbol and timeframe" className="absolute left-0 top-8 z-50 w-56 rounded-panel border border-line-strong bg-[#111214] p-3 shadow-overlay">
+                <label className="mb-3 block text-ui-meta font-medium text-muted">
+                  <span className="mb-1 block">Symbol</span>
+                  <select aria-label="Chart symbol" disabled={replay.symbols.length === 0} value={paneSymbol} onChange={(event) => { const symbol = event.target.value; onSymbolChange(symbol); replayEngine.requestChartViewSymbol(pane.id, symbol) }} className="field-input h-9 w-full font-semibold">
+                    {replay.symbols.map((symbol) => <option key={symbol.symbol} value={symbol.symbol}>{symbol.symbol} — {symbol.name}</option>)}
+                  </select>
+                </label>
+                <label className="block text-ui-meta font-medium text-muted">
+                  <span className="mb-1 block">Interval</span>
+                  <select aria-label="Chart timeframe" value={pane.timeframe} onChange={(event) => { onTimeframeChange(event.target.value as Timeframe); setIdentityOpen(false) }} className="field-input h-9 w-full font-semibold">
+                    {timeframes.map((timeframe) => <option key={timeframe} value={timeframe}>{timeframe}</option>)}
+                  </select>
+                </label>
+              </div>
+            ) : null}
+          </div>
+          <OhlcLegend store={hoverStore} precision={paneSymbolMeta?.priceDecimals ?? replay.priceDecimals} />
+        </div>
+        <IndicatorLegend />
       </div>
       <div className="absolute right-1.5 top-1.5 z-30 flex items-center gap-0.5">
-        <button type="button" onClick={onToggleMaximize} className="tool-button border border-line bg-surface-1/95" aria-label={maximized ? `Restore ${pane.timeframe} chart layout` : `Maximize ${pane.timeframe} chart`}>{maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
-        <button type="button" onClick={() => setSettingsOpen(true)} className="tool-button border border-line bg-surface-1/95" aria-label={`Chart settings for ${pane.timeframe}`}><Settings size={15} strokeWidth={1.75} /></button>
-        {removable ? <button type="button" onClick={onRemove} className="tool-button border border-line bg-surface-1/95 hover:!text-loss-bright" aria-label={`Remove ${pane.timeframe} chart`}><X size={15} /></button> : null}
+        {onPopOut ? <button type="button" onClick={onPopOut} className="tool-button chart-action-button border border-line bg-surface-1/95" aria-label={`Open ${pane.timeframe} chart in new window`} title="Open chart on another screen"><ExternalLink size={14} strokeWidth={1.75} /></button> : null}
+        {detached ? null : <button type="button" onClick={onToggleMaximize} className="tool-button chart-action-button border border-line bg-surface-1/95" aria-label={maximized ? `Restore ${pane.timeframe} chart layout` : `Maximize ${pane.timeframe} chart`}>{maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>}
+        <button type="button" onClick={() => setSettingsOpen(true)} className="tool-button chart-action-button border border-line bg-surface-1/95" aria-label={`Chart settings for ${pane.timeframe}`}><Settings size={14} strokeWidth={1.75} /></button>
+        {removable ? <button type="button" onClick={onRemove} className="tool-button chart-action-button border border-line bg-surface-1/95 hover:!text-loss-bright" aria-label={`Remove ${pane.timeframe} chart`}><X size={14} /></button> : null}
       </div>
       {active && replay.replayMode === 'selecting' ? (
         <div aria-hidden="true" className="pointer-events-none absolute left-1/2 top-11 z-30 flex -translate-x-1/2 items-center gap-2 rounded-control border border-active/50 bg-[#15171c]/95 px-3 py-2 text-ui-body font-medium text-ink shadow-overlay">

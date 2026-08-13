@@ -64,7 +64,8 @@ describe('EvaluationPanel', () => {
     expect(screen.getByText('LONG')).toBeVisible()
     expect(screen.getByText('1 NQ')).toBeVisible()
     expect(screen.getByText('+$1,000')).toBeVisible()
-    expect(screen.getByText(/MFE 16/)).toBeVisible()
+    expect(screen.getByLabelText('Maximum favorable excursion: 16 ticks. Maximum adverse excursion: 4 ticks.')).toHaveTextContent('MFE +16t · MAE −4t')
+    expect(screen.getByLabelText(/Entry and exit time: Jan 15/)).toBeVisible()
     expect(screen.getByRole('link', { name: 'Create new evaluation account' })).toHaveAttribute('href', '/start/eval')
   })
 
@@ -160,8 +161,7 @@ describe('EvaluationPanel', () => {
     expect(screen.getByText('SHORT')).toBeVisible()
     expect(screen.getByText('2 NQ')).toBeVisible()
     expect(screen.getAllByText('-$2,500')).toHaveLength(2)
-    expect(screen.getByText(/MFE 3/)).toBeVisible()
-    expect(screen.getByText(/MAE 9/)).toBeVisible()
+    expect(screen.getByLabelText('Maximum favorable excursion: 3 ticks. Maximum adverse excursion: 9 ticks.')).toHaveTextContent('MFE +3t · MAE −9t')
   })
 
   it('resumes a previous account directly without an Open account step', async () => {
