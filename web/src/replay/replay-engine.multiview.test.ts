@@ -9,6 +9,13 @@ import { ReplayEngine } from './replay-engine'
 import { EVAL_PRESETS } from '../eval/rules'
 import { getEvalState, loadEvalAccounts, useEvalStore } from '../store/eval-store'
 import type { ViewportDataClient } from './viewport-data'
+import { createLayoutPreset } from '../chart-workspace/layout-presets'
+import {
+  loadSessionWorkspaceSnapshot,
+  registerChartWorkspaceSnapshotBridge,
+} from './session-workspace-snapshot'
+import type { SerializedDrawing } from 'lightweight-charts-drawing'
+import type { UTCTimestamp } from 'lightweight-charts'
 
 const engineMocks = vi.hoisted(() => ({
   stepCalls: vi.fn(),
@@ -21,6 +28,8 @@ const engineMocks = vi.hoisted(() => ({
   createSession: vi.fn().mockResolvedValue('session-1'),
   patchSession: vi.fn().mockResolvedValue(undefined),
   runIndicator: vi.fn().mockResolvedValue({ draws: [], plots: [] }),
+  fetchWorkspaceSnapshot: vi.fn().mockResolvedValue(null),
+  putWorkspaceSnapshot: vi.fn().mockResolvedValue({ revision: 1, capturedAt: 0, conflict: false }),
 }))
 const apiData = vi.hoisted(() => ({
   symbol: { symbol: 'NQ', name: 'Nasdaq', kind: 'future', tickSize: 0.25, pointValue: 20, currency: 'USD', priceDecimals: 2, sessionTz: 'America/New_York', rollRule: '', commissionPerSide: 0, defaultSlippageTicks: 0, ranges: { '1m': { from: 0, to: 300 } } } as SymbolMeta,
@@ -42,6 +51,8 @@ vi.mock('../api/client', () => ({
   createSession: engineMocks.createSession, fetchDrawings: engineMocks.fetchDrawings,
   patchSession: engineMocks.patchSession, upsertDrawings: vi.fn().mockResolvedValue(undefined), putTrades: engineMocks.putTrades,
   runIndicator: engineMocks.runIndicator,
+  fetchWorkspaceSnapshot: engineMocks.fetchWorkspaceSnapshot,
+  putWorkspaceSnapshot: engineMocks.putWorkspaceSnapshot,
 }))
 
 vi.mock('../fill-engine/engine', async (importOriginal) => {
@@ -69,6 +80,8 @@ function adapter(drawings: object[] = []) {
   const setDrawingTool = vi.fn()
   const focusTime = vi.fn()
   const visibleRange = vi.fn().mockReturnValue({ from: 0, to: 0 })
+  const setViewportSync = vi.fn()
+  const resetView = vi.fn()
   let drawingChanged = (_drawingId?: string): void => undefined
   let viewportDemand = (_demand: ViewportDemand): void => undefined
   let crosshairSync = (_state: ChartCrosshairSync | null): void => undefined
@@ -83,21 +96,21 @@ function adapter(drawings: object[] = []) {
     init, setSymbol, setHistory, pushBar: vi.fn(), pushBars, truncateTo: vi.fn(), setSpacerTimes: vi.fn(), syncContainerSize: vi.fn(),
     applyAppearance: vi.fn(), setDisplayTimezone: vi.fn(), onHoveredBar: vi.fn(), onViewportDemand: vi.fn((handler: typeof viewportDemand) => { viewportDemand = handler }),
     onCrosshairSync: vi.fn((handler: typeof crosshairSync) => { crosshairSync = handler }), setCrosshairSync: vi.fn(),
-    onViewportSync: vi.fn((handler: typeof viewportSync) => { viewportSync = handler }), setViewportSync: vi.fn(),
+    onViewportSync: vi.fn((handler: typeof viewportSync) => { viewportSync = handler }), setViewportSync,
     setReplaySelection, onReplayBarSelect: vi.fn((handler: typeof replayBarSelect) => { replayBarSelect = handler }), setTradeMarkers, setEconomicEventMarkers, setIndicators, setTradeConnections, setOrderLines,
     onOrderLineMove: vi.fn((handler: typeof orderMove) => { orderMove = handler }),
     onOrderLineDragStart: vi.fn((handler: typeof orderDragStart) => { orderDragStart = handler }),
     onOrderLineAction: vi.fn((handler: typeof orderAction) => { orderAction = handler }),
     onChartOrder: vi.fn((handler: typeof chartOrder) => { chartOrder = handler }), drawingTools: vi.fn().mockReturnValue([]), setDrawingTool, deselectDrawing: vi.fn(),
-    deleteSelectedDrawing: vi.fn(), deleteAllDrawings: vi.fn(), updateSelectedDrawing: vi.fn(), setNextDrawingAppearance: vi.fn(),
+    deleteSelectedDrawing: vi.fn(), lockSelectedDrawing: vi.fn(), deleteAllDrawings: vi.fn(), updateSelectedDrawing: vi.fn(), setNextDrawingAppearance: vi.fn(),
     copySelectedDrawing: vi.fn().mockReturnValue(null), pasteDrawing: vi.fn(), undoDrawing: vi.fn().mockReturnValue(false), redoDrawing: vi.fn().mockReturnValue(false),
     nudgeSelectedDrawing: vi.fn().mockReturnValue(false), toggleDrawingsVisibility: vi.fn(), setDrawingsHidden: vi.fn(), setAllDrawingsLocked: vi.fn(), setKeepDrawing: vi.fn(), drawingCount: vi.fn().mockReturnValue(drawings.length),
     getDrawings: vi.fn().mockReturnValue(drawings), loadDrawings, onDrawingsChanged: vi.fn((handler: (drawingId?: string) => void) => { drawingChanged = handler }), onDrawingSelection: vi.fn(),
     onDrawingEditRequest: vi.fn(), onDrawingToolChanged: vi.fn(), beginAreaZoom: vi.fn(), resetAreaZoom: vi.fn(), areaZoomState: vi.fn().mockReturnValue({ selecting: false, zoomed: false }), onAreaZoomChanged: vi.fn(), visibleRange, destroy: vi.fn(),
-    focusTime, panView: vi.fn(), zoomView: vi.fn(), toggleInvertScale: vi.fn(), togglePriceScaleMode: vi.fn(), takeSnapshot: vi.fn(), resetView: vi.fn(),
+    focusTime, panView: vi.fn(), zoomView: vi.fn(), toggleInvertScale: vi.fn(), togglePriceScaleMode: vi.fn(), takeSnapshot: vi.fn(), resetView,
   }
   return {
-    value: value as ChartAdapter, init, setSymbol, setHistory, pushBars, loadDrawings, setTradeMarkers, setTradeConnections, setIndicators, setOrderLines, setDrawingTool, setReplaySelection, focusTime, visibleRange,
+    value: value as ChartAdapter, init, setSymbol, setHistory, pushBars, loadDrawings, setTradeMarkers, setTradeConnections, setIndicators, setOrderLines, setDrawingTool, setReplaySelection, focusTime, visibleRange, setViewportSync, resetView,
     fireDrawingChanged: (drawingId?: string) => drawingChanged(drawingId),
     fireViewportDemand: (demand: ViewportDemand) => viewportDemand(demand),
     fireCrosshairSync: (state: ChartCrosshairSync | null) => crosshairSync(state),
@@ -128,6 +141,9 @@ beforeEach(() => {
   engineMocks.fetchCalendar.mockResolvedValue([{ date: '1970-01-01', firstTs: 0, lastTs: 240, bars: 5 }])
   engineMocks.runIndicator.mockReset()
   engineMocks.runIndicator.mockResolvedValue({ draws: [], plots: [] })
+  engineMocks.fetchWorkspaceSnapshot.mockReset()
+  engineMocks.fetchWorkspaceSnapshot.mockResolvedValue(null)
+  engineMocks.putWorkspaceSnapshot.mockClear()
 })
 
 describe('ReplayEngine multi-view invariant', () => {
@@ -467,6 +483,7 @@ describe('ReplayEngine multi-view invariant', () => {
 
     view.fireReplayBarSelect(120)
     await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+    expect(view.resetView).toHaveBeenCalledOnce()
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 120, replayStartTs: 120, sessionId: 'session-1', sessionStatus: 'active' })
     expect(engineMocks.createSession).toHaveBeenCalledOnce()
     engine.placeMarket('buy')
@@ -511,6 +528,186 @@ describe('ReplayEngine multi-view invariant', () => {
       expect.objectContaining({ entryTime: 180, exitTime: 240, side: 'long' }),
     ])
     engine.destroy()
+  })
+
+  it('recovers a journal workspace from the last closed trade and overwrites it on explicit exit', async () => {
+    const workspace = createLayoutPreset('single')
+    const restoreLayout = vi.fn()
+    const unregisterBridge = registerChartWorkspaceSnapshotBridge({ capture: () => workspace, restore: restoreLayout })
+    const drawing: SerializedDrawing = {
+      id: 'recovery-line',
+      type: 'trend-line',
+      anchors: [{ time: 120 as UTCTimestamp, price: 100 }, { time: 180 as UTCTimestamp, price: 101 }],
+      style: { lineColor: '#22c55e', lineWidth: 2 },
+      options: { visible: true, locked: false },
+    }
+    const engine = new ReplayEngine()
+    const view = adapter([drawing])
+    view.visibleRange.mockReturnValue({ from: 60, to: 180 })
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    view.fireDrawingChanged()
+
+    engine.beginReplaySelection({ createSession: true })
+    view.fireReplayBarSelect(60)
+    await vi.waitFor(() => expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', sessionId: 'session-1' }))
+    engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
+    engine.stepForward()
+    engine.flatten()
+    engine.stepForward()
+
+    expect(loadSessionWorkspaceSnapshot({ kind: 'replay', id: 'session-1' })).toMatchObject({
+      reason: 'trade-close',
+      cursorTs: 180,
+      drawings: { NQ: [expect.objectContaining({ id: 'recovery-line' })] },
+      fills: { NQ: expect.objectContaining({ trades: [expect.objectContaining({ exitTs: 180 })] }) },
+    })
+
+    engine.stepForward()
+    window.dispatchEvent(new Event('pagehide'))
+    expect(loadSessionWorkspaceSnapshot({ kind: 'replay', id: 'session-1' })?.cursorTs).toBe(180)
+
+    engine.destroy()
+    const resumedEngine = new ReplayEngine()
+    const resumedView = adapter()
+    await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await resumedEngine.resumeSession({
+      id: 'session-1', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
+      equityCents: 1_000_000, status: 'paused', config: null, createdAt: 60, updatedAt: 240,
+    })
+
+    expect(resumedEngine.getSnapshot()).toMatchObject({ cursorTs: 180, replayMode: 'active' })
+    expect(resumedEngine.getSnapshot().fill?.trades).toEqual([expect.objectContaining({ exitTs: 180 })])
+    expect(restoreLayout).toHaveBeenCalledWith(expect.objectContaining({ activePaneId: workspace.activePaneId }))
+    expect(resumedView.loadDrawings).toHaveBeenLastCalledWith([expect.objectContaining({ id: 'recovery-line' })])
+    expect(resumedView.setViewportSync).not.toHaveBeenCalled()
+    expect(resumedView.resetView).toHaveBeenCalled()
+
+    resumedEngine.stepForward()
+    await resumedEngine.pauseReplaySession()
+    expect(loadSessionWorkspaceSnapshot({ kind: 'replay', id: 'session-1' })).toMatchObject({
+      reason: 'explicit-exit',
+      cursorTs: 240,
+    })
+    unregisterBridge()
+    resumedEngine.destroy()
+  })
+
+  it('prefers a newer backend workspace snapshot over a stale local one on resume', async () => {
+    const workspace = createLayoutPreset('single')
+    const unregisterBridge = registerChartWorkspaceSnapshotBridge({ capture: () => workspace, restore: vi.fn() })
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    engine.beginReplaySelection({ createSession: true })
+    view.fireReplayBarSelect(60)
+    await vi.waitFor(() => expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', sessionId: 'session-1' }))
+    engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
+    engine.stepForward()
+    engine.flatten()
+    engine.stepForward()
+
+    const localSnapshot = loadSessionWorkspaceSnapshot({ kind: 'replay', id: 'session-1' })
+    if (!localSnapshot) throw new Error('Expected a local recovery snapshot')
+    expect(localSnapshot.cursorTs).toBe(180)
+
+    // Simulate a more recent explicit-exit snapshot already sitting on the
+    // backend (e.g. saved from a different browser) — it must win over the
+    // local trade-close snapshot even though local loads synchronously.
+    const remoteSnapshot = { ...localSnapshot, cursorTs: 240, capturedAt: localSnapshot.capturedAt + 10_000, reason: 'explicit-exit' as const }
+    engineMocks.fetchWorkspaceSnapshot.mockResolvedValueOnce({ revision: 9, capturedAt: remoteSnapshot.capturedAt, snapshot: remoteSnapshot })
+
+    engine.destroy()
+    const resumedEngine = new ReplayEngine()
+    const resumedView = adapter()
+    await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await resumedEngine.resumeSession({
+      id: 'session-1', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
+      equityCents: 1_000_000, status: 'paused', config: null, createdAt: 60, updatedAt: 240,
+    })
+
+    expect(resumedEngine.getSnapshot().cursorTs).toBe(240)
+    unregisterBridge()
+    resumedEngine.destroy()
+  })
+
+  it('falls back to the local snapshot when the backend fetch rejects', async () => {
+    const workspace = createLayoutPreset('single')
+    const unregisterBridge = registerChartWorkspaceSnapshotBridge({ capture: () => workspace, restore: vi.fn() })
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    engine.beginReplaySelection({ createSession: true })
+    view.fireReplayBarSelect(60)
+    await vi.waitFor(() => expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', sessionId: 'session-1' }))
+    engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
+    engine.stepForward()
+    engine.flatten()
+    engine.stepForward()
+    expect(loadSessionWorkspaceSnapshot({ kind: 'replay', id: 'session-1' })?.cursorTs).toBe(180)
+
+    engineMocks.fetchWorkspaceSnapshot.mockRejectedValueOnce(new Error('offline'))
+
+    engine.destroy()
+    const resumedEngine = new ReplayEngine()
+    const resumedView = adapter()
+    await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await resumedEngine.resumeSession({
+      id: 'session-1', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
+      equityCents: 1_000_000, status: 'paused', config: null, createdAt: 60, updatedAt: 240,
+    })
+
+    expect(resumedEngine.getSnapshot().cursorTs).toBe(180)
+    unregisterBridge()
+    resumedEngine.destroy()
+  })
+
+  it('restores an eval account workspace from its closed-trade snapshot', async () => {
+    const workspace = createLayoutPreset('single')
+    const restoreLayout = vi.fn()
+    const unregisterBridge = registerChartWorkspaceSnapshotBridge({ capture: () => workspace, restore: restoreLayout })
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 60, 'America/New_York')
+    const accountId = getEvalState().accountId
+    if (!accountId) throw new Error('Evaluation fixture did not create an account')
+
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.syncEvaluationSession()
+    engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
+    engine.stepForward()
+    engine.flatten()
+    engine.stepForward()
+
+    expect(loadSessionWorkspaceSnapshot({ kind: 'eval', id: accountId })).toMatchObject({
+      reason: 'trade-close',
+      cursorTs: 180,
+      fills: { NQ: expect.objectContaining({ trades: [expect.objectContaining({ exitTs: 180 })] }) },
+    })
+
+    engine.destroy()
+    const resumedEngine = new ReplayEngine()
+    const resumedView = adapter()
+    await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await resumedEngine.syncEvaluationSession()
+
+    expect(resumedEngine.getSnapshot()).toMatchObject({ cursorTs: 180, replayMode: 'active' })
+    expect(resumedEngine.getSnapshot().fill?.trades).toEqual([expect.objectContaining({ exitTs: 180 })])
+    expect(restoreLayout).toHaveBeenCalledWith(expect.objectContaining({ activePaneId: workspace.activePaneId }))
+
+    resumedEngine.stepForward()
+    await resumedEngine.exitEvaluation()
+    expect(loadSessionWorkspaceSnapshot({ kind: 'eval', id: accountId })).toMatchObject({
+      reason: 'explicit-exit',
+      cursorTs: 240,
+    })
+    unregisterBridge()
+    resumedEngine.destroy()
   })
 
   it('saves evaluation data, cancels its orders, and returns the chart to latest on exit', async () => {
@@ -631,6 +828,7 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, sessionId: session.id, sessionStatus: 'active' })
     expect(engine.getSnapshot().fill?.trades).toHaveLength(1)
     expect(view.focusTime).toHaveBeenCalledWith(120)
+    expect(view.resetView).toHaveBeenCalled()
     engine.destroy()
   })
 
@@ -774,6 +972,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await engine.syncEvaluationSession()
 
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 180, replayMode: 'active', replayStartTs: 60 })
+    expect(view.resetView).toHaveBeenCalled()
     engine.stepBack()
     expect(engine.getSnapshot().cursorTs).toBe(180)
     engine.stepForward()

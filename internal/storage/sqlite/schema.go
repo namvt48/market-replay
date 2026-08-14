@@ -1,8 +1,9 @@
 package sqlite
 
 // schema covers sessions, trades, and watchlist (docs §6.3). The drawings
-// and drawing_templates tables (docs §14.2) are added by drawings.go's own
-// schema fragment, appended to this same Init() call.
+// table (docs §14.2) is added by drawings.go's own schema fragment, and
+// drawing_templates by drawing_templates.go's, both appended to this same
+// Init() call.
 const schema = `
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;

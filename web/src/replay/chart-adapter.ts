@@ -152,6 +152,7 @@ export interface ChartAdapter {
   setDrawingTool(tool: string | null): void
   deselectDrawing(): void
   deleteSelectedDrawing(): void
+  lockSelectedDrawing(): void
   deleteAllDrawings(): void
   updateSelectedDrawing(patch: DrawingAppearancePatch): void
   setNextDrawingAppearance(patch: DrawingAppearancePatch | null): void

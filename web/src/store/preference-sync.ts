@@ -9,13 +9,18 @@ import { fetchPreferences, putPreference } from '../api/preferences'
  * listed explicitly rather than mirroring every localStorage key, so an
  * incidental key can never start syncing by accident.
  */
+// Drawing templates (market-replay:drawing-templates:v1) are deliberately
+// absent: they moved off this generic blob mechanism onto their own table
+// and CRUD endpoints (see replay/drawing-templates.ts's
+// hydrateDrawingTemplates/syncDrawingTemplateUpsert/syncDrawingTemplateDelete).
+// The key still works as a plain localStorage cache here — it's just no
+// longer pushed to /api/v1/preferences.
 export const SYNCED_PREFERENCE_KEYS = [
   'market-replay:chart-pane-settings',
   'market-replay:chart-layout',
   'market-replay:saved-chart-layouts',
   'market-replay:timeframe-preferences',
   'market-replay:drawing-favorites:v1',
-  'market-replay:drawing-templates:v1',
   'replay:eval',
   'replay:eval:accounts',
 ] as const
@@ -104,7 +109,7 @@ class SyncedPreferenceStorage implements PreferenceStorage {
     const queued = this.takePending()
     if (queued.length === 0) return Promise.resolve()
     const pushes = Promise.all(queued.map(([key, value]) => putPreference(key, value).catch(() => undefined)))
-    return withTimeout(pushes.then(() => undefined), FLUSH_TIMEOUT_MS).catch(() => undefined)
+    return withTimeout(pushes.then(() => undefined), FLUSH_TIMEOUT_MS, 'preference flush timed out').catch(() => undefined)
   }
 
   /** Fire-and-forget push for pagehide: keepalive lets requests outlive the page. */
@@ -173,7 +178,7 @@ if (typeof window !== 'undefined') {
 export async function hydratePreferences(storage: PreferenceStorage | null = browserStorage()): Promise<void> {
   if (!storage) return
   try {
-    const remote = await withTimeout(fetchPreferences(), HYDRATE_TIMEOUT_MS)
+    const remote = await withTimeout(fetchPreferences(), HYDRATE_TIMEOUT_MS, 'preference hydrate timed out')
     for (const [key, payload] of Object.entries(remote)) {
       if (!SYNCED.has(key)) continue
       if (LOCAL_WRITER_WINS_KEYS.has(key)) {
@@ -187,9 +192,10 @@ export async function hydratePreferences(storage: PreferenceStorage | null = bro
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+/** Races promise against a timeout, rejecting with message if it loses. Shared by every hydrate-on-boot path (preferences, drawing templates) so a slow backend delays, never blocks, startup. */
+export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('preference hydrate timed out')), ms)
+    const timer = setTimeout(() => reject(new Error(message)), ms)
     promise.then(
       (value) => { clearTimeout(timer); resolve(value) },
       (error) => { clearTimeout(timer); reject(error) },

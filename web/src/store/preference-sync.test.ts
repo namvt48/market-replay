@@ -94,17 +94,19 @@ describe('hydratePreferences', () => {
 
   it('covers every key the stores actually persist', () => {
     // A store wired to preferenceStorage but missing from this list would
-    // save locally and silently never sync.
+    // save locally and silently never sync. Drawing templates are
+    // deliberately absent — they sync through their own CRUD endpoints
+    // (replay/drawing-templates.ts), not this generic blob mechanism.
     expect(SYNCED_PREFERENCE_KEYS).toEqual(expect.arrayContaining([
       'market-replay:chart-pane-settings',
       'market-replay:chart-layout',
       'market-replay:saved-chart-layouts',
       'market-replay:timeframe-preferences',
       'market-replay:drawing-favorites:v1',
-      'market-replay:drawing-templates:v1',
       'replay:eval',
       'replay:eval:accounts',
     ]))
+    expect(SYNCED_PREFERENCE_KEYS).not.toContain('market-replay:drawing-templates:v1')
   })
 })
 

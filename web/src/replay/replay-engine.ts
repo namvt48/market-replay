@@ -32,6 +32,17 @@ import { aggregateRange } from './aggregate'
 import { BarSource } from './bar-source'
 import { timeframeSeconds } from './timeframe'
 import { restoreReplayIndicators, restoreReplayRuntime, serializeReplayRuntime } from './session-state'
+import {
+  captureChartWorkspaceState,
+  compareSnapshotRank,
+  fetchRemoteWorkspaceSnapshot,
+  loadSessionWorkspaceSnapshot,
+  restoreChartWorkspaceState,
+  saveSessionWorkspaceSnapshot,
+  syncWorkspaceSnapshot,
+  type SessionSnapshotOwner,
+  type SessionWorkspaceSnapshot,
+} from './session-workspace-snapshot'
 import { pruneSymbolCache } from './symbol-cache'
 import type { ChartAdapter, DisplayBar, EconomicEventMarker, IndicatorRenderResult, OrderLine, OrderLineAction, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDemand, ViewportDirection } from './chart-adapter'
 import type { ChartPaneSettings } from './chart-settings-store'
@@ -177,6 +188,7 @@ export class ReplayEngine {
   private transientErrorTimer: ReturnType<typeof setTimeout> | null = null
   private pendingDrawingViewId: string | null = null
   private drawingDocuments = new Map<string, DrawingDocument>()
+  private pendingWorkspaceRestore: SessionWorkspaceSnapshot | null = null
   private syncingDrawings = false
   /**
    * Fill-engine state as of each replay bar index, so stepping the cursor
@@ -258,6 +270,7 @@ export class ReplayEngine {
     if (symbolCode && view.symbol()?.symbol !== symbolCode) await this.setChartViewSymbol(id, symbolCode)
     if (!isCurrentView()) return
     await this.refreshIndicatorView(view)
+    this.applyWorkspaceRestoreToView(view)
   }
 
   unregisterChartView(id: string, expectedAdapter?: ChartAdapter): void {
@@ -773,6 +786,7 @@ export class ReplayEngine {
     }
     this.setSnapshot({ replayMode: 'active', replayStartTs, sessionId, sessionStatus }, true)
     this.views.setReplaySelection({ mode: 'active', timestamp: replayStartTs })
+    this.resetAllChartViews()
   }
 
   cancelReplaySelection(): void {
@@ -790,18 +804,19 @@ export class ReplayEngine {
 
   exitReplay(): void {
     if (isEvalActive()) return
-    void this.deactivateReplaySession('paused', { returnToLatest: true })
+    void this.deactivateReplaySession('paused', { returnToLatest: true, snapshotOnExit: true })
   }
 
-  pauseReplaySession(): Promise<void> { return this.deactivateReplaySession('paused', { returnToLatest: true }) }
-  stopReplaySession(): Promise<void> { return this.deactivateReplaySession('stopped', { returnToLatest: true }) }
+  pauseReplaySession(): Promise<void> { return this.deactivateReplaySession('paused', { returnToLatest: true, snapshotOnExit: true }) }
+  stopReplaySession(): Promise<void> { return this.deactivateReplaySession('stopped', { returnToLatest: true, snapshotOnExit: true }) }
   async exitEvaluation(): Promise<void> {
     if (!isEvalActive()) return
-    this.cancelActiveOrders()
     if (!await this.flushDrawingPersistence()) {
       this.setSnapshot({ error: 'Evaluation drawings could not be saved. Exit was cancelled so you can retry.' }, true)
       return
     }
+    this.captureWorkspaceRecoveryPoint('explicit-exit')
+    this.cancelActiveOrders()
     getEvalState().exitEvaluation()
     await this.deactivateReplaySession('paused', { returnToLatest: true, drawingsFlushed: true })
   }
@@ -980,6 +995,7 @@ export class ReplayEngine {
   }
   deselectDrawing(): void { this.views.active()?.adapter.deselectDrawing() }
   deleteSelectedDrawing(): void { this.views.active()?.adapter.deleteSelectedDrawing() }
+  lockSelectedDrawing(): void { this.views.active()?.adapter.lockSelectedDrawing() }
   deleteAllDrawings(): void { this.views.active()?.adapter.deleteAllDrawings() }
   updateSelectedDrawing(patch: DrawingAppearancePatch): void { this.views.active()?.adapter.updateSelectedDrawing(patch) }
   setNextDrawingAppearance(patch: DrawingAppearancePatch | null): void { this.views.active()?.adapter.setNextDrawingAppearance(patch) }
@@ -1033,6 +1049,9 @@ export class ReplayEngine {
     this.placePending(side, type, lastBar.closeTicks * symbol.tickSize)
   }
   closeDrawingInspector(): void { this.setSnapshot({ drawingInspectorOpen: false }, true) }
+  openDrawingInspector(): void {
+    if (this.snapshot.selectedDrawing) this.setSnapshot({ drawingInspectorOpen: true }, true)
+  }
 
   async resumeSession(session: ReplaySession): Promise<void> {
     if (isEvalActive()) {
@@ -1040,68 +1059,94 @@ export class ReplayEngine {
       return
     }
     await this.deactivateReplaySession('paused')
-    const symbol = this.snapshot.symbols.find((item) => item.symbol === session.symbol)
+    const recoveryPoint = await this.resolveWorkspaceRecoveryPoint({ kind: 'replay', id: session.id })
+    if (recoveryPoint) this.prepareWorkspaceRestore(recoveryPoint)
+    const symbolCode = recoveryPoint?.symbol ?? session.symbol
+    const symbol = this.snapshot.symbols.find((item) => item.symbol === symbolCode)
     if (!symbol) {
-      this.setSnapshot({ error: `Session symbol ${session.symbol} is unavailable` }, true)
+      this.setSnapshot({ error: `Session symbol ${symbolCode} is unavailable` }, true)
       return
     }
     let trades: ClosedTrade[]
     try {
       trades = await fetchTrades(session.id)
     } catch {
-      this.setSnapshot({ error: 'This session could not be activated because its trade history is unavailable.' }, true)
-      return
+      if (!recoveryPoint) {
+        this.setSnapshot({ error: 'This session could not be activated because its trade history is unavailable.' }, true)
+        return
+      }
+      trades = []
     }
     this.retainedSessionTrades = []
-    const checkpoint = session.cursorTs || session.startTs
-    const resolution = trades.length === 0
+    const checkpoint = recoveryPoint?.cursorTs ?? (session.cursorTs || session.startTs)
+    const hasRecoveryTrades = recoveryPoint ? Object.values(recoveryPoint.fills).some((fill) => fill.trades.length > 0) : false
+    const resolution = trades.length === 0 && !hasRecoveryTrades
       ? await this.resolveDataTimestamp(symbol, checkpoint, 'nearest')
       : { timestamp: checkpoint, calendarAvailable: true }
+    const desiredTimeframe = recoveryPoint?.layout.panes[recoveryPoint.layout.activePaneId]?.timeframe ?? session.tf
     if (this.snapshot.symbol?.symbol !== symbol.symbol) {
       const active = this.views.active()
-      if (active) active.timeframe = session.tf
-      this.setSnapshot({ symbol, timeframe: session.tf }, true)
+      if (active) active.timeframe = desiredTimeframe
+      this.setSnapshot({ symbol, timeframe: desiredTimeframe }, true)
       await this.loadSymbol(symbol, resolution.timestamp)
-    } else if (this.snapshot.timeframe !== session.tf) {
-      await this.setTimeframe(session.tf)
+    } else if (this.snapshot.timeframe !== desiredTimeframe) {
+      await this.setTimeframe(desiredTimeframe)
     }
     await this.seek(resolution.timestamp)
     if (this.snapshot.status !== 'ready' || !this.snapshot.fill) return
-    const fill = restoreReplayRuntime(this.snapshot.fill, session, trades)
-    this.retainedSessionTrades = fill.trades
-    const indicators = restoreReplayIndicators(session)
-    this.snapshot = { ...this.snapshot, fill, indicators, stats: calculateTradeStats(fill.trades) }
-    this.symbolFills.clear()
-    this.symbolFills.set(fill.config.symbol, fill)
-    this.persistedTrades = fill.trades
-    this.fillSnapshots.clear()
-    this.fillSnapshots.set(this.cursorIndex, new Map(this.symbolFills))
-    await patchSession(session.id, { status: 'active', cursorTs: this.snapshot.cursorTs, equityCents: fill.equityCents, config: serializeReplayRuntime(fill, indicators) })
     this.setSnapshot({ sessionId: session.id, sessionStatus: 'active', replayMode: 'active', replayStartTs: session.startTs }, true)
+    if (recoveryPoint) {
+      this.prepareWorkspaceRestore(recoveryPoint)
+      this.restoreWorkspaceRuntime(recoveryPoint)
+    } else {
+      const fill = restoreReplayRuntime(this.snapshot.fill, session, trades)
+      this.retainedSessionTrades = fill.trades
+      const indicators = restoreReplayIndicators(session)
+      this.snapshot = { ...this.snapshot, fill, indicators, stats: calculateTradeStats(fill.trades) }
+      this.symbolFills.clear()
+      this.symbolFills.set(fill.config.symbol, fill)
+      this.fillSnapshots.clear()
+      this.fillSnapshots.set(this.cursorIndex, new Map(this.symbolFills))
+    }
+    const fill = this.snapshot.fill
+    if (!fill) return
+    this.persistedTrades = fill.trades
+    await patchSession(session.id, { status: 'active', cursorTs: this.snapshot.cursorTs, equityCents: fill.equityCents, config: serializeReplayRuntime(fill, this.snapshot.indicators) })
     this.syncChartTradingState(true)
     this.views.setReplaySelection({ mode: 'active', timestamp: session.startTs })
-    const latestTrade = trades.reduce<ClosedTrade | null>((latest, trade) => !latest || trade.exitTs > latest.exitTs ? trade : latest, null)
+    const latestTrade = fill.trades.reduce<EngineTrade | null>((latest, trade) => !latest || trade.exitTs > latest.exitTs ? trade : latest, null)
     this.views.focusTime(latestTrade?.exitTs ?? resolution.timestamp)
     await this.refreshIndicators()
+    this.resetAllChartViews()
     if (!resolution.calendarAvailable) this.setSnapshot({ error: 'The trading calendar is unavailable; the chart opened on the closest bar returned by history.' }, true)
   }
 
   async syncEvaluationSession(): Promise<void> {
     const evaluation = getEvalState()
     if (evaluation.phase !== 'running' || evaluation.startTs === null) return
-    const symbol = this.views.active()?.symbol() ?? this.snapshot.symbol ?? this.snapshot.symbols.find((item) => item.symbol === 'NQ') ?? this.snapshot.symbols[0]
+    const recoveryPoint = evaluation.accountId ? await this.resolveWorkspaceRecoveryPoint({ kind: 'eval', id: evaluation.accountId }) : null
+    if (recoveryPoint) this.prepareWorkspaceRestore(recoveryPoint)
+    const recoveredSymbol = recoveryPoint ? this.snapshot.symbols.find((item) => item.symbol === recoveryPoint.symbol) : null
+    const symbol = recoveredSymbol ?? this.views.active()?.symbol() ?? this.snapshot.symbol ?? this.snapshot.symbols.find((item) => item.symbol === 'NQ') ?? this.snapshot.symbols[0]
     if (!symbol) return
-    const checkpoint = evaluation.lastCursorTs ?? evaluation.startTs
-    const latestTrade = evaluation.trades.reduce<(typeof evaluation.trades)[number] | null>((latest, trade) => !latest || trade.exitTime > latest.exitTime ? trade : latest, null)
-    const resolution = latestTrade
+    const checkpoint = recoveryPoint?.cursorTs ?? evaluation.lastCursorTs ?? evaluation.startTs
+    const recoveredTrades = recoveryPoint ? Object.values(recoveryPoint.fills).flatMap((fill) => fill.trades) : []
+    const latestTradeTs = recoveredTrades.reduce<number | null>((latest, trade) => latest === null || trade.exitTs > latest ? trade.exitTs : latest, null)
+      ?? evaluation.trades.reduce<number | null>((latest, trade) => latest === null || trade.exitTime > latest ? trade.exitTime : latest, null)
+    const resolution = latestTradeTs !== null
       ? { timestamp: checkpoint, calendarAvailable: true }
       : await this.resolveDataTimestamp(symbol, checkpoint, 'at-or-after')
     this.setSnapshot({ symbol, activeSymbol: symbol }, true)
     await this.loadSymbol(symbol, resolution.timestamp)
     if (this.snapshot.status !== 'ready') return
     this.setSnapshot({ replayMode: 'active', replayStartTs: evaluation.startTs }, true)
+    if (recoveryPoint) {
+      this.prepareWorkspaceRestore(recoveryPoint)
+      this.restoreWorkspaceRuntime(recoveryPoint)
+    }
     this.views.setReplaySelection({ mode: 'active', timestamp: evaluation.startTs })
-    this.views.focusTime(latestTrade?.exitTime ?? resolution.timestamp)
+    this.views.focusTime(latestTradeTs ?? resolution.timestamp)
+    this.resetAllChartViews()
     if (!resolution.calendarAvailable) this.setSnapshot({ error: 'The trading calendar is unavailable; the evaluation opened on the closest bar returned by history.' }, true)
   }
 
@@ -1270,6 +1315,151 @@ export class ReplayEngine {
     }
   }
 
+  private closedTradeCount(fills: Map<string, FillEngineState> = this.symbolFills): number {
+    let count = 0
+    for (const fill of fills.values()) count += fill.trades.length
+    return count
+  }
+
+  private currentSnapshotOwner(): SessionSnapshotOwner | null {
+    const evaluation = getEvalState()
+    if (evaluation.phase === 'running' && evaluation.accountId) return { kind: 'eval', id: evaluation.accountId }
+    return this.snapshot.sessionId ? { kind: 'replay', id: this.snapshot.sessionId } : null
+  }
+
+  /**
+   * Picks the better of the local (localStorage) and backend recovery
+   * points for owner. The local read stays the offline-safe default:
+   * fetchRemoteWorkspaceSnapshot never throws and returns null on any
+   * failure or timeout, so an unreachable backend just falls back to
+   * whatever this browser already had.
+   */
+  private async resolveWorkspaceRecoveryPoint(owner: SessionSnapshotOwner): Promise<SessionWorkspaceSnapshot | null> {
+    const local = loadSessionWorkspaceSnapshot(owner)
+    const remote = await fetchRemoteWorkspaceSnapshot(owner)
+    if (!remote) return local
+    if (!local) return remote.snapshot
+    return compareSnapshotRank(remote.snapshot, local) > 0 ? remote.snapshot : local
+  }
+
+  private captureWorkspaceRecoveryPoint(
+    reason: SessionWorkspaceSnapshot['reason'],
+    checkpoint?: { cursorTs: number; fills: Map<string, FillEngineState> },
+  ): void {
+    const owner = this.currentSnapshotOwner()
+    const layout = captureChartWorkspaceState()
+    const symbol = this.snapshot.symbol
+    if (!owner || !layout || !symbol) return
+
+    const drawings: Record<string, SerializedDrawing[]> = {}
+    for (const [drawingSymbol, document] of this.drawingDocuments) drawings[drawingSymbol] = structuredClone(document.drawings)
+    for (const view of this.views.all()) {
+      const viewSymbol = view.symbol()
+      if (viewSymbol) drawings[viewSymbol.symbol] = structuredClone(view.adapter.getDrawings())
+    }
+    const viewports = Object.fromEntries(this.views.all().map((view) => [view.id, { time: view.adapter.visibleRange() }]))
+    const fills = Object.fromEntries(
+      [...(checkpoint?.fills ?? this.symbolFills)].map(([fillSymbol, fill]) => [fillSymbol, structuredClone(fill)]),
+    )
+    const recoveryPoint: SessionWorkspaceSnapshot = {
+      version: 1,
+      owner,
+      reason,
+      capturedAt: Date.now(),
+      cursorTs: checkpoint?.cursorTs ?? this.snapshot.cursorTs,
+      symbol: symbol.symbol,
+      layout,
+      viewports,
+      drawings,
+      fills,
+      indicators: structuredClone(this.snapshot.indicators),
+      preferences: {
+        speed: this.snapshot.speed,
+        stepTimeframe: this.snapshot.stepTimeframe,
+        qty: this.snapshot.qty,
+        drawingMode: this.snapshot.drawingMode,
+        keepDrawing: this.snapshot.keepDrawing,
+        drawingsLocked: this.snapshot.drawingsLocked,
+        drawingsHidden: this.snapshot.drawingsHidden,
+        indicatorsHidden: this.snapshot.indicatorsHidden,
+      },
+    }
+    if (!saveSessionWorkspaceSnapshot(recoveryPoint)) {
+      this.setSnapshot({ error: 'The local recovery snapshot could not be saved. Check browser site-storage permissions.' }, true)
+    }
+    // Local write is already the source of truth for this browser; the
+    // backend mirror is a best-effort durable copy for other browsers/a
+    // reinstall, fired regardless of whether the local save above succeeded.
+    syncWorkspaceSnapshot(recoveryPoint)
+  }
+
+  private prepareWorkspaceRestore(recoveryPoint: SessionWorkspaceSnapshot): void {
+    this.pendingWorkspaceRestore = recoveryPoint
+    restoreChartWorkspaceState(recoveryPoint.layout)
+    this.setMarketSession(recoveryPoint.layout.marketSession)
+    this.setSyncFlags(recoveryPoint.layout.syncFlags)
+    for (const [symbol, drawings] of Object.entries(recoveryPoint.drawings)) {
+      const existing = this.drawingDocuments.get(this.drawingDocumentKey(symbol)) ?? this.emptyDrawingDocument()
+      existing.drawings = structuredClone(drawings)
+      existing.previousIds = new Set(drawings.map((drawing) => drawing.id))
+      const bucket = recoveryPoint.owner.kind === 'replay'
+        ? `session:${recoveryPoint.owner.id}`
+        : `eval:${recoveryPoint.owner.id}`
+      existing.buckets = new Map(drawings.map((drawing) => [drawing.id, bucket]))
+      this.drawingDocuments.set(this.drawingDocumentKey(symbol), existing)
+    }
+  }
+
+  private restoreWorkspaceRuntime(recoveryPoint: SessionWorkspaceSnapshot): void {
+    this.symbolFills = new Map(Object.entries(structuredClone(recoveryPoint.fills)))
+    const activeSymbol = this.tradingSymbol() ?? this.snapshot.symbol
+    const fill = activeSymbol ? this.symbolFills.get(activeSymbol.symbol) ?? null : null
+    this.retainedSessionTrades = fill?.trades ?? []
+    this.orderDraft = null
+    this.snapshot = {
+      ...this.snapshot,
+      fill,
+      evalFill: isEvalActive() ? this.aggregateEvaluationFill() : null,
+      stats: fill ? calculateTradeStats(fill.trades) : EMPTY_STATS,
+      indicators: structuredClone(recoveryPoint.indicators),
+      speed: recoveryPoint.preferences.speed,
+      stepTimeframe: recoveryPoint.preferences.stepTimeframe,
+      qty: recoveryPoint.preferences.qty,
+      drawingMode: recoveryPoint.preferences.drawingMode,
+      keepDrawing: recoveryPoint.preferences.keepDrawing,
+      drawingsLocked: recoveryPoint.preferences.drawingsLocked,
+      drawingsHidden: recoveryPoint.preferences.drawingsHidden,
+      indicatorsHidden: recoveryPoint.preferences.indicatorsHidden,
+    }
+    this.fillSnapshots.clear()
+    this.fillSnapshots.set(this.cursorIndex, new Map(this.symbolFills))
+    this.views.all().forEach((view) => {
+      view.adapter.setKeepDrawing(recoveryPoint.preferences.keepDrawing)
+      view.adapter.setAllDrawingsLocked(recoveryPoint.preferences.drawingsLocked)
+      view.adapter.setDrawingsHidden(recoveryPoint.preferences.drawingsHidden)
+      this.applyWorkspaceRestoreToView(view)
+    })
+    this.syncChartTradingState(true)
+  }
+
+  private applyWorkspaceRestoreToView(view: ChartViewController): void {
+    const recoveryPoint = this.pendingWorkspaceRestore
+    const owner = this.currentSnapshotOwner()
+    if (!recoveryPoint || !owner || owner.kind !== recoveryPoint.owner.kind || owner.id !== recoveryPoint.owner.id) return
+    const symbol = view.symbol()
+    const drawings = symbol ? recoveryPoint.drawings[symbol.symbol] : undefined
+    if (drawings) {
+      this.syncingDrawings = true
+      view.adapter.loadDrawings(structuredClone(drawings))
+      this.syncingDrawings = false
+    }
+    view.resetView()
+  }
+
+  private resetAllChartViews(): void {
+    this.views.all().forEach((view) => view.resetView())
+  }
+
   private normalizeReplaySelectionTimestamp(timestamp: number): number {
     if (!this.source || timestamp < this.source.firstTs || timestamp > this.source.lastTs) return timestamp
     const index = this.source.findIndex(timestamp)
@@ -1322,10 +1512,12 @@ export class ReplayEngine {
     const previousCursorTs = this.snapshot.cursorTs
     const rawBars: Bar1m[] = []
     let processed = 0
+    let tradeCheckpoint: { cursorTs: number; fills: Map<string, FillEngineState> } | null = null
     for (let index = 0; index < steps; index += 1) {
       const bar = this.source.at(this.cursorIndex + 1)
       if (!bar) break
       this.cursorIndex += 1
+      const tradesBeforeBar = this.closedTradeCount()
       for (const [fillSymbol, currentFill] of this.symbolFills) {
         const source = this.sourceForSymbol(fillSymbol)
         if (!source) continue
@@ -1335,6 +1527,9 @@ export class ReplayEngine {
         let nextFill = currentFill
         for (const symbolBar of bars) nextFill = stepFillEngine(nextFill, symbolBar)
         this.symbolFills.set(fillSymbol, nextFill)
+      }
+      if (this.closedTradeCount() > tradesBeforeBar) {
+        tradeCheckpoint = { cursorTs: bar.ts, fills: new Map(this.symbolFills) }
       }
       if (!isEvalActive()) this.fillSnapshots.set(this.cursorIndex, new Map(this.symbolFills))
       rawBars.push(bar)
@@ -1384,6 +1579,7 @@ export class ReplayEngine {
     this.syncChartTradingState()
     this.scheduleSessionPersist()
     this.scheduleIndicatorRefresh()
+    if (tradeCheckpoint) this.captureWorkspaceRecoveryPoint('trade-close', tradeCheckpoint)
     void this.prefetchSource()
   }
 
@@ -1467,6 +1663,7 @@ export class ReplayEngine {
     const currentFill = this.symbolFills.get(symbol.symbol) ?? this.ensureSymbolFill(symbol)
     if (!currentFill) return
     try {
+      const tradesBeforeMutation = this.closedTradeCount()
       const fill = mutator(currentFill)
       this.symbolFills.set(symbol.symbol, fill)
       this.snapshot = { ...this.snapshot, fill, evalFill: isEvalActive() ? this.aggregateEvaluationFill() : null, error: null }
@@ -1475,6 +1672,7 @@ export class ReplayEngine {
       if (!isEvalActive()) this.fillSnapshots.set(this.cursorIndex, new Map(this.symbolFills))
       this.syncChartTradingState()
       this.emitSnapshot(true)
+      if (this.closedTradeCount() > tradesBeforeMutation) this.captureWorkspaceRecoveryPoint('trade-close')
     } catch (error) {
       this.setSnapshot({ error: error instanceof Error ? error.message : 'Trading action failed' }, true)
     }
@@ -1893,12 +2091,11 @@ export class ReplayEngine {
 
   private async deactivateReplaySession(
     status: 'paused' | 'stopped',
-    options: { returnToLatest?: boolean; drawingsFlushed?: boolean } = {},
+    options: { returnToLatest?: boolean; drawingsFlushed?: boolean; snapshotOnExit?: boolean } = {},
   ): Promise<void> {
     cancelAnimationFrame(this.animationFrame)
     this.views.flushRawBars()
     this.highSpeedChartFrame = 0
-    this.cancelActiveOrders()
     const detachedSessionId = this.snapshot.sessionId
     const hadSession = detachedSessionId !== null
     this.setSnapshot({ playing: false }, true)
@@ -1906,6 +2103,8 @@ export class ReplayEngine {
       this.setSnapshot({ error: 'Session drawings could not be saved. The session remains open so you can retry.' }, true)
       return
     }
+    if (options.snapshotOnExit) this.captureWorkspaceRecoveryPoint('explicit-exit')
+    this.cancelActiveOrders()
     if (!await this.checkpointSession(status)) return
     this.createSessionOnSelection = false
     this.orderDraft = null

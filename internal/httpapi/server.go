@@ -66,6 +66,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/preferences/{key}", s.handlePutPreference)
 	mux.HandleFunc("DELETE /api/v1/preferences/{key}", s.handleDeletePreference)
 
+	mux.HandleFunc("GET /api/v1/drawing-templates", s.handleListDrawingTemplates)
+	mux.HandleFunc("PUT /api/v1/drawing-templates/{id}", s.handlePutDrawingTemplate)
+	mux.HandleFunc("DELETE /api/v1/drawing-templates/{id}", s.handleDeleteDrawingTemplate)
+
+	mux.HandleFunc("PUT /api/v1/workspace-snapshots/{ownerType}/{ownerId}", s.handlePutWorkspaceSnapshot)
+	mux.HandleFunc("GET /api/v1/workspace-snapshots/{ownerType}/{ownerId}", s.handleGetWorkspaceSnapshot)
+	mux.HandleFunc("DELETE /api/v1/workspace-snapshots/{ownerType}/{ownerId}", s.handleDeleteWorkspaceSnapshot)
+
 	mux.HandleFunc("GET /api/v1/indicators", s.handleListIndicators)
 	mux.HandleFunc("POST /api/v1/indicators/run", s.handleRunIndicator)
 

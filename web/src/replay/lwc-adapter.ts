@@ -672,6 +672,17 @@ export class LwcAdapter implements ChartAdapter {
     if (selected) this.drawingManager.removeDrawing(selected.id)
   }
 
+  lockSelectedDrawing(): void {
+    const selected = this.drawingManager.getSelectedDrawing()
+    if (!selected) return
+    selected.updateOptions({ locked: true })
+    this.recordDrawingHistory('drawing:updated', selected.id)
+    this.drawingLabelsPrimitive.requestUpdate()
+    this.drawingChangedHandler(selected.id)
+    this.drawingManager.deselectAll()
+    this.applyChartInteractionLock()
+  }
+
   deleteAllDrawings(): void {
     this.drawingManager.clearAll()
     this.drawingLabelsPrimitive.requestUpdate()

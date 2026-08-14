@@ -52,9 +52,10 @@ func Open(path string) (*Store, error) {
 }
 
 // Init creates every table (sessions/trades/watchlist from schema.go,
-// drawings from drawings.go, preferences from preferences.go) and enables
-// WAL mode. Safe to call on every startup — every statement is
-// CREATE ... IF NOT EXISTS.
+// drawings from drawings.go, preferences from preferences.go, drawing
+// templates from drawing_templates.go, workspace snapshots from
+// workspace_snapshots.go) and enables WAL mode. Safe to call on every
+// startup — every statement is CREATE ... IF NOT EXISTS.
 func (s *Store) Init(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("sqlite: init schema: %w", err)
@@ -67,6 +68,15 @@ func (s *Store) Init(ctx context.Context) error {
 	}
 	if _, err := s.db.ExecContext(ctx, preferencesSchema); err != nil {
 		return fmt.Errorf("sqlite: init preferences schema: %w", err)
+	}
+	if err := s.initDrawingTemplatesSchema(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateDrawingTemplatesFromPreferences(ctx); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, workspaceSnapshotsSchema); err != nil {
+		return fmt.Errorf("sqlite: init workspace snapshots schema: %w", err)
 	}
 	// A process restart is a hard replay boundary. Preserve every journal,
 	// but require an explicit Resume before it can accept more trades.

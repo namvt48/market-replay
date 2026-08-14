@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 export const DRAWING_TOOLBAR_POSITION_STORAGE_KEY = 'market-replay:drawing-toolbar-position:v1'
+export const CONTEXTUAL_DRAWING_TOOLBAR_POSITION_STORAGE_KEY = 'market-replay:contextual-drawing-toolbar-position:v1'
 
 export interface DrawingToolbarPosition {
   x: number
@@ -38,4 +39,13 @@ export function loadDrawingToolbarPosition(storage: DrawingToolbarPositionStorag
 export function persistDrawingToolbarPosition(position: DrawingToolbarPosition, storage: DrawingToolbarPositionStorage | null = getBrowserStorage()): void {
   if (!storage) return
   storage.setItem(DRAWING_TOOLBAR_POSITION_STORAGE_KEY, JSON.stringify(positionSchema.parse(position)))
+}
+
+export function loadContextualDrawingToolbarPosition(storage: DrawingToolbarPositionStorage | null = getBrowserStorage()): DrawingToolbarPosition | null {
+  return storage ? parseDrawingToolbarPosition(storage.getItem(CONTEXTUAL_DRAWING_TOOLBAR_POSITION_STORAGE_KEY)) : null
+}
+
+export function persistContextualDrawingToolbarPosition(position: DrawingToolbarPosition, storage: DrawingToolbarPositionStorage | null = getBrowserStorage()): void {
+  if (!storage) return
+  storage.setItem(CONTEXTUAL_DRAWING_TOOLBAR_POSITION_STORAGE_KEY, JSON.stringify(positionSchema.parse(position)))
 }

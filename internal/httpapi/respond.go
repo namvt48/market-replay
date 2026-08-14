@@ -30,9 +30,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, bars.ErrUnknownSymbolTF), errors.Is(err, storage.ErrSessionNotFound), errors.Is(err, indicators.ErrUnknownScript):
+	case errors.Is(err, bars.ErrUnknownSymbolTF), errors.Is(err, storage.ErrSessionNotFound), errors.Is(err, indicators.ErrUnknownScript), errors.Is(err, storage.ErrWorkspaceSnapshotNotFound):
 		status = http.StatusNotFound
-	case errors.Is(err, errBadRequest), errors.Is(err, indicators.ErrInvalidInput):
+	case errors.Is(err, errBadRequest), errors.Is(err, indicators.ErrInvalidInput), errors.Is(err, storage.ErrDrawingTemplateNameTaken):
 		status = http.StatusBadRequest
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})

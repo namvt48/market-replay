@@ -1,7 +1,24 @@
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_DRAWING_METADATA, type DrawingAppearance } from '../../replay/drawing-appearance'
+import { CONTEXTUAL_DRAWING_TOOLBAR_POSITION_STORAGE_KEY } from '../../replay/drawing-toolbar-position'
+import { defaultDrawingTemplateAppearance } from '../../replay/drawing-templates'
 import { DrawingToolbar } from './DrawingToolbar'
+
+const drawingTemplateMocks = vi.hoisted(() => ({
+  persist: vi.fn(),
+  syncUpsert: vi.fn(),
+  syncDelete: vi.fn(),
+  templates: [] as Array<{
+    id: string
+    name: string
+    toolType: string
+    appearance: Record<string, unknown>
+    createdAt: number
+    updatedAt: number
+  }>,
+}))
 
 const engineMocks = vi.hoisted(() => ({
   setDrawingTool: vi.fn(),
@@ -13,12 +30,15 @@ const engineMocks = vi.hoisted(() => ({
   resetAreaZoom: vi.fn(),
   removeAllIndicators: vi.fn(),
   updateSelectedDrawing: vi.fn(),
+  openDrawingInspector: vi.fn(),
+  lockSelectedDrawing: vi.fn(),
+  deleteSelectedDrawing: vi.fn(),
 }))
 
 vi.mock('../../replay/replay-engine', () => ({
   replayEngine: {
     deleteAllDrawings: vi.fn(),
-    deleteSelectedDrawing: vi.fn(),
+    deleteSelectedDrawing: engineMocks.deleteSelectedDrawing,
     drawingTools: () => [
       { type: 'trend-line', name: 'Trend Line', category: 'line', requiredAnchors: 2 },
       { type: 'ray', name: 'Ray', category: 'line', requiredAnchors: 2 },
@@ -52,13 +72,15 @@ vi.mock('../../replay/replay-engine', () => ({
     removeAllIndicators: engineMocks.removeAllIndicators,
     drawingCount: vi.fn().mockReturnValue(2),
     updateSelectedDrawing: engineMocks.updateSelectedDrawing,
+    openDrawingInspector: engineMocks.openDrawingInspector,
+    lockSelectedDrawing: engineMocks.lockSelectedDrawing,
   },
 }))
 
 const drawingSnapshot = {
   activeDrawingTool: null as string | null,
   drawingInspectorOpen: false,
-  selectedDrawing: null,
+  selectedDrawing: null as DrawingAppearance | null,
   keepDrawing: false,
   drawingsLocked: false,
   drawingsHidden: false,
@@ -74,11 +96,18 @@ vi.mock('../../replay/use-replay', () => ({
 
 vi.mock('../../replay/drawing-templates', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../replay/drawing-templates')>()
-  return { ...original, loadDrawingTemplates: () => [], persistDrawingTemplates: vi.fn() }
+  return {
+    ...original,
+    loadDrawingTemplates: () => drawingTemplateMocks.templates,
+    persistDrawingTemplates: drawingTemplateMocks.persist,
+    syncDrawingTemplateUpsert: drawingTemplateMocks.syncUpsert,
+    syncDrawingTemplateDelete: drawingTemplateMocks.syncDelete,
+  }
 })
 
 beforeEach(() => {
   window.localStorage.clear()
+  drawingTemplateMocks.templates = []
 })
 
 afterEach(() => {
@@ -96,6 +125,284 @@ afterEach(() => {
 })
 
 describe('DrawingToolbar menus', () => {
+  it('shows a configurable contextual toolbar as soon as a drawing is selected', () => {
+    drawingSnapshot.selectedDrawing = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-1',
+      type: 'trend-line',
+      lineWidth: 2,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: true,
+    }
+
+    render(<DrawingToolbar />)
+
+    const toolbar = screen.getByRole('toolbar', { name: 'Selected Trend Line drawing' })
+    expect(within(toolbar).getByRole('button', { name: 'Move selected drawing toolbar' })).toBeInTheDocument()
+    expect(within(toolbar).getByRole('button', { name: 'Drawing templates' })).toBeInTheDocument()
+    expect(within(toolbar).getByRole('button', { name: 'Drawing color' })).toBeInTheDocument()
+    expect(within(toolbar).getByRole('button', { name: 'Line thickness' })).toHaveTextContent('2px')
+    expect(within(toolbar).getByRole('button', { name: 'Drawing properties' })).toBeInTheDocument()
+    expect(within(toolbar).getByRole('button', { name: 'Lock drawing' })).toBeInTheDocument()
+    expect(within(toolbar).getByRole('button', { name: 'Remove drawing' })).toBeInTheDocument()
+    expect(within(toolbar).queryByRole('button', { name: 'More drawing actions' })).not.toBeInTheDocument()
+  })
+
+  it('applies color, line width, default template, properties, lock and remove actions', async () => {
+    const user = userEvent.setup()
+    drawingSnapshot.selectedDrawing = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-1',
+      type: 'trend-line',
+      strokeColor: '#2962ff',
+      lineWidth: 2,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: true,
+    }
+
+    render(<DrawingToolbar />)
+
+    await user.click(screen.getByRole('button', { name: 'Drawing color' }))
+    await user.click(within(screen.getByRole('menu', { name: 'Drawing color palette' })).getByRole('menuitemradio', { name: 'Set drawing color #f23645' }))
+    expect(engineMocks.updateSelectedDrawing).toHaveBeenLastCalledWith({ strokeColor: '#f23645' })
+
+    await user.click(screen.getByRole('button', { name: 'Line thickness' }))
+    await user.click(within(screen.getByRole('menu', { name: 'Line thickness menu' })).getByRole('menuitemradio', { name: '3px' }))
+    expect(engineMocks.updateSelectedDrawing).toHaveBeenLastCalledWith({ lineWidth: 3 })
+
+    await user.click(screen.getByRole('button', { name: 'Drawing templates' }))
+    await user.click(within(screen.getByRole('menu', { name: 'Drawing templates menu' })).getByRole('menuitem', { name: 'Apply default drawing template' }))
+    expect(engineMocks.updateSelectedDrawing).toHaveBeenLastCalledWith(expect.objectContaining({ lineWidth: 2, strokeColor: DEFAULT_DRAWING_METADATA.strokeColor }))
+
+    await user.click(screen.getByRole('button', { name: 'Drawing properties' }))
+    await user.click(screen.getByRole('button', { name: 'Lock drawing' }))
+    await user.click(screen.getByRole('button', { name: 'Remove drawing' }))
+    expect(engineMocks.openDrawingInspector).toHaveBeenCalledOnce()
+    expect(engineMocks.lockSelectedDrawing).toHaveBeenCalledOnce()
+    expect(engineMocks.deleteSelectedDrawing).toHaveBeenCalledOnce()
+  })
+
+  it('uses the per-drawing toolbar template to omit unsupported line controls', () => {
+    drawingSnapshot.selectedDrawing = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-text',
+      type: 'text-annotation',
+      lineWidth: 1,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: false,
+    }
+
+    render(<DrawingToolbar />)
+
+    const toolbar = screen.getByRole('toolbar', { name: 'Selected Text drawing' })
+    expect(within(toolbar).getByRole('button', { name: 'Drawing color' })).toBeInTheDocument()
+    expect(within(toolbar).queryByRole('button', { name: 'Line thickness' })).not.toBeInTheDocument()
+  })
+
+  it('saves and applies named templates from the contextual menu', async () => {
+    const user = userEvent.setup()
+    const drawing: DrawingAppearance = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-1',
+      type: 'trend-line',
+      lineWidth: 2,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: true,
+    }
+    drawingSnapshot.selectedDrawing = drawing
+    drawingTemplateMocks.templates = [{
+      id: 'template-1',
+      name: 'Breakout',
+      toolType: 'trend-line',
+      appearance: { ...defaultDrawingTemplateAppearance(drawing), lineWidth: 4 },
+      createdAt: 1,
+      updatedAt: 1,
+    }]
+
+    render(<DrawingToolbar />)
+
+    await user.click(screen.getByRole('button', { name: 'Drawing templates' }))
+    await user.click(within(screen.getByRole('menu', { name: 'Drawing templates menu' })).getByRole('menuitem', { name: 'Breakout' }))
+    expect(engineMocks.updateSelectedDrawing).toHaveBeenLastCalledWith(expect.objectContaining({ lineWidth: 4 }))
+
+    await user.click(screen.getByRole('button', { name: 'Drawing templates' }))
+    await user.click(within(screen.getByRole('menu', { name: 'Drawing templates menu' })).getByRole('menuitem', { name: 'Save Drawing Template As…' }))
+    await user.type(screen.getByLabelText('Template name'), 'Pullback')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(drawingTemplateMocks.persist).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ name: 'Pullback', toolType: 'trend-line' })]))
+    // The local write is the source of truth immediately; the backend mirror
+    // is a best-effort side effect fired for exactly the saved template.
+    expect(drawingTemplateMocks.syncUpsert).toHaveBeenCalledWith(expect.objectContaining({ name: 'Pullback', toolType: 'trend-line' }))
+  })
+
+  it('mirrors a template delete to the backend', async () => {
+    const user = userEvent.setup()
+    const drawing: DrawingAppearance = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-1',
+      type: 'trend-line',
+      lineWidth: 2,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: true,
+    }
+    drawingSnapshot.selectedDrawing = drawing
+    drawingSnapshot.drawingInspectorOpen = true
+    drawingTemplateMocks.templates = [{
+      id: 'template-1',
+      name: 'Breakout',
+      toolType: 'trend-line',
+      appearance: { ...defaultDrawingTemplateAppearance(drawing), lineWidth: 4 },
+      createdAt: 1,
+      updatedAt: 1,
+    }]
+
+    render(<DrawingToolbar />)
+
+    await user.click(screen.getByRole('tab', { name: 'Templates' }))
+    await user.selectOptions(screen.getByLabelText('Drawing template'), 'template-1')
+    await user.click(screen.getByRole('button', { name: 'Delete selected template' }))
+
+    expect(drawingTemplateMocks.persist).toHaveBeenCalledWith([])
+    expect(drawingTemplateMocks.syncDelete).toHaveBeenCalledWith('template-1')
+  })
+
+  it('moves the contextual toolbar within the chart workspace', () => {
+    drawingSnapshot.selectedDrawing = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-1',
+      type: 'trend-line',
+      lineWidth: 2,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: true,
+    }
+    render(<div><DrawingToolbar /></div>)
+    const toolbar = screen.getByRole('toolbar', { name: 'Selected Trend Line drawing' })
+    const layer = toolbar.parentElement
+    expect(layer?.parentElement).not.toBeNull()
+    if (!layer?.parentElement) return
+    Object.defineProperties(layer.parentElement, {
+      clientWidth: { configurable: true, value: 1_200 },
+      clientHeight: { configurable: true, value: 800 },
+    })
+
+    const handle = within(toolbar).getByRole('button', { name: 'Move selected drawing toolbar' })
+    const initialTransform = layer.style.transform
+    fireEvent.pointerDown(handle, { button: 0, isPrimary: true, pointerId: 8, clientX: 300, clientY: 30 })
+    fireEvent.pointerMove(handle, { pointerId: 8, clientX: 430, clientY: 100 })
+    fireEvent.pointerUp(handle, { pointerId: 8, clientX: 430, clientY: 100 })
+
+    expect(layer.style.transform).not.toBe(initialTransform)
+    expect(handle).toHaveClass('cursor-grab')
+    expect(JSON.parse(window.localStorage.getItem(CONTEXTUAL_DRAWING_TOOLBAR_POSITION_STORAGE_KEY) ?? 'null')).toEqual(expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }))
+  })
+
+  it('restores one contextual toolbar position for every subsequently selected drawing', () => {
+    window.localStorage.setItem(CONTEXTUAL_DRAWING_TOOLBAR_POSITION_STORAGE_KEY, JSON.stringify({ x: 240, y: 96 }))
+    const firstHost = document.createElement('div')
+    Object.defineProperties(firstHost, {
+      clientWidth: { configurable: true, value: 1_200 },
+      clientHeight: { configurable: true, value: 800 },
+    })
+    document.body.append(firstHost)
+    drawingSnapshot.selectedDrawing = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-line',
+      type: 'trend-line',
+      lineWidth: 2,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: true,
+    }
+    const first = render(<DrawingToolbar />, { container: firstHost })
+    expect(screen.getByRole('toolbar', { name: 'Selected Trend Line drawing' }).parentElement).toHaveStyle({ transform: 'translate3d(240px, 96px, 0)' })
+    first.unmount()
+    firstHost.remove()
+
+    const secondHost = document.createElement('div')
+    Object.defineProperties(secondHost, {
+      clientWidth: { configurable: true, value: 1_200 },
+      clientHeight: { configurable: true, value: 800 },
+    })
+    document.body.append(secondHost)
+    drawingSnapshot.selectedDrawing = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-text',
+      type: 'text-annotation',
+      lineWidth: 1,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: false,
+    }
+    const second = render(<DrawingToolbar />, { container: secondHost })
+    expect(screen.getByRole('toolbar', { name: 'Selected Text drawing' }).parentElement).toHaveStyle({ transform: 'translate3d(240px, 96px, 0)' })
+    second.unmount()
+    secondHost.remove()
+  })
+
+  it('persists contextual toolbar movement from the keyboard like the favorites bar', () => {
+    const host = document.createElement('div')
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 1_200 },
+      clientHeight: { configurable: true, value: 800 },
+    })
+    document.body.append(host)
+    drawingSnapshot.selectedDrawing = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-line',
+      type: 'trend-line',
+      lineWidth: 2,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: true,
+    }
+    const view = render(<DrawingToolbar />, { container: host })
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Move selected drawing toolbar' }), { key: 'ArrowRight', shiftKey: true })
+
+    expect(JSON.parse(window.localStorage.getItem(CONTEXTUAL_DRAWING_TOOLBAR_POSITION_STORAGE_KEY) ?? 'null')).toEqual(expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }))
+    view.unmount()
+    host.remove()
+  })
+
+  it('keeps the movable drawing inspector above chart splitters', () => {
+    drawingSnapshot.selectedDrawing = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'drawing-1',
+      type: 'trend-line',
+      lineWidth: 2,
+      extendLeft: false,
+      extendRight: false,
+      supportsExtend: true,
+    }
+    drawingSnapshot.drawingInspectorOpen = true
+    const view = render(<div><DrawingToolbar /></div>)
+    const inspector = screen.getByRole('complementary', { name: 'Edit trend-line drawing' })
+    const layer = inspector.parentElement
+    expect(layer).not.toBeNull()
+    expect(layer).toHaveClass('z-[80]')
+    if (!layer?.parentElement) return
+    Object.defineProperties(layer.parentElement, {
+      clientWidth: { configurable: true, value: 1_200 },
+      clientHeight: { configurable: true, value: 800 },
+    })
+
+    const handle = screen.getByRole('button', { name: 'Move drawing properties' })
+    const initialTransform = layer.style.transform
+    fireEvent.pointerDown(handle, { button: 0, isPrimary: true, pointerId: 7, clientX: 80, clientY: 30 })
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 180, clientY: 90 })
+    fireEvent.pointerUp(handle, { pointerId: 7, clientX: 180, clientY: 90 })
+
+    expect(layer.style.transform).not.toBe(initialTransform)
+    expect(handle).toHaveClass('cursor-grab')
+    view.unmount()
+  })
+
   it('shows only the requested drawing groups on the rail', () => {
     render(<DrawingToolbar />)
 

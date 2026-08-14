@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { decodeBarFrame, type BarFrame } from './binary-frame'
-import type { CalendarEntry, ChartBarTicks, ClosedTrade, EconMeta, EconWeek, EconWeekQuery, IndicatorDescriptor, IndicatorRunResult, IndicatorInputValue, PersistedDrawing, ReplaySession, SymbolMeta, Timeframe } from './types'
+import type { CalendarEntry, ChartBarTicks, ClosedTrade, EconMeta, EconWeek, EconWeekQuery, IndicatorDescriptor, IndicatorRunResult, IndicatorInputValue, PersistedDrawing, PersistedDrawingTemplate, ReplaySession, SymbolMeta, Timeframe, WorkspaceSnapshotAck, WorkspaceSnapshotEnvelope } from './types'
 import { timeframeSchema } from '../replay/timeframe'
 import type { MarketSession } from '../replay/market-session'
 
@@ -33,6 +33,12 @@ const drawingSchema = z.object({
   id: z.string(), bucket: z.string(), symbol: z.string(), anchorTs: z.number(),
   createdAtCursor: z.number(), createdTf: timeframeSchema,
   payload: z.string(), deleted: z.boolean(), updatedAt: z.number(),
+})
+// appearance is opaque here (z.unknown()), same treatment as drawingSchema's
+// payload — the drawing-templates domain module does the strict parse.
+const drawingTemplateSchema = z.object({
+  id: z.string(), toolType: z.string(), name: z.string(),
+  appearance: z.unknown(), createdAt: z.number(), updatedAt: z.number(),
 })
 const chartBarSchema = z.object({
   time: z.number(), openTicks: z.number(), highTicks: z.number(), lowTicks: z.number(),
@@ -343,4 +349,70 @@ export async function upsertDrawings(drawings: PersistedDrawing[]): Promise<void
   await checkedFetch('/api/v1/drawings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(drawings),
   })
+}
+
+export async function fetchDrawingTemplates(): Promise<PersistedDrawingTemplate[]> {
+  const response = await checkedFetch('/api/v1/drawing-templates')
+  return z.array(drawingTemplateSchema).parse(await response.json()) as PersistedDrawingTemplate[]
+}
+
+export async function putDrawingTemplate(template: PersistedDrawingTemplate): Promise<void> {
+  await checkedFetch(`/api/v1/drawing-templates/${encodeURIComponent(template.id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(template),
+  })
+}
+
+export async function deleteDrawingTemplateRemote(id: string): Promise<void> {
+  await checkedFetch(`/api/v1/drawing-templates/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+function workspaceSnapshotUrl(ownerType: string, ownerId: string): string {
+  return `/api/v1/workspace-snapshots/${encodeURIComponent(ownerType)}/${encodeURIComponent(ownerId)}`
+}
+
+/** Gzips body via CompressionStream when the runtime supports it; null means "send uncompressed" (older browsers, or a test environment without it). */
+async function gzipEncode(body: string): Promise<ArrayBuffer | null> {
+  if (typeof CompressionStream === 'undefined') return null
+  const stream = new Blob([body]).stream().pipeThrough(new CompressionStream('gzip'))
+  return await new Response(stream).arrayBuffer()
+}
+
+/**
+ * A 404 here means "no snapshot saved yet for this owner" — an expected,
+ * common outcome (first-ever activation), not a failure — so this
+ * bypasses checkedFetch's throw-on-any-non-ok behavior and returns null
+ * instead.
+ */
+export async function fetchWorkspaceSnapshot(ownerType: string, ownerId: string): Promise<WorkspaceSnapshotEnvelope | null> {
+  const response = await fetch(workspaceSnapshotUrl(ownerType, ownerId))
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+  return await response.json() as WorkspaceSnapshotEnvelope
+}
+
+/**
+ * A 409 here means the write was rejected as stale (an older trade-close
+ * arriving after a newer explicit-exit) — a meaningful, expected outcome
+ * the caller reconciles against, not a transport failure — so, like
+ * fetchWorkspaceSnapshot's 404, this bypasses checkedFetch's throw-on-any-
+ * non-ok behavior for that one status.
+ */
+export async function putWorkspaceSnapshot(ownerType: string, ownerId: string, snapshot: unknown): Promise<WorkspaceSnapshotAck> {
+  const body = JSON.stringify(snapshot)
+  const encoded = await gzipEncode(body)
+  const response = await fetch(workspaceSnapshotUrl(ownerType, ownerId), {
+    method: 'PUT',
+    headers: encoded ? { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' } : { 'Content-Type': 'application/json' },
+    body: encoded ?? body,
+  })
+  if (response.status !== 200 && response.status !== 409) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`)
+  }
+  const ack = await response.json() as { revision: number; capturedAt: number }
+  return { ...ack, conflict: response.status === 409 }
+}
+
+export async function deleteWorkspaceSnapshotRemote(ownerType: string, ownerId: string): Promise<void> {
+  await checkedFetch(workspaceSnapshotUrl(ownerType, ownerId), { method: 'DELETE' })
 }

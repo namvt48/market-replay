@@ -132,6 +132,30 @@ export interface PersistedDrawing {
   updatedAt: number
 }
 
+export interface PersistedDrawingTemplate {
+  id: string
+  toolType: string
+  name: string
+  appearance: unknown
+  createdAt: number
+  updatedAt: number
+}
+
+/** The envelope GET /api/v1/workspace-snapshots/{ownerType}/{ownerId} returns: server-owned concurrency metadata alongside the opaque, verbatim frontend snapshot. */
+export interface WorkspaceSnapshotEnvelope {
+  revision: number
+  capturedAt: number
+  snapshot: unknown
+}
+
+/** PUT's response: the persisted revision/capturedAt, whichever request actually won the optimistic-concurrency rank check. */
+export interface WorkspaceSnapshotAck {
+  revision: number
+  capturedAt: number
+  /** true when this write was rejected as stale — revision/capturedAt then describe the untouched, currently-persisted snapshot instead. */
+  conflict: boolean
+}
+
 export type IndicatorInputKind = 'session' | 'time' | 'str' | 'float' | 'int' | 'bool' | 'color'
 
 export interface IndicatorColor {

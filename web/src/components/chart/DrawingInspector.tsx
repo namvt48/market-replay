@@ -1,5 +1,5 @@
-import { AlignCenter, AlignLeft, AlignRight, Bold, Italic, Save, Trash2, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { AlignCenter, AlignLeft, AlignRight, Bold, GripVertical, Italic, Save, Trash2, X } from 'lucide-react'
+import { useEffect, useId, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactElement } from 'react'
 import {
   type DrawingAppearance,
   type DrawingAppearancePatch,
@@ -29,7 +29,34 @@ interface DrawingInspectorProps {
   onSaveTemplate: (name: string) => void
   onApplyTemplate: (template: DrawingTemplate) => void
   onDeleteTemplate: (id: string) => void
+  moving?: boolean
+  onMovePointerDown?: (event: ReactPointerEvent<HTMLButtonElement>) => void
+  onMovePointerMove?: (event: ReactPointerEvent<HTMLButtonElement>) => void
+  onMovePointerUp?: (event: ReactPointerEvent<HTMLButtonElement>) => void
+  onMoveKeyDown?: (event: ReactKeyboardEvent<HTMLButtonElement>) => void
 }
+
+type FibonacciPropertyTab = 'line' | 'levels' | 'display'
+type DrawingPropertyTab = 'style' | 'fill' | 'text' | 'templates' | FibonacciPropertyTab
+
+interface DrawingPropertyTabOption {
+  id: DrawingPropertyTab
+  label: string
+}
+
+const STANDARD_PROPERTY_TABS: readonly DrawingPropertyTabOption[] = [
+  { id: 'style', label: 'Style' },
+  { id: 'fill', label: 'Fill' },
+  { id: 'text', label: 'Text' },
+  { id: 'templates', label: 'Templates' },
+]
+
+const FIBONACCI_PROPERTY_TABS: readonly DrawingPropertyTabOption[] = [
+  { id: 'line', label: 'Line' },
+  { id: 'levels', label: 'Levels' },
+  { id: 'display', label: 'Display' },
+  { id: 'templates', label: 'Templates' },
+]
 
 function parseBorderStyle(value: string): DrawingBorderStyle {
   if (value === 'dashed' || value === 'dotted') return value
@@ -72,10 +99,11 @@ function OpacityField({ label, value, onChange }: OpacityFieldProps) {
 
 interface FibonacciPropertiesProps {
   drawing: DrawingAppearance
+  activeTab: FibonacciPropertyTab
   onChange: (patch: DrawingAppearancePatch) => void
 }
 
-function FibonacciProperties({ drawing, onChange }: FibonacciPropertiesProps) {
+function FibonacciProperties({ drawing, activeTab, onChange }: FibonacciPropertiesProps): ReactElement {
   const updateLevel = (index: number, patch: Partial<FibonacciLevelAppearance>): void => {
     onChange({
       fibonacciLevels: drawing.fibonacciLevels.map((level, levelIndex) => levelIndex === index ? { ...level, ...patch } : level),
@@ -84,7 +112,7 @@ function FibonacciProperties({ drawing, onChange }: FibonacciPropertiesProps) {
 
   return (
     <>
-      <section aria-labelledby="fibonacci-lines-heading">
+      {activeTab === 'line' ? <section aria-labelledby="fibonacci-lines-heading">
         <h3 id="fibonacci-lines-heading" className="mb-2 text-ui-meta font-semibold text-muted">LINE</h3>
         <div className="grid grid-cols-2 gap-2">
           <label className="field-label">Line style<select value={drawing.borderStyle} onChange={(event) => onChange({ borderStyle: parseBorderStyle(event.target.value) })} className="field-input h-9"><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></label>
@@ -94,9 +122,9 @@ function FibonacciProperties({ drawing, onChange }: FibonacciPropertiesProps) {
           <label className="flex min-h-7 cursor-pointer items-center gap-2 text-ui-body text-ink"><input type="checkbox" checked={drawing.fibonacciExtend} onChange={(event) => onChange({ fibonacciExtend: event.target.checked })} className="size-4 accent-active" />Extend lines</label>
           <label className="flex min-h-7 cursor-pointer items-center gap-2 text-ui-body text-ink"><input type="checkbox" checked={drawing.fibonacciDiagonalLine} onChange={(event) => onChange({ fibonacciDiagonalLine: event.target.checked })} className="size-4 accent-active" />Diagonal</label>
         </div>
-      </section>
+      </section> : null}
 
-      <section className="border-t border-line pt-4" aria-labelledby="fibonacci-levels-heading">
+      {activeTab === 'levels' ? <section aria-labelledby="fibonacci-levels-heading">
         <div className="mb-2 flex items-center justify-between">
           <h3 id="fibonacci-levels-heading" className="text-ui-meta font-semibold text-muted">LEVELS</h3>
           <span className="font-mono text-ui-meta text-dim">24 SLOTS</span>
@@ -113,9 +141,9 @@ function FibonacciProperties({ drawing, onChange }: FibonacciPropertiesProps) {
             </div>
           ))}
         </div>
-      </section>
+      </section> : null}
 
-      <section className="border-t border-line pt-4" aria-labelledby="fibonacci-display-heading">
+      {activeTab === 'display' ? <section aria-labelledby="fibonacci-display-heading">
         <h3 id="fibonacci-display-heading" className="mb-2 text-ui-meta font-semibold text-muted">DISPLAY</h3>
         <div className="divide-y divide-line rounded-control border border-line bg-surface-0 px-3">
           <div className="grid grid-cols-[7rem_1fr] items-center gap-2 py-2.5">
@@ -158,7 +186,7 @@ function FibonacciProperties({ drawing, onChange }: FibonacciPropertiesProps) {
             <label className="field-label">Decimals<input aria-label="Fibonacci decimals" type="number" min="0" max="8" value={drawing.fibonacciLevelDecimals} onChange={(event) => onChange({ fibonacciLevelDecimals: Number(event.target.value) })} className="field-input h-9" /></label>
           </div>
         </div>
-      </section>
+      </section> : null}
     </>
   )
 }
@@ -172,9 +200,18 @@ export function DrawingInspector({
   onSaveTemplate,
   onApplyTemplate,
   onDeleteTemplate,
-}: DrawingInspectorProps) {
+  moving = false,
+  onMovePointerDown,
+  onMovePointerMove,
+  onMovePointerUp,
+  onMoveKeyDown,
+}: DrawingInspectorProps): ReactElement {
   const [templateName, setTemplateName] = useState<string>('')
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('')
+  const [activeTab, setActiveTab] = useState<DrawingPropertyTab>(drawing.type === 'fib-retracement' ? 'line' : 'style')
+  const tabsetId = useId()
+  const tabs = drawing.type === 'fib-retracement' ? FIBONACCI_PROPERTY_TABS : STANDARD_PROPERTY_TABS
+  const resolvedActiveTab = tabs.some((tab) => tab.id === activeTab) ? activeTab : tabs[0].id
   const matchingTemplates = useMemo(() => templates.filter((template) => template.toolType === drawing.type), [drawing.type, templates])
   const selectedTemplate = matchingTemplates.find((template) => template.id === selectedTemplateId)
 
@@ -189,15 +226,72 @@ export function DrawingInspector({
     setTemplateName('')
   }
 
+  const moveTabFocus = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+    const currentIndex = buttons.indexOf(event.target as HTMLButtonElement)
+    if (currentIndex < 0) return
+    event.preventDefault()
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? buttons.length - 1
+        : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length
+    const next = tabs[nextIndex]
+    if (!next) return
+    setActiveTab(next.id)
+    buttons[nextIndex]?.focus()
+  }
+
   return (
-    <aside className="h-full max-h-full overflow-y-auto rounded-panel border border-line-strong bg-surface-1 shadow-overlay lg:h-auto lg:max-h-[min(620px,78vh)]" aria-label={`Edit ${drawing.type} drawing`}>
-      <header className="sticky top-0 z-10 flex h-10 items-center justify-between border-b border-line bg-surface-1 px-3">
-        <div className="min-w-0"><strong className="block truncate text-ui-body text-ink">Drawing properties</strong><span className="block font-mono text-ui-meta text-dim">{drawing.type}</span></div>
+    <aside className="flex h-full max-h-full flex-col overflow-hidden rounded-panel border border-line-strong bg-surface-1 shadow-overlay sm:h-auto sm:max-h-[min(34rem,calc(100dvh-1rem))]" aria-label={`Edit ${drawing.type} drawing`}>
+      <header className="flex h-11 shrink-0 items-center justify-between border-b border-line bg-surface-1 pl-1 pr-2">
+        {onMovePointerDown ? (
+          <button
+            type="button"
+            aria-label="Move drawing properties"
+            aria-describedby={`${tabsetId}-move-help`}
+            aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+            onPointerDown={onMovePointerDown}
+            onPointerMove={onMovePointerMove}
+            onPointerUp={onMovePointerUp}
+            onPointerCancel={onMovePointerUp}
+            onLostPointerCapture={onMovePointerUp}
+            onKeyDown={onMoveKeyDown}
+            className={`flex h-full min-w-0 flex-1 touch-none items-center gap-1.5 px-2 text-left ${moving ? 'cursor-grabbing' : 'cursor-grab'}`}
+            title="Drag to move · arrow keys move by 1px · Shift + arrow moves by 10px"
+          >
+            <GripVertical aria-hidden="true" className="shrink-0 text-dim" size={14} strokeWidth={1.75} />
+            <span className="min-w-0"><strong className="block truncate text-ui-body text-ink">Drawing properties</strong><span className="block truncate font-mono text-ui-meta text-dim">{drawing.type}</span></span>
+          </button>
+        ) : <div className="min-w-0 px-2"><strong className="block truncate text-ui-body text-ink">Drawing properties</strong><span className="block font-mono text-ui-meta text-dim">{drawing.type}</span></div>}
+        <span id={`${tabsetId}-move-help`} className="sr-only">Drag to move this panel within the chart workspace. Use arrow keys for precise movement; hold Shift to move faster.</span>
         <button type="button" onClick={onClose} className="tool-button" aria-label="Close drawing properties"><X size={15} /></button>
       </header>
 
-      <div className="space-y-4 p-3">
-        <section aria-labelledby="drawing-template-heading">
+      <div role="tablist" aria-label="Drawing property sections" onKeyDown={moveTabFocus} className="grid shrink-0 grid-cols-4 border-b border-line bg-surface-0 px-1.5 pt-1.5">
+        {tabs.map((tab) => {
+          const selected = tab.id === resolvedActiveTab
+          return (
+            <button
+              key={tab.id}
+              id={`${tabsetId}-${tab.id}-tab`}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              aria-controls={`${tabsetId}-panel`}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => setActiveTab(tab.id)}
+              className="h-8 border-b-2 border-transparent px-1 text-ui-meta font-medium text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-active aria-selected:border-active aria-selected:text-ink"
+            >
+              {tab.label}
+            </button>
+          )
+        })}
+      </div>
+
+      <div id={`${tabsetId}-panel`} role="tabpanel" aria-labelledby={`${tabsetId}-${resolvedActiveTab}-tab`} className="min-h-0 flex-1 overflow-y-auto p-3">
+        {resolvedActiveTab === 'templates' ? <section aria-labelledby="drawing-template-heading">
           <h3 id="drawing-template-heading" className="mb-2 text-ui-meta font-semibold text-muted">TEMPLATES · {drawing.type}</h3>
           <div className="grid grid-cols-[1fr_auto_auto] gap-1.5">
             <select value={selectedTemplateId} onChange={(event) => setSelectedTemplateId(event.target.value)} className="field-input h-9 min-w-0" aria-label="Drawing template">
@@ -212,11 +306,11 @@ export function DrawingInspector({
             <button type="button" disabled={!templateName.trim()} onClick={saveTemplate} className="secondary-button gap-1.5 px-3 disabled:opacity-35"><Save size={13} />Save</button>
           </div>
           {templateError ? <p className="mt-2 text-ui-meta text-loss-bright" role="alert">{templateError}</p> : null}
-        </section>
+        </section> : null}
 
-        {drawing.type === 'fib-retracement' ? <FibonacciProperties drawing={drawing} onChange={onChange} /> : (
+        {drawing.type === 'fib-retracement' && resolvedActiveTab !== 'templates' ? <FibonacciProperties drawing={drawing} activeTab={resolvedActiveTab as FibonacciPropertyTab} onChange={onChange} /> : drawing.type !== 'fib-retracement' ? (
           <>
-        <section aria-labelledby="drawing-line-heading">
+        {resolvedActiveTab === 'style' ? <section aria-labelledby="drawing-line-heading">
           <h3 id="drawing-line-heading" className="mb-2 text-ui-meta font-semibold text-muted">LINE &amp; BORDER</h3>
           <div className="grid grid-cols-2 gap-2">
             <HexColorField label="Stroke" value={drawing.strokeColor} onChange={(strokeColor) => onChange({ strokeColor })} />
@@ -245,17 +339,17 @@ export function DrawingInspector({
               ) : null}
             </div>
           ) : null}
-        </section>
+        </section> : null}
 
-        <section className="border-t border-line pt-4" aria-labelledby="drawing-fill-heading">
+        {resolvedActiveTab === 'fill' ? <section aria-labelledby="drawing-fill-heading">
           <h3 id="drawing-fill-heading" className="mb-2 text-ui-meta font-semibold text-muted">FILL</h3>
           <div className="grid grid-cols-2 gap-2">
             <HexColorField label="Fill color" value={drawing.fillColor} onChange={(fillColor) => onChange({ fillColor })} />
             <OpacityField label="Fill opacity" value={drawing.fillOpacity} onChange={(fillOpacity) => onChange({ fillOpacity })} />
           </div>
-        </section>
+        </section> : null}
 
-        <section className="border-t border-line pt-4" aria-labelledby="drawing-text-heading">
+        {resolvedActiveTab === 'text' ? <section aria-labelledby="drawing-text-heading">
           <h3 id="drawing-text-heading" className="mb-2 text-ui-meta font-semibold text-muted">TEXT</h3>
           <label className="field-label">Label<textarea rows={3} value={drawing.text} onChange={(event) => onChange({ text: event.target.value })} placeholder="Add text to this drawing" className="field-input min-h-20 resize-y py-2 leading-relaxed" /></label>
           <div className="mt-2 grid grid-cols-2 gap-2">
@@ -283,9 +377,9 @@ export function DrawingInspector({
             <label className="field-label">Vertical position<select value={drawing.verticalAlign} onChange={(event) => onChange({ verticalAlign: parseVerticalAlign(event.target.value) })} className="field-input h-9"><option value="top">Top</option><option value="inside">Inside</option><option value="bottom">Bottom</option></select></label>
             <label className="field-label">Font size (px)<input type="number" min="9" max="32" value={drawing.fontSize} onChange={(event) => onChange({ fontSize: Number(event.target.value) })} className="field-input h-9" /></label>
           </div>
-        </section>
+        </section> : null}
           </>
-        )}
+        ) : null}
       </div>
     </aside>
   )

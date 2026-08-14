@@ -14,14 +14,18 @@ import {
 } from '../../replay/drawing-toolbar-position'
 import { replayEngine } from '../../replay/replay-engine'
 import {
+  defaultDrawingTemplateAppearance,
   deleteDrawingTemplate,
   loadDrawingTemplates,
   persistDrawingTemplates,
   saveNamedDrawingTemplate,
+  syncDrawingTemplateDelete,
+  syncDrawingTemplateUpsert,
   type DrawingTemplate,
 } from '../../replay/drawing-templates'
 import { useReplaySelector } from '../../replay/use-replay'
 import { DrawingInspector } from './DrawingInspector'
+import { SelectedDrawingToolbar } from './SelectedDrawingToolbar'
 
 const LINE_TOOL_TYPES = ['trend-line', 'ray', 'info-line', 'extended-line', 'trend-angle', 'horizontal-line', 'horizontal-ray', 'vertical-line', 'cross-line'] as const
 const PROJECTION_TOOL_TYPES = ['long-position', 'short-position'] as const
@@ -50,8 +54,18 @@ interface ToolbarDragState {
   moved: boolean
 }
 
+interface InspectorDragState {
+  pointerId: number
+  pointerX: number
+  pointerY: number
+  inspectorX: number
+  inspectorY: number
+}
+
 const FLOATING_TOOLBAR_BOUNDARY = 8
 const FLOATING_TOOLBAR_DEFAULT_TOP = 44
+const DRAWING_INSPECTOR_BOUNDARY = 8
+const DRAWING_INSPECTOR_DEFAULT_LEFT = 60
 
 const DRAWING_TOOLS: readonly DrawingToolItem[] = [
   { type: 'trend-line', name: 'Trend Line' },
@@ -139,6 +153,7 @@ export function DrawingToolbar({ disabled = false }: DrawingToolbarProps): React
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null)
   const [favorites, setFavorites] = useState<DrawingFavoriteToolType[]>(loadDrawingFavorites)
   const [floatingDragging, setFloatingDragging] = useState<boolean>(false)
+  const [inspectorDragging, setInspectorDragging] = useState<boolean>(false)
   const [templates, setTemplates] = useState<DrawingTemplate[]>(loadDrawingTemplates)
   const [templateError, setTemplateError] = useState<string | null>(null)
   const [selectedLineTool, setSelectedLineTool] = useState<DrawingFavoriteToolType>('trend-line')
@@ -151,11 +166,17 @@ export function DrawingToolbar({ disabled = false }: DrawingToolbarProps): React
   const floatingPositionRef = useRef<DrawingToolbarPosition | null>(null)
   const floatingDragRef = useRef<ToolbarDragState | null>(null)
   const floatingPositionCustomizedRef = useRef<boolean>(false)
+  const inspectorRef = useRef<HTMLDivElement>(null)
+  const inspectorPositionRef = useRef<DrawingToolbarPosition | null>(null)
+  const inspectorDragRef = useRef<InspectorDragState | null>(null)
   const lastMenuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const favoriteTools = favorites.flatMap((type) => DRAWING_TOOLS.find((tool) => tool.type === type) ?? [])
   const selectedLine = lineTools.find((tool) => tool.type === selectedLineTool) ?? lineTools[0]
   const selectedBrush = brushTools.find((tool) => tool.type === selectedBrushTool) ?? brushTools[0]
   const selectedProjection = projectionTools.find((tool) => tool.type === selectedProjectionTool) ?? projectionTools[0]
+  const selectedDrawingName = replay.selectedDrawing
+    ? DRAWING_TOOLS.find((tool) => tool.type === replay.selectedDrawing?.type)?.name ?? replay.selectedDrawing.type
+    : ''
 
   useEffect(() => {
     if (!toolFeedback) return
@@ -217,6 +238,97 @@ export function DrawingToolbar({ disabled = false }: DrawingToolbarProps): React
     resizeObserver.observe(toolbar)
     return () => resizeObserver.disconnect()
   }, [applyFloatingPosition, defaultFloatingPosition, favoriteTools.length])
+
+  const applyInspectorPosition = useCallback((position: DrawingToolbarPosition): DrawingToolbarPosition | null => {
+    const inspector = inspectorRef.current
+    const container = inspector?.parentElement
+    if (!inspector || !container || window.innerWidth < 640) return null
+    const maxX = Math.max(DRAWING_INSPECTOR_BOUNDARY, container.clientWidth - inspector.offsetWidth - DRAWING_INSPECTOR_BOUNDARY)
+    const maxY = Math.max(DRAWING_INSPECTOR_BOUNDARY, container.clientHeight - inspector.offsetHeight - DRAWING_INSPECTOR_BOUNDARY)
+    const next = {
+      x: Math.min(Math.max(position.x, DRAWING_INSPECTOR_BOUNDARY), maxX),
+      y: Math.min(Math.max(position.y, DRAWING_INSPECTOR_BOUNDARY), maxY),
+    }
+    inspectorPositionRef.current = next
+    inspector.style.transform = `translate3d(${next.x}px, ${next.y}px, 0)`
+    return next
+  }, [])
+
+  useLayoutEffect(() => {
+    const inspector = inspectorRef.current
+    const container = inspector?.parentElement
+    if (!replay.drawingInspectorOpen || !inspector || !container) return
+    const syncPosition = (): void => {
+      if (window.innerWidth < 640) {
+        inspector.style.transform = ''
+        return
+      }
+      applyInspectorPosition(inspectorPositionRef.current ?? { x: DRAWING_INSPECTOR_DEFAULT_LEFT, y: DRAWING_INSPECTOR_BOUNDARY })
+    }
+    syncPosition()
+    window.addEventListener('resize', syncPosition)
+    if (typeof ResizeObserver === 'undefined') return () => window.removeEventListener('resize', syncPosition)
+    const resizeObserver = new ResizeObserver(syncPosition)
+    resizeObserver.observe(container)
+    resizeObserver.observe(inspector)
+    return () => {
+      window.removeEventListener('resize', syncPosition)
+      resizeObserver.disconnect()
+    }
+  }, [applyInspectorPosition, replay.drawingInspectorOpen, replay.selectedDrawing?.type])
+
+  const startInspectorDrag = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    if (window.innerWidth < 640 || event.button !== 0 || event.isPrimary === false) return
+    const position = inspectorPositionRef.current ?? applyInspectorPosition({ x: DRAWING_INSPECTOR_DEFAULT_LEFT, y: DRAWING_INSPECTOR_BOUNDARY })
+    if (!position) return
+    inspectorDragRef.current = {
+      pointerId: event.pointerId,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      inspectorX: position.x,
+      inspectorY: position.y,
+    }
+    if (typeof event.currentTarget.setPointerCapture === 'function') event.currentTarget.setPointerCapture(event.pointerId)
+    setInspectorDragging(true)
+    event.preventDefault()
+  }
+
+  const moveInspector = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const drag = inspectorDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    applyInspectorPosition({
+      x: drag.inspectorX + event.clientX - drag.pointerX,
+      y: drag.inspectorY + event.clientY - drag.pointerY,
+    })
+    event.preventDefault()
+  }
+
+  const stopInspectorDrag = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const drag = inspectorDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    inspectorDragRef.current = null
+    if (typeof event.currentTarget.hasPointerCapture === 'function' && event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    setInspectorDragging(false)
+  }
+
+  const moveInspectorWithKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>): void => {
+    if (window.innerWidth < 640) return
+    const distance = event.shiftKey ? 10 : 1
+    const offsets: Partial<Record<string, DrawingToolbarPosition>> = {
+      ArrowDown: { x: 0, y: distance },
+      ArrowLeft: { x: -distance, y: 0 },
+      ArrowRight: { x: distance, y: 0 },
+      ArrowUp: { x: 0, y: -distance },
+    }
+    const offset = offsets[event.key]
+    if (!offset) return
+    event.preventDefault()
+    const current = inspectorPositionRef.current ?? applyInspectorPosition({ x: DRAWING_INSPECTOR_DEFAULT_LEFT, y: DRAWING_INSPECTOR_BOUNDARY })
+    if (!current) return
+    applyInspectorPosition({ x: current.x + offset.x, y: current.y + offset.y })
+  }
 
   const dismissMenus = useCallback((reason: DismissReason): void => {
     setOpenMenu(null)
@@ -317,11 +429,13 @@ export function DrawingToolbar({ disabled = false }: DrawingToolbarProps): React
     commitFloatingPosition()
   }
 
-  const commitTemplates = (next: DrawingTemplate[]): void => {
+  const commitTemplates = (next: DrawingTemplate[], sync: { type: 'upsert'; template: DrawingTemplate } | { type: 'delete'; id: string }): void => {
     try {
       persistDrawingTemplates(next)
       setTemplates(next)
       setTemplateError(null)
+      if (sync.type === 'upsert') syncDrawingTemplateUpsert(sync.template)
+      else syncDrawingTemplateDelete(sync.id)
     } catch (error) {
       setTemplateError(error instanceof Error ? error.message : 'Could not save drawing templates')
     }
@@ -330,7 +444,13 @@ export function DrawingToolbar({ disabled = false }: DrawingToolbarProps): React
   const saveTemplate = (name: string): void => {
     if (!replay.selectedDrawing) return
     try {
-      commitTemplates(saveNamedDrawingTemplate(templates, name, replay.selectedDrawing))
+      const next = saveNamedDrawingTemplate(templates, name, replay.selectedDrawing)
+      // saveNamedDrawingTemplate only ever creates a new object reference for
+      // the entry it added or updated — every unchanged entry keeps its prior
+      // reference, so this finds "the one that changed" without redoing its
+      // name/tool-type matching.
+      const saved = next.find((template) => !templates.includes(template))
+      if (saved) commitTemplates(next, { type: 'upsert', template: saved })
     } catch (error) {
       setTemplateError(error instanceof Error ? error.message : 'Could not save drawing template')
     }
@@ -338,6 +458,11 @@ export function DrawingToolbar({ disabled = false }: DrawingToolbarProps): React
 
   const applyTemplate = (template: DrawingTemplate): void => {
     replayEngine.updateSelectedDrawing(template.appearance)
+  }
+
+  const applyDefaultTemplate = (): void => {
+    const drawing = replay.selectedDrawing
+    if (drawing) replayEngine.updateSelectedDrawing(defaultDrawingTemplateAppearance(drawing))
   }
 
   const favoriteToggle = (tool: DrawingToolItem): ReactElement => {
@@ -500,17 +625,38 @@ export function DrawingToolbar({ disabled = false }: DrawingToolbarProps): React
         </nav>
       ) : null}
 
+      {replay.selectedDrawing ? (
+        <SelectedDrawingToolbar
+          drawing={replay.selectedDrawing}
+          drawingName={selectedDrawingName}
+          templates={templates}
+          templateError={templateError}
+          onApplyDefaultTemplate={applyDefaultTemplate}
+          onApplyTemplate={applyTemplate}
+          onChange={(patch) => replayEngine.updateSelectedDrawing(patch)}
+          onDelete={() => replayEngine.deleteSelectedDrawing()}
+          onLock={() => replayEngine.lockSelectedDrawing()}
+          onOpenProperties={() => replayEngine.openDrawingInspector()}
+          onSaveTemplate={saveTemplate}
+        />
+      ) : null}
+
       {replay.selectedDrawing && replay.drawingInspectorOpen ? (
-        <div className="absolute bottom-2 left-[3.75rem] right-2 top-2 z-30 sm:right-auto sm:w-[22rem]">
+        <div ref={inspectorRef} className="absolute bottom-2 left-[3.75rem] right-2 top-2 z-[80] will-change-transform sm:bottom-auto sm:left-0 sm:right-auto sm:top-0 sm:w-[22rem]">
           <DrawingInspector
             drawing={replay.selectedDrawing}
             templates={templates}
             templateError={templateError}
+            moving={inspectorDragging}
+            onMovePointerDown={startInspectorDrag}
+            onMovePointerMove={moveInspector}
+            onMovePointerUp={stopInspectorDrag}
+            onMoveKeyDown={moveInspectorWithKeyboard}
             onChange={(patch) => replayEngine.updateSelectedDrawing(patch)}
             onClose={() => replayEngine.closeDrawingInspector()}
             onSaveTemplate={saveTemplate}
             onApplyTemplate={applyTemplate}
-            onDeleteTemplate={(id) => commitTemplates(deleteDrawingTemplate(templates, id))}
+            onDeleteTemplate={(id) => commitTemplates(deleteDrawingTemplate(templates, id), { type: 'delete', id })}
           />
         </div>
       ) : null}

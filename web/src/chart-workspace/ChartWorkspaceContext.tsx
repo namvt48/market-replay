@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
 import { replayEngine } from '../replay/replay-engine'
+import { registerChartWorkspaceSnapshotBridge } from '../replay/session-workspace-snapshot'
 import { useUiStore } from '../store/ui-store'
 import { layoutReducer } from './layout-reducer'
 import { loadChartLayout, persistChartLayout } from './layout-storage'
@@ -14,6 +15,8 @@ export function ChartWorkspaceProvider({ children }: ChartWorkspaceProviderProps
   const setActiveTf = useUiStore((store) => store.setActiveTf)
   const activeTf = useUiStore((store) => store.activeTf)
   const syncingTimeframeFromLayout = useRef(false)
+  const stateRef = useRef(state)
+  stateRef.current = state
 
   useEffect(() => { persistChartLayout(state) }, [state])
   useEffect(() => { replayEngine.setMarketSession(state.marketSession) }, [state.marketSession])
@@ -54,6 +57,11 @@ export function ChartWorkspaceProvider({ children }: ChartWorkspaceProviderProps
   const loadLayout = useCallback((next: ChartWorkspaceState): void => {
     dispatch({ type: 'replace', state: structuredClone(next) })
   }, [])
+
+  useEffect(() => registerChartWorkspaceSnapshotBridge({
+    capture: () => stateRef.current,
+    restore: loadLayout,
+  }), [loadLayout])
 
   // Every consumer re-renders whenever this context value changes identity
   // — without memoizing it, ChartWorkspaceProvider re-rendering for any

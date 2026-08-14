@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { preferenceStorage } from '../store/preference-sync'
+import { deleteDrawingTemplateRemote, fetchDrawingTemplates, putDrawingTemplate } from '../api/client'
+import { preferenceStorage, withTimeout } from '../store/preference-sync'
 import {
   DEFAULT_DRAWING_METADATA,
   FIBONACCI_LEVEL_SLOT_COUNT,
@@ -9,6 +10,7 @@ import {
 } from './drawing-appearance'
 
 export const DRAWING_TEMPLATES_STORAGE_KEY = 'market-replay:drawing-templates:v1'
+const HYDRATE_TIMEOUT_MS = 1_200
 
 export type DrawingTemplateAppearance = Required<DrawingAppearancePatch>
 
@@ -94,6 +96,19 @@ export function drawingAppearanceToTemplate(appearance: DrawingAppearance): Draw
   return template
 }
 
+export function defaultDrawingTemplateAppearance(drawing: DrawingAppearance): DrawingTemplateAppearance {
+  const extendLeft = drawing.type === 'extended-line'
+  const extendRight = drawing.type === 'extended-line' || drawing.type === 'ray' || drawing.type === 'horizontal-ray'
+  return {
+    ...drawingAppearanceToTemplate(drawing),
+    ...DEFAULT_DRAWING_METADATA,
+    fibonacciLevels: DEFAULT_DRAWING_METADATA.fibonacciLevels.map((level) => ({ ...level })),
+    lineWidth: 2,
+    extendLeft,
+    extendRight,
+  }
+}
+
 export function parseDrawingTemplates(raw: string | null): DrawingTemplate[] {
   if (!raw) return []
   try {
@@ -112,6 +127,33 @@ export function persistDrawingTemplates(templates: DrawingTemplate[], storage: D
   if (!storage) return
   const validated = drawingTemplatesSchema.parse(templates)
   storage.setItem(DRAWING_TEMPLATES_STORAGE_KEY, JSON.stringify(validated))
+}
+
+/**
+ * Pulls the server's drawing templates into the local cache before the
+ * toolbar's initial `useState(loadDrawingTemplates)` read runs — mirrors
+ * hydratePreferences in store/preference-sync.ts (bounded, never rejects: a
+ * slow or unreachable backend delays the workspace, it does not stop it).
+ */
+export async function hydrateDrawingTemplates(storage: DrawingTemplateStorage | null = getBrowserStorage()): Promise<void> {
+  if (!storage) return
+  try {
+    const remote = await withTimeout(fetchDrawingTemplates(), HYDRATE_TIMEOUT_MS, 'drawing template hydrate timed out')
+    const parsed = drawingTemplatesSchema.safeParse(remote)
+    if (parsed.success) storage.setItem(DRAWING_TEMPLATES_STORAGE_KEY, JSON.stringify(parsed.data))
+  } catch {
+    // Keep whatever this browser already had.
+  }
+}
+
+/** Fire-and-forget mirror of a local template save to the backend — local storage is already the source of truth by the time this is called. */
+export function syncDrawingTemplateUpsert(template: DrawingTemplate): void {
+  void putDrawingTemplate(template).catch(() => undefined)
+}
+
+/** Fire-and-forget mirror of a local template delete to the backend. */
+export function syncDrawingTemplateDelete(id: string): void {
+  void deleteDrawingTemplateRemote(id).catch(() => undefined)
 }
 
 export function saveNamedDrawingTemplate(

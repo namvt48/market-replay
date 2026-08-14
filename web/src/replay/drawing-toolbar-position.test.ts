@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CONTEXTUAL_DRAWING_TOOLBAR_POSITION_STORAGE_KEY,
   DRAWING_TOOLBAR_POSITION_STORAGE_KEY,
+  loadContextualDrawingToolbarPosition,
   loadDrawingToolbarPosition,
   parseDrawingToolbarPosition,
+  persistContextualDrawingToolbarPosition,
   persistDrawingToolbarPosition,
 } from './drawing-toolbar-position'
 
@@ -25,5 +28,20 @@ describe('drawing toolbar position', () => {
 
     expect(values.has(DRAWING_TOOLBAR_POSITION_STORAGE_KEY)).toBe(true)
     expect(loadDrawingToolbarPosition(storage)).toEqual({ x: 240, y: 96 })
+  })
+
+  it('stores the contextual toolbar independently from the favorites toolbar', () => {
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string): string | null => values.get(key) ?? null,
+      setItem: (key: string, value: string): void => { values.set(key, value) },
+    }
+
+    persistDrawingToolbarPosition({ x: 40, y: 44 }, storage)
+    persistContextualDrawingToolbarPosition({ x: 240, y: 96 }, storage)
+
+    expect(CONTEXTUAL_DRAWING_TOOLBAR_POSITION_STORAGE_KEY).not.toBe(DRAWING_TOOLBAR_POSITION_STORAGE_KEY)
+    expect(loadDrawingToolbarPosition(storage)).toEqual({ x: 40, y: 44 })
+    expect(loadContextualDrawingToolbarPosition(storage)).toEqual({ x: 240, y: 96 })
   })
 })

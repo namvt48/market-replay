@@ -732,6 +732,28 @@ describe('LwcAdapter drawing preview', () => {
     expect(adapter.getDrawings()[0].options).toMatchObject({ locked: false })
   })
 
+  it('locks only the selected drawing and clears its selection', async () => {
+    const adapter = new LwcAdapter()
+    await adapter.init(document.createElement('div'), symbol, '1m')
+    adapter.loadDrawings([
+      {
+        id: 'line-1', type: 'trend-line', anchors: [{ time: 0 as UTCTimestamp, price: 100 }, { time: 60 as UTCTimestamp, price: 105 }],
+        style: { lineColor: '#2962ff', lineWidth: 2 }, options: {},
+      },
+      {
+        id: 'line-2', type: 'trend-line', anchors: [{ time: 120 as UTCTimestamp, price: 110 }, { time: 180 as UTCTimestamp, price: 115 }],
+        style: { lineColor: '#2962ff', lineWidth: 2 }, options: {},
+      },
+    ])
+    drawingMocks.managers.at(-1)?.selectDrawing('line-1')
+
+    adapter.lockSelectedDrawing()
+
+    expect(adapter.getDrawings()[0].options).toMatchObject({ locked: true })
+    expect(adapter.getDrawings()[1].options).not.toHaveProperty('locked')
+    expect(drawingMocks.managers.at(-1)?.selected).toBeNull()
+  })
+
   it('preserves hidden and locked drawing controls configured before initialization', async () => {
     const adapter = new LwcAdapter()
     adapter.setAllDrawingsLocked(true)

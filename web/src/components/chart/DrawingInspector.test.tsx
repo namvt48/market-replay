@@ -30,6 +30,28 @@ function Harness({ initial = drawing, onChange }: HarnessProps) {
 }
 
 describe('DrawingInspector', () => {
+  it('shows one compact property group at a time through accessible tabs', async () => {
+    const user = userEvent.setup()
+    render(<Harness onChange={() => undefined} />)
+
+    const tabs = screen.getByRole('tablist', { name: 'Drawing property sections' })
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Style', 'Fill', 'Text', 'Templates'])
+    expect(screen.getByRole('tab', { name: 'Style' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('spinbutton', { name: /Thickness/i })).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Label' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Template name' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: 'Text' }))
+    expect(screen.getByRole('textbox', { name: 'Label' })).toBeInTheDocument()
+    expect(screen.queryByRole('spinbutton', { name: /Thickness/i })).not.toBeInTheDocument()
+
+    screen.getByRole('tab', { name: 'Text' }).focus()
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('tab', { name: 'Templates' })).toHaveFocus()
+    expect(screen.getByRole('textbox', { name: 'Template name' })).toBeInTheDocument()
+    expect(tabs).toBeInTheDocument()
+  })
+
   it('edits line, extend and text appearance through accessible controls', async () => {
     const onChange = vi.fn()
     const user = userEvent.setup()
@@ -41,6 +63,7 @@ describe('DrawingInspector', () => {
     await user.tab()
     await user.selectOptions(screen.getByRole('combobox', { name: /Border style/i }), 'dashed')
     await user.click(screen.getByRole('button', { name: 'Extend right' }))
+    await user.click(screen.getByRole('tab', { name: 'Text' }))
     await user.type(screen.getByRole('textbox', { name: 'Label' }), 'Breakout')
     await user.click(screen.getByRole('button', { name: 'Bold text' }))
     await user.click(screen.getByRole('button', { name: 'Align text right' }))
@@ -58,6 +81,7 @@ describe('DrawingInspector', () => {
     const user = userEvent.setup()
     const inspector = render(<DrawingInspector drawing={drawing} templates={[]} templateError={null} onChange={() => undefined} onClose={() => undefined} onSaveTemplate={onSaveTemplate} onApplyTemplate={() => undefined} onDeleteTemplate={() => undefined} />)
 
+    await user.click(inspector.getByRole('tab', { name: 'Templates' }))
     await user.type(inspector.getByRole('textbox', { name: 'Template name' }), 'Trend setup')
     await user.click(inspector.getByRole('button', { name: 'Save' }))
 
@@ -69,11 +93,16 @@ describe('DrawingInspector', () => {
     const user = userEvent.setup()
     render(<Harness initial={{ ...drawing, type: 'fib-retracement' }} onChange={onChange} />)
 
-    expect(screen.getAllByRole('spinbutton', { name: /Level \d+ value/ })).toHaveLength(24)
-    await user.click(screen.getByRole('checkbox', { name: 'Show level 1' }))
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Line', 'Levels', 'Display', 'Templates'])
     await user.selectOptions(screen.getByRole('combobox', { name: 'Line style' }), 'dotted')
     await user.click(screen.getByRole('checkbox', { name: 'Extend lines' }))
     await user.click(screen.getByRole('checkbox', { name: 'Diagonal' }))
+
+    await user.click(screen.getByRole('tab', { name: 'Levels' }))
+    expect(screen.getAllByRole('spinbutton', { name: /Level \d+ value/ })).toHaveLength(24)
+    await user.click(screen.getByRole('checkbox', { name: 'Show level 1' }))
+
+    await user.click(screen.getByRole('tab', { name: 'Display' }))
     await user.click(screen.getByRole('checkbox', { name: 'Reverse' }))
     await user.click(screen.getByRole('checkbox', { name: 'Prices' }))
     await user.click(screen.getByRole('checkbox', { name: 'Levels' }))

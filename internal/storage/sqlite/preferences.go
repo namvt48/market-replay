@@ -9,7 +9,7 @@ import (
 
 // preferencesSchema is the durable home for workspace customization —
 // chart appearance, pane layouts, saved layouts, timeframe preferences,
-// drawing favourites and drawing templates.
+// and drawing favourites.
 //
 // All of it used to live only in the browser's localStorage, which meant a
 // different browser, a cleared site, or a second machine started from
@@ -17,8 +17,12 @@ import (
 // server-side. One opaque-payload table covers every one of those settings
 // rather than a table per kind: the server has no reason to understand the
 // shape of a chart colour scheme, only to hand back exactly what it was
-// given. (This also replaces the drawing_templates table, which had a
-// schema but never had a Store method or a route.)
+// given.
+//
+// Drawing templates used to live here too (key
+// "market-replay:drawing-templates:v1") until they got their own table —
+// see drawing_templates.go and migrateDrawingTemplatesFromPreferences in
+// sqlite.go for the one-time move.
 const preferencesSchema = `
 CREATE TABLE IF NOT EXISTS preferences (
 	key TEXT PRIMARY KEY,
