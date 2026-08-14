@@ -116,4 +116,50 @@ describe('API client transient recovery', () => {
     expect(request.searchParams.get('to')).toBe('600')
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ inputs: { show_lines: false } })
   })
+
+  it('deduplicates concurrent identical indicator runs across panes', async () => {
+    let resolveFetch: ((response: Response) => void) | undefined
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = runIndicator('NQ', '5m', 'gb69-cbmor', 600, { show_lines: false, show_boxes: true })
+    const second = runIndicator('NQ', '5m', 'gb69-cbmor', 600, { show_boxes: true, show_lines: false })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    resolveFetch?.(new Response(JSON.stringify({ draws: [], plots: [] }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { draws: [], plots: [] },
+      { draws: [], plots: [] },
+    ])
+  })
+
+  it('keeps shared indicator work alive while another pane still waits', async () => {
+    let resolveFetch: ((response: Response) => void) | undefined
+    let sharedSignal: AbortSignal | null = null
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((_input, init) => {
+      sharedSignal = init?.signal ?? null
+      return new Promise<Response>((resolve) => {
+        resolveFetch = resolve
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const firstController = new AbortController()
+    const secondController = new AbortController()
+    const first = runIndicator('NQ', '1m', 'killzones', 900, { show_asia: true }, firstController.signal)
+    const second = runIndicator('NQ', '1m', 'killzones', 900, { show_asia: true }, secondController.signal)
+
+    firstController.abort()
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    expect((sharedSignal as AbortSignal | null)?.aborted).toBe(false)
+    resolveFetch?.(new Response(JSON.stringify({ draws: [], plots: [] }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    await expect(second).resolves.toEqual({ draws: [], plots: [] })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 })

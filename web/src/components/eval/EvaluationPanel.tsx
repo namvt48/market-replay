@@ -7,6 +7,7 @@ import { useEvalSession } from '../../replay/use-eval-session'
 import { useReplaySelector } from '../../replay/use-replay'
 import { deleteEvalAccount, deriveEvalFinancials, loadEvalAccounts } from '../../store/eval-store'
 import type { EvalPhase } from '../../store/eval-store'
+import { TradeHistoryTable } from '../trades/TradeHistoryTable'
 
 const currency = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -26,37 +27,6 @@ const percentage = new Intl.NumberFormat('en-US', {
   style: 'percent',
   maximumFractionDigits: 1,
 })
-
-const tradeDate = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-})
-
-const tradeClock = new Intl.DateTimeFormat('en-US', {
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-})
-
-function formatTradeRange(entryTime: number | undefined, exitTime: number | undefined): string {
-  if (entryTime === undefined && exitTime === undefined) return '—'
-  if (entryTime === undefined) {
-    const exit = new Date((exitTime ?? 0) * 1000)
-    return `— → ${tradeDate.format(exit)} ${tradeClock.format(exit)}`
-  }
-
-  const entry = new Date(entryTime * 1000)
-  if (exitTime === undefined) return `${tradeDate.format(entry)} ${tradeClock.format(entry)} → —`
-
-  const exit = new Date(exitTime * 1000)
-  const entryDate = tradeDate.format(entry)
-  const exitDate = tradeDate.format(exit)
-  const sameDay = entry.getFullYear() === exit.getFullYear()
-    && entry.getMonth() === exit.getMonth()
-    && entry.getDate() === exit.getDate()
-  if (sameDay) return `${entryDate} · ${tradeClock.format(entry)}–${tradeClock.format(exit)}`
-  return `${entryDate} ${tradeClock.format(entry)} → ${exitDate} ${tradeClock.format(exit)}`
-}
 
 interface AccountView {
   id: string
@@ -117,46 +87,50 @@ function ProgressLine({ label, value, pct, tone = 'accent' }: { label: string; v
   )
 }
 
-function TradeHistoryRow({ trade }: { trade: EvalTradeRecord }) {
-  const pnl = (trade.realizedCents ?? 0) / 100
-  const mfe = Math.abs(trade.mfeTicks ?? 0)
-  const mae = Math.abs(trade.maeTicks ?? 0)
-  const timeRange = formatTradeRange(trade.entryTime, trade.exitTime)
-  return (
-    <li className="px-3 py-1.5">
-      <div className="grid grid-cols-[auto_1fr_auto] items-baseline gap-x-2 font-mono text-ui-meta">
-        <span className={`min-w-11 font-semibold ${trade.side === 'short' ? 'text-loss-bright' : 'text-profit-bright'}`}>{trade.side === 'short' ? 'SHORT' : 'LONG'}</span>
-        <span className="whitespace-nowrap text-ink">{trade.qty ?? 1} {trade.symbol ?? '—'}</span>
-        <span className={`whitespace-nowrap text-right font-semibold tabular-nums ${pnl >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{pnl >= 0 ? '+' : ''}{currency.format(pnl)}</span>
-      </div>
-      <div className="mt-0.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 font-mono text-ui-meta">
-        <span className="whitespace-nowrap text-dim" aria-label={`Entry and exit time: ${timeRange}`}>{timeRange}</span>
-        <span className="whitespace-nowrap text-dim" aria-label={`Maximum favorable excursion: ${mfe} ticks. Maximum adverse excursion: ${mae} ticks.`}>
-          MFE <strong className="font-medium text-muted">+{mfe}t</strong> · MAE <strong className="font-medium text-muted">−{mae}t</strong>
-        </span>
-      </div>
-    </li>
-  )
-}
-
 function TradeHistory({ trades }: { trades: EvalTradeRecord[] }) {
-  const recent = [...trades].reverse()
   return (
-    <div className="border-t border-line">
-      <h4 className="px-3 pb-1.5 pt-3 text-ui-meta font-semibold tracking-[0.04em] text-muted">TRADE HISTORY</h4>
-      {recent.length === 0 ? (
-        <p className="px-3 pb-3 text-ui-meta leading-relaxed text-muted">No closed trades yet.</p>
-      ) : (
-        <ul className="divide-y divide-line border-t border-line">
-          {recent.map((trade, index) => <TradeHistoryRow key={trade.id ?? `${trade.exitTime}-${index}`} trade={trade} />)}
-        </ul>
-      )}
-    </div>
+    <TradeHistoryTable
+      headingId="evaluation-trade-history"
+      trades={trades.map((trade, index) => ({
+        id: trade.id ?? `${trade.exitTime}-${index}`,
+        symbol: trade.symbol ?? '—',
+        side: trade.side ?? null,
+        qty: trade.qty ?? 1,
+        entryTime: trade.entryTime,
+        exitTime: trade.exitTime,
+        realizedCents: trade.realizedCents ?? 0,
+        mfeTicks: trade.mfeTicks ?? 0,
+        maeTicks: trade.maeTicks ?? 0,
+        rMultiple: trade.rMultiple ?? null,
+      }))}
+    />
   )
 }
 
 export function EvaluationPanel() {
-  const { session } = useEvalSession()
+  const session = useEvalSession((state) => ({
+    accountId: state.accountId,
+    phase: state.phase,
+    config: state.config,
+    runtime: state.runtime,
+    startDate: state.startDate,
+    startTs: state.startTs,
+    lastCursorTs: state.lastCursorTs,
+    baselineRealizedCents: state.baselineRealizedCents,
+    baselineEquityCents: state.baselineEquityCents,
+    lastEvalBalance: state.lastEvalBalance,
+    lastEvalEquity: state.lastEvalEquity,
+    needsFillRebase: state.needsFillRebase,
+    trades: state.trades,
+    payoutHistory: state.payoutHistory,
+    sessionTimezone: state.sessionTimezone,
+    restoreAccount: state.restoreAccount,
+    activateEvaluation: state.activateEvaluation,
+    retry: state.retry,
+    goFunded: state.goFunded,
+    goVerification: state.goVerification,
+    requestPayout: state.requestPayout,
+  }))
   const replay = useReplaySelector((snapshot) => ({ fill: snapshot.evalFill ?? snapshot.fill }))
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState(false)

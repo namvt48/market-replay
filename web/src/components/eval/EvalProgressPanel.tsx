@@ -7,11 +7,14 @@ import { useReplaySelector } from '../../replay/use-replay'
 import { replayEngine } from '../../replay/replay-engine'
 import { EvalResultCard } from './EvalResultCard'
 
-const fmt$ = (n: number): string =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n)
+const currencyFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency', currency: 'USD', maximumFractionDigits: 0,
+})
+const percentFormatter = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 1 })
 
-const fmtPct = (n: number): string =>
-  new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 1 }).format(n)
+const fmt$ = (n: number): string => currencyFormatter.format(n)
+
+const fmtPct = (n: number): string => percentFormatter.format(n)
 
 const clampPct = (pct: number): number => Math.min(100, Math.max(0, pct * 100))
 
@@ -45,7 +48,25 @@ function Gauge({ label, value, pct, buffer, tone }: GaugeProps): ReactElement {
 }
 
 export function EvalProgressPanel(): ReactElement | null {
-  const { session } = useEvalSession()
+  const session = useEvalSession((state) => ({
+    phase: state.phase,
+    config: state.config,
+    runtime: state.runtime,
+    baselineRealizedCents: state.baselineRealizedCents,
+    baselineEquityCents: state.baselineEquityCents,
+    needsFillRebase: state.needsFillRebase,
+    lastEvalBalance: state.lastEvalBalance,
+    lastEvalEquity: state.lastEvalEquity,
+    trades: state.trades,
+    sessionTimezone: state.sessionTimezone,
+    payoutHistory: state.payoutHistory,
+    startDate: state.startDate,
+    retry: state.retry,
+    goFunded: state.goFunded,
+    goVerification: state.goVerification,
+    requestPayout: state.requestPayout,
+    abandon: state.abandon,
+  }))
   const replay = useReplaySelector((snapshot) => ({ fill: snapshot.evalFill ?? snapshot.fill }))
   const [dismissed, setDismissed] = useState(false)
   const [payoutMessage, setPayoutMessage] = useState<string | null>(null)

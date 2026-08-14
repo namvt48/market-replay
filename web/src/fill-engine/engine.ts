@@ -67,14 +67,33 @@ export function cancelAllOrders(state: FillEngineState): FillEngineState {
 export function amendOrder(state: FillEngineState, orderId: string, priceTicks: number): FillEngineState {
   if (!Number.isInteger(priceTicks)) throw new Error('Order price must be an integer tick value')
   let found = false
+  let adjustedRole: WorkingOrder['role'] | null = null
+  let previousPriceTicks: number | null = null
   const orders = state.orders.map((order) => {
     if (order.id !== orderId) return order
     if (order.type === 'market') throw new Error('Market orders cannot be amended')
     found = true
+    adjustedRole = order.role
+    previousPriceTicks = order.priceTicks
     return { ...order, priceTicks }
   })
   if (!found) throw new Error(`Order ${orderId} was not found`)
-  return { ...state, orders }
+  const position = state.position
+  if (!position || previousPriceTicks === priceTicks || (adjustedRole !== 'stopLoss' && adjustedRole !== 'takeProfit')) {
+    return { ...state, orders }
+  }
+  const lastAdjustment = position.protectionAdjustments.at(-1)
+  const duplicate = lastAdjustment?.role === adjustedRole
+    && lastAdjustment.ts === state.lastTs
+    && lastAdjustment.priceTicks === priceTicks
+  return {
+    ...state,
+    orders,
+    position: duplicate ? position : {
+      ...position,
+      protectionAdjustments: [...position.protectionAdjustments, { role: adjustedRole, ts: state.lastTs, priceTicks }],
+    },
+  }
 }
 
 export function flattenPosition(state: FillEngineState): FillEngineState {
@@ -136,6 +155,7 @@ function applyFill(state: FillEngineState, order: WorkingOrder, fillTicks: numbe
     }
     const avgPriceTicks = Math.round(((current?.avgPriceTicks ?? 0) * oldQty + fillTicks * Math.abs(delta)) / newQty)
     const contingentStop = state.orders.find((item) => item.parentId === order.id && item.role === 'stopLoss')
+    const contingentTarget = state.orders.find((item) => item.parentId === order.id && item.role === 'takeProfit')
     const position: Position = {
       qty: (current?.qty ?? 0) + delta,
       avgPriceTicks,
@@ -145,6 +165,9 @@ function applyFill(state: FillEngineState, order: WorkingOrder, fillTicks: numbe
       initialRiskTicks: current?.initialRiskTicks ?? (contingentStop?.priceTicks === null || contingentStop?.priceTicks === undefined
         ? null
         : Math.abs(fillTicks - contingentStop.priceTicks) || null),
+      initialStopTicks: current?.initialStopTicks ?? contingentStop?.priceTicks ?? null,
+      initialTakeProfitTicks: current?.initialTakeProfitTicks ?? contingentTarget?.priceTicks ?? null,
+      protectionAdjustments: current?.protectionAdjustments ?? [],
     }
     return { ...state, position, orders: ordersWithoutFill }
   }
@@ -168,13 +191,22 @@ function applyFill(state: FillEngineState, order: WorkingOrder, fillTicks: numbe
     mfeTicks: current.mfeTicks,
     maeTicks: current.maeTicks,
     rMultiple: current.initialRiskTicks ? realizedCents / (current.initialRiskTicks * state.config.tickValueCents * closeQty) : null,
+    initialStopTicks: current.initialStopTicks,
+    initialTakeProfitTicks: current.initialTakeProfitTicks,
+    protectionAdjustments: current.protectionAdjustments,
+    exitReason: order.role === 'stopLoss' || order.role === 'takeProfit' ? order.role : 'manual',
   }
   const remainder = current.qty + delta
   const position: Position | null = remainder === 0 ? null : {
     qty: remainder,
     avgPriceTicks: Math.sign(remainder) === Math.sign(current.qty) ? current.avgPriceTicks : fillTicks,
     entryTs: Math.sign(remainder) === Math.sign(current.qty) ? current.entryTs : bar.ts,
-    mfeTicks: 0, maeTicks: 0, initialRiskTicks: null,
+    mfeTicks: 0,
+    maeTicks: 0,
+    initialRiskTicks: Math.sign(remainder) === Math.sign(current.qty) ? current.initialRiskTicks : null,
+    initialStopTicks: Math.sign(remainder) === Math.sign(current.qty) ? current.initialStopTicks : null,
+    initialTakeProfitTicks: Math.sign(remainder) === Math.sign(current.qty) ? current.initialTakeProfitTicks : null,
+    protectionAdjustments: Math.sign(remainder) === Math.sign(current.qty) ? current.protectionAdjustments : [],
   }
   if (!position || Math.sign(position.qty) !== Math.sign(current.qty)) {
     ordersWithoutFill = ordersWithoutFill.filter((item) => item.role === 'entry')
@@ -236,7 +268,15 @@ export function placeBracket(
   const qty = Math.abs(state.position.qty)
   const group = `bracket-${state.sequence + 1}`
   const risk = Math.abs(state.position.avgPriceTicks - stopTicks)
-  let next: FillEngineState = { ...state, position: { ...state.position, initialRiskTicks: risk || null } }
+  let next: FillEngineState = {
+    ...state,
+    position: {
+      ...state.position,
+      initialRiskTicks: state.position.initialRiskTicks ?? (risk || null),
+      initialStopTicks: state.position.initialStopTicks ?? stopTicks,
+      initialTakeProfitTicks: state.position.initialTakeProfitTicks ?? targetTicks,
+    },
+  }
   next = placeOrder(next, { side, type: 'stop', role: 'stopLoss', qty, priceTicks: stopTicks, ocoGroup: group })
   return placeOrder(next, { side, type: 'limit', role: 'takeProfit', qty, priceTicks: targetTicks, ocoGroup: group })
 }

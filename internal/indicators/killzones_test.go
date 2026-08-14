@@ -1,6 +1,7 @@
 package indicators
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestKillzones_NYAMBoxMatchesSessionHighLow(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	last := specs[len(specs)-1].ts
-	result, err := e.Run("killzones", file, nil, meta, RunParams{
+	result, err := e.Run(context.Background(), "killzones", file, nil, meta, RunParams{
 		At: last, Before: len(specs), MaxTs: last,
 		Overrides: map[string]any{"show_asia": false, "show_london": false, "show_nypm": false},
 	})

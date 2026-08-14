@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
+
+	"market-replay/internal/model"
 )
 
 // hourSeconds is the bucket width of the hourly rollup. Every chart
@@ -39,6 +42,12 @@ type rollups struct {
 	// (offset,count) ranges. Empty when the file has no calendar, or when
 	// the calendar disagrees with the .bin — see buildDailyRollup.
 	daily []rollupBar
+	// rthHourly contains only bars inside 09:30–16:00 in the symbol's
+	// session timezone, aligned to hour buckets starting at 09:30.
+	rthHourly []rollupBar
+	// rthDaily is one entry per regular trading session. Weekly and monthly
+	// RTH buckets are unions of these complete entries.
+	rthDaily []rollupBar
 }
 
 // buildRollups derives the hourly index from f. The daily index needs the
@@ -68,6 +77,79 @@ func (f *BarFile) attachCalendarRollup(cal *Calendar) (rejected string) {
 		cal.ordered = len(f.rollups.daily) == len(cal.dates)
 	}
 	return reason
+}
+
+// attachRTHRollups builds the regular-session indexes before a BarFile is
+// published by the registry. Invalid timezone metadata is surfaced instead
+// of silently leaving requests on the multi-million-bar scan path.
+func (f *BarFile) attachRTHRollups(meta model.SymbolMeta) error {
+	location := time.UTC
+	var err error
+	if meta.SessionTz != "" {
+		location, err = cachedLoadLocation(meta.SessionTz)
+		if err != nil {
+			return fmt.Errorf("load session timezone %q: %w", meta.SessionTz, err)
+		}
+	}
+	if f.rollups == nil {
+		f.rollups = &rollups{}
+	}
+	f.rollups.rthHourly, f.rollups.rthDaily = buildRTHRollups(f, location)
+	return nil
+}
+
+// buildRTHRollups filters and aggregates the raw file in one pass. RTH bars
+// for one hour/day occupy a contiguous raw range, so [from,to) remains safe
+// for recomputing the single entry clipped by a replay spoiler boundary.
+func buildRTHRollups(f *BarFile, location *time.Location) (hourly, daily []rollupBar) {
+	n := f.Count()
+	if n == 0 || n > math.MaxInt32 {
+		return nil, nil
+	}
+	hourly = make([]rollupBar, 0, n/180+1)
+	daily = make([]rollupBar, 0, n/(23*60)+1)
+	currentHour := int64(math.MinInt64)
+	currentDay := int64(math.MinInt64)
+	hourBar := rollupBar{from: -1}
+	dayBar := rollupBar{from: -1}
+
+	for i := 0; i < n; i++ {
+		local := time.Unix(f.TsAt(i), 0).In(location)
+		if local.Weekday() == time.Saturday || local.Weekday() == time.Sunday {
+			continue
+		}
+		minute := local.Hour()*60 + local.Minute()
+		if minute < 9*60+30 || minute >= 16*60 {
+			continue
+		}
+		open := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, location).Unix()
+		hour := open + int64((minute-(9*60+30))/60)*hourSeconds
+		if hour != currentHour {
+			if hourBar.from >= 0 {
+				hourly = append(hourly, hourBar)
+			}
+			currentHour = hour
+			hourBar = newRollupBar(f, i)
+		} else {
+			accumulateRollupBar(&hourBar, f, i)
+		}
+		if open != currentDay {
+			if dayBar.from >= 0 {
+				daily = append(daily, dayBar)
+			}
+			currentDay = open
+			dayBar = newRollupBar(f, i)
+		} else {
+			accumulateRollupBar(&dayBar, f, i)
+		}
+	}
+	if hourBar.from >= 0 {
+		hourly = append(hourly, hourBar)
+	}
+	if dayBar.from >= 0 {
+		daily = append(daily, dayBar)
+	}
+	return hourly, daily
 }
 
 // buildHourlyRollup aggregates f into wall-clock hour buckets in one pass.

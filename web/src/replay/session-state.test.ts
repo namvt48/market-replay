@@ -12,6 +12,8 @@ const trade: ClosedTrade = {
   id: 'trade-1', sessionId: session.id, symbol: 'NQ', side: 'long', qty: 1,
   entryTs: 120, entryPriceTicks: 100, exitTs: 180, exitPriceTicks: 120,
   realizedCents: 25_000, feesCents: 0, mfeTicks: 24, maeTicks: 2, rMultiple: 2, createdAt: 180,
+  initialStopTicks: 95, initialTakeProfitTicks: 120,
+  protectionAdjustments: [{ role: 'stopLoss', ts: 150, priceTicks: 100 }], exitReason: 'takeProfit',
 }
 
 function baseFill() {
@@ -29,7 +31,10 @@ describe('replay session state', () => {
     const running = { ...baseFill(), realizedCents: 25_000, equityCents: 1_025_000, sequence: 7 }
     const restored = restoreReplayRuntime(baseFill(), { ...session, config: serializeReplayRuntime(running) }, [trade])
     expect(restored).toMatchObject({ realizedCents: 25_000, equityCents: 1_025_000, sequence: 7 })
-    expect(restored.trades).toEqual([expect.objectContaining({ id: 'trade-1', realizedCents: 25_000 })])
+    expect(restored.trades).toEqual([expect.objectContaining({
+      id: 'trade-1', realizedCents: 25_000, initialStopTicks: 95, initialTakeProfitTicks: 120,
+      protectionAdjustments: [{ role: 'stopLoss', ts: 150, priceTicks: 100 }], exitReason: 'takeProfit',
+    })])
   })
 
   it('rebuilds closed-accounting stats from trades for legacy sessions', () => {

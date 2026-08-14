@@ -168,6 +168,8 @@ export function newRuntime(config: EvalConfig, startTs = 0): EvalRuntime {
 }
 
 const dayFormatters = new Map<string, Intl.DateTimeFormat>()
+const DAY_KEY_CACHE_LIMIT = 4_096
+const dayKeys = new Map<string, number>()
 
 function dayFormatter(timeZone: string): Intl.DateTimeFormat {
   const cached = dayFormatters.get(timeZone)
@@ -186,11 +188,20 @@ function dayFormatter(timeZone: string): Intl.DateTimeFormat {
 
 /** Trading-day number for a timestamp, using the instrument's IANA timezone. */
 export function dayKey(ts: number, dayResetHour: number, timeZone = 'UTC'): number {
+  const cacheKey = `${timeZone}\u0000${dayResetHour}\u0000${ts}`
+  const cached = dayKeys.get(cacheKey)
+  if (cached !== undefined) return cached
   const parts = dayFormatter(timeZone).formatToParts(new Date(ts * 1000))
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
   const localDate = new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)))
   if (Number(values.hour) < dayResetHour) localDate.setUTCDate(localDate.getUTCDate() - 1)
-  return Math.floor(localDate.getTime() / 86_400_000)
+  const key = Math.floor(localDate.getTime() / 86_400_000)
+  if (dayKeys.size >= DAY_KEY_CACHE_LIMIT) {
+    const oldest = dayKeys.keys().next()
+    if (!oldest.done) dayKeys.delete(oldest.value)
+  }
+  dayKeys.set(cacheKey, key)
+  return key
 }
 
 export function sessionDate(ts: number, dayResetHour: number, timeZone = 'UTC'): string {
@@ -519,6 +530,14 @@ export interface EvalTradeRecord {
   mfeTicks?: number
   maeTicks?: number
   rMultiple?: number | null
+  initialStopTicks?: number | null
+  initialTakeProfitTicks?: number | null
+  protectionAdjustments?: Array<{
+    role: 'stopLoss' | 'takeProfit'
+    ts: number
+    priceTicks: number
+  }>
+  exitReason?: 'manual' | 'stopLoss' | 'takeProfit'
 }
 
 export interface PayoutRecord {
@@ -603,6 +622,14 @@ const evalAttemptSchema = z.object({
     mfeTicks: z.number().finite().optional(),
     maeTicks: z.number().finite().optional(),
     rMultiple: z.number().finite().nullable().optional(),
+    initialStopTicks: z.number().finite().nullable().optional(),
+    initialTakeProfitTicks: z.number().finite().nullable().optional(),
+    protectionAdjustments: z.array(z.object({
+      role: z.enum(['stopLoss', 'takeProfit']),
+      ts: z.number().finite().nonnegative(),
+      priceTicks: z.number().finite(),
+    })).optional(),
+    exitReason: z.enum(['manual', 'stopLoss', 'takeProfit']).optional(),
   })).optional(),
 })
 

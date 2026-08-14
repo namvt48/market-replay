@@ -66,6 +66,25 @@ describe('EconomicCalendarChartSync', () => {
     expect(apiMocks.fetchEconWeek).toHaveBeenCalledTimes(2)
   })
 
+  it('does not sort the stable event list again when only the cursor advances', async () => {
+    const view = render(<EconomicCalendarChartSync />)
+    await waitFor(() => expect(engineMocks.setEconomicEventMarkers).toHaveBeenLastCalledWith([
+      expect.objectContaining({ id: 'next', state: 'next' }),
+      expect.objectContaining({ id: 'next-week-cpi', state: 'scheduled' }),
+    ]))
+    const sort = vi.spyOn(Array.prototype, 'sort')
+
+    replaySnapshot.cursorTs = week.events[1].ts
+    view.rerender(<EconomicCalendarChartSync />)
+
+    await waitFor(() => expect(engineMocks.setEconomicEventMarkers).toHaveBeenLastCalledWith([
+      expect.objectContaining({ id: 'next', state: 'past' }),
+      expect.objectContaining({ id: 'next-week-cpi', state: 'next' }),
+    ]))
+    expect(sort).not.toHaveBeenCalled()
+    sort.mockRestore()
+  })
+
   it('uses the same live impact and country filters as the Calendar panel', async () => {
     render(<EconomicCalendarChartSync />)
     await waitFor(() => expect(apiMocks.fetchEconWeek).toHaveBeenCalledTimes(2))

@@ -47,12 +47,13 @@ func (s *Server) handleEconMeta(w http.ResponseWriter, _ *http.Request) {
 // while next week's numbers are not. Moving `at` alone changes which week is
 // shown without moving the line that decides what may be revealed.
 func (s *Server) handleEconWeek(w http.ResponseWriter, r *http.Request) {
-	at, err := parseInt64Required(r, "at")
+	query := r.URL.Query()
+	at, err := parseInt64Required(query, "at")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	cursorTs, err := parseInt64(r, "cursorTs", at)
+	cursorTs, err := parseInt64(query, "cursorTs", at)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -60,9 +61,9 @@ func (s *Server) handleEconWeek(w http.ResponseWriter, r *http.Request) {
 	request := econ.WeekRequest{
 		At:            at,
 		CursorTs:      cursorTs,
-		TimeZone:      r.URL.Query().Get("tz"),
-		MinImportance: r.URL.Query().Get("minImportance"),
-		Countries:     r.URL.Query()["country"],
+		TimeZone:      query.Get("tz"),
+		MinImportance: query.Get("minImportance"),
+		Countries:     query["country"],
 	}
 
 	// A missing dataset still answers with the week's bounds, so a client can

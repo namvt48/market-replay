@@ -7,6 +7,7 @@ import type {
   Time,
 } from 'lightweight-charts'
 import type { OrderLine } from './chart-adapter'
+import { finiteMinMax } from './number-range'
 
 export type OrderPrimitiveAction =
   | { type: 'confirm' | 'discard' | 'toggle-stop-loss' | 'toggle-take-profit' }
@@ -74,7 +75,7 @@ class OrderLinesRenderer implements IPrimitivePaneRenderer {
       const width = bitmapSize.width / hx
       this.primitive.clearHitRegions()
       context.save()
-      context.font = `${12 * hx}px "Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`
+      context.font = `${13 * hx}px "Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`
       context.textBaseline = 'middle'
 
       for (const range of draftOrderRangePairs(this.primitive.lines)) {
@@ -92,13 +93,14 @@ class OrderLinesRenderer implements IPrimitivePaneRenderer {
         .map((line) => this.primitive.coordinate(line.price))
         .filter((value): value is number => value !== null)
       const connectorX = Math.max(170, width - 108)
-      if (draftCoordinates.length > 1) {
+      const draftRange = finiteMinMax(draftCoordinates)
+      if (draftCoordinates.length > 1 && draftRange) {
         context.strokeStyle = '#2962ff'
         context.lineWidth = hx
         context.setLineDash([])
         context.beginPath()
-        context.moveTo(connectorX * hx, Math.min(...draftCoordinates) * vy)
-        context.lineTo(connectorX * hx, Math.max(...draftCoordinates) * vy)
+        context.moveTo(connectorX * hx, draftRange.min * vy)
+        context.lineTo(connectorX * hx, draftRange.max * vy)
         context.stroke()
       }
 

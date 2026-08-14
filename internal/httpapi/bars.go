@@ -65,22 +65,23 @@ func (s *Server) handleSymbols(w http.ResponseWriter, _ *http.Request) {
 // this supports natural forward pagination (next from = last returned
 // ts + tf).
 func (s *Server) handleBars(w http.ResponseWriter, r *http.Request) {
-	symbol, err := requiredParam(r, "symbol")
+	query := r.URL.Query()
+	symbol, err := requiredParam(query, "symbol")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	tf, err := requiredParam(r, "tf")
+	tf, err := requiredParam(query, "tf")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	from, err := parseInt64(r, "from", 0)
+	from, err := parseInt64(query, "from", 0)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	to, err := parseInt64(r, "to", math.MaxInt64)
+	to, err := parseInt64(query, "to", math.MaxInt64)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -89,12 +90,12 @@ func (s *Server) handleBars(w http.ResponseWriter, r *http.Request) {
 		writeError(w, fmt.Errorf("%w: from must be <= to", errBadRequest))
 		return
 	}
-	limit, err := parseIntClamped(r, "limit", 5000, 1, 20000)
+	limit, err := parseIntClamped(query, "limit", 5000, 1, 20000)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	jsonFmt := r.URL.Query().Get("fmt") == "json"
+	jsonFmt := query.Get("fmt") == "json"
 
 	err = s.Registry.WithDataset(symbol, tf, func(f *bars.BarFile, _ *bars.Calendar, tag string) error {
 		if serveBarFrameValidator(w, r, tag) {
@@ -119,32 +120,33 @@ func (s *Server) handleBars(w http.ResponseWriter, r *http.Request) {
 // handleBarsAt serves GET /api/v1/bars/at?symbol=&tf=&at=&before=&after=
 // — one call answers one seek (docs §6.3).
 func (s *Server) handleBarsAt(w http.ResponseWriter, r *http.Request) {
-	symbol, err := requiredParam(r, "symbol")
+	query := r.URL.Query()
+	symbol, err := requiredParam(query, "symbol")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	tf, err := requiredParam(r, "tf")
+	tf, err := requiredParam(query, "tf")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	at, err := parseInt64Required(r, "at")
+	at, err := parseInt64Required(query, "at")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	before, err := parseIntClamped(r, "before", 1500, 0, 20000)
+	before, err := parseIntClamped(query, "before", 1500, 0, 20000)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	after, err := parseIntClamped(r, "after", 0, 0, 20000)
+	after, err := parseIntClamped(query, "after", 0, 0, 20000)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	jsonFmt := r.URL.Query().Get("fmt") == "json"
+	jsonFmt := query.Get("fmt") == "json"
 
 	err = s.Registry.WithDataset(symbol, tf, func(f *bars.BarFile, _ *bars.Calendar, tag string) error {
 		if serveBarFrameValidator(w, r, tag) {
@@ -165,12 +167,13 @@ func (s *Server) handleBarsAt(w http.ResponseWriter, r *http.Request) {
 // aggregated directly from the canonical 1m dataset. Large TFs therefore
 // never require the browser to download or retain their entire raw history.
 func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
-	symbol, err := requiredParam(r, "symbol")
+	query := r.URL.Query()
+	symbol, err := requiredParam(query, "symbol")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	tf, err := requiredParam(r, "tf")
+	tf, err := requiredParam(query, "tf")
 	if err != nil {
 		writeError(w, err)
 		return
@@ -179,27 +182,27 @@ func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, fmt.Errorf("%w: invalid chart timeframe", errBadRequest))
 		return
 	}
-	at, err := parseInt64Required(r, "at")
+	at, err := parseInt64Required(query, "at")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	before, err := parseIntClamped(r, "before", 240, 0, 2000)
+	before, err := parseIntClamped(query, "before", 240, 0, 2000)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	after, err := parseIntClamped(r, "after", 0, 0, 2000)
+	after, err := parseIntClamped(query, "after", 0, 0, 2000)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	maxTs, err := parseInt64(r, "to", at)
+	maxTs, err := parseInt64(query, "to", at)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	marketSession := r.URL.Query().Get("session")
+	marketSession := query.Get("session")
 	if marketSession == "" {
 		marketSession = "eth"
 	}
@@ -245,21 +248,22 @@ func lookupSymbolMeta(s *Server, symbol string) (model.SymbolMeta, bool) {
 // endpoint has no tf param, even though the response is timeframe-
 // dependent.
 func (s *Server) handleCalendar(w http.ResponseWriter, r *http.Request) {
-	symbol, err := requiredParam(r, "symbol")
+	query := r.URL.Query()
+	symbol, err := requiredParam(query, "symbol")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	tf := r.URL.Query().Get("tf")
+	tf := query.Get("tf")
 	if tf == "" {
 		tf = "1m"
 	}
-	from, err := parseInt64(r, "from", 0)
+	from, err := parseInt64(query, "from", 0)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	to, err := parseInt64(r, "to", math.MaxInt64)
+	to, err := parseInt64(query, "to", math.MaxInt64)
 	if err != nil {
 		writeError(w, err)
 		return

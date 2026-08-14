@@ -112,10 +112,23 @@ func openDataset(binPath string, meta model.SymbolMeta, symbol, tf string) loade
 		out.warning = fmt.Sprintf("%s/%s: %s has no usable session index (%s); daily, weekly and monthly aggregation will scan raw bars instead",
 			symbol, tf, filepath.Base(out.idxPath), rejected)
 	}
+	if err := file.attachRTHRollups(meta); err != nil {
+		file.Close()
+		out.err = err
+		return out
+	}
 	if out.tag, err = datasetTag(binPath, file.Count()); err != nil {
 		file.Close()
 		out.err = err
 		return out
+	}
+	if err := discardMappedPages(file); err != nil {
+		warning := fmt.Sprintf("could not release mmap pages after indexing: %v", err)
+		if out.warning == "" {
+			out.warning = fmt.Sprintf("%s/%s: %s", symbol, tf, warning)
+		} else {
+			out.warning += "; " + warning
+		}
 	}
 	out.file = file
 	return out

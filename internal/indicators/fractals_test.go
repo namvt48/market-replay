@@ -1,6 +1,7 @@
 package indicators
 
 import (
+	"context"
 	"testing"
 
 	"market-replay/internal/model"
@@ -23,7 +24,7 @@ func TestFractals_MarksExactlyOneSwingHigh(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	last := specs[len(specs)-1].ts
-	result, err := e.Run("fractals", file, nil, meta, RunParams{
+	result, err := e.Run(context.Background(), "fractals", file, nil, meta, RunParams{
 		At: last, Before: len(specs), MaxTs: last,
 		Overrides: map[string]any{"swingLength": 2.0},
 	})
@@ -53,7 +54,7 @@ func TestFractals_DisabledProducesNoMarkers(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	last := specs[len(specs)-1].ts
-	result, err := e.Run("fractals", file, nil, meta, RunParams{
+	result, err := e.Run(context.Background(), "fractals", file, nil, meta, RunParams{
 		At: last, Before: len(specs), MaxTs: last,
 		Overrides: map[string]any{"swingLength": 2.0, "show": false},
 	})

@@ -16,9 +16,10 @@ function toMarkers(
   country: string,
 ): EconomicEventMarker[] {
   const minimumRank = minImportance ? IMPORTANCE_RANK[minImportance] : 0
+  // Fetch/merge stores events in timestamp/id order. Array.filter preserves
+  // that order, so cursor-only updates must not sort the same list again.
   const ordered = events
     .filter((event) => (!country || event.country === country) && IMPORTANCE_RANK[event.importance] >= minimumRank)
-    .sort((left, right) => left.ts - right.ts || left.id.localeCompare(right.id))
   const nextTime = ordered.find((event) => event.ts > cursorTs)?.ts ?? null
   return ordered.map((event) => ({
     id: event.id,

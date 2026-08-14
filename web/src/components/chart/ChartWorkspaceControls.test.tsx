@@ -16,19 +16,44 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('ChartWorkspaceControls', () => {
-  it('switches the shared market session from the visible toolbar control', async () => {
+  it('opens a compact market-session menu and switches the shared session', async () => {
     const user = userEvent.setup()
     render(<ChartWorkspaceProvider><ChartWorkspaceControls /></ChartWorkspaceProvider>)
 
-    const eth = screen.getByRole('button', { name: 'Electronic trading hours (ETH)' })
-    const rth = screen.getByRole('button', { name: 'Regular trading hours (RTH)' })
-    expect(eth).toHaveAttribute('aria-pressed', 'true')
-    expect(rth).toHaveAttribute('aria-pressed', 'false')
+    const trigger = screen.getByRole('button', { name: 'Market session: Electronic trading hours (ETH)' })
+    expect(trigger).toHaveTextContent('ETH')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('listbox', { name: 'Market session' })).not.toBeInTheDocument()
 
-    await user.click(rth)
+    await user.click(trigger)
 
-    expect(rth).toHaveAttribute('aria-pressed', 'true')
+    const menu = screen.getByRole('listbox', { name: 'Market session' })
+    expect(menu.parentElement).toBe(document.body)
+    const options = screen.getAllByRole('option')
+    expect(options.map((option) => option.textContent)).toEqual(['RTH', 'ETH'])
+    expect(options[0]).toHaveAttribute('aria-selected', 'false')
+    expect(options[1]).toHaveAttribute('aria-selected', 'true')
+
+    await user.click(screen.getByRole('option', { name: 'Regular trading hours (RTH)' }))
+
+    expect(menu).not.toBeInTheDocument()
+    expect(trigger).toHaveTextContent('RTH')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
     await waitFor(() => expect(engineMocks.setMarketSession).toHaveBeenLastCalledWith('rth'))
+  })
+
+  it('closes the market-session menu with Escape and restores trigger focus', async () => {
+    const user = userEvent.setup()
+    render(<ChartWorkspaceProvider><ChartWorkspaceControls /></ChartWorkspaceProvider>)
+
+    const trigger = screen.getByRole('button', { name: 'Market session: Electronic trading hours (ETH)' })
+    await user.click(trigger)
+    expect(screen.getByRole('option', { name: 'Electronic trading hours (ETH)' })).toHaveFocus()
+
+    await user.keyboard('{Escape}')
+
+    expect(screen.queryByRole('listbox', { name: 'Market session' })).not.toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveFocus())
   })
 
   it('toggles crosshair, date-range and zoom synchronization independently', async () => {

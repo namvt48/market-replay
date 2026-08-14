@@ -1,10 +1,16 @@
 package indicators
 
 import (
+	"container/list"
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dop251/goja"
@@ -34,10 +40,44 @@ type Script struct {
 type Engine struct {
 	mu      sync.RWMutex
 	scripts map[string]*Script
+
+	cacheMu  sync.Mutex
+	cache    map[runCacheKey]*runCacheEntry
+	cacheLRU list.List
+
+	// executions counts actual goja executions, excluding cache hits. It is
+	// intentionally internal; tests use it to prove deduplication rather
+	// than relying on timing assertions.
+	executions atomic.Int64
 }
 
 func NewEngine() *Engine {
-	return &Engine{scripts: make(map[string]*Script)}
+	return &Engine{
+		scripts: make(map[string]*Script),
+		cache:   make(map[runCacheKey]*runCacheEntry),
+	}
+}
+
+const maxCachedRunResults = 64
+
+type runCacheKey struct {
+	script       *Script
+	sourceFile   *bars.BarFile
+	dailyFile    *bars.BarFile
+	calendar     *bars.Calendar
+	window       bars.Window
+	seriesDigest [sha256.Size]byte
+	configDigest [sha256.Size]byte
+}
+
+type runCacheEntry struct {
+	done    chan struct{}
+	cancel  context.CancelFunc
+	waiters int
+	ready   bool
+	result  RunResult
+	err     error
+	element *list.Element
 }
 
 // Register compiles source and harvests its Descriptor by running init()
@@ -58,7 +98,7 @@ func (e *Engine) Register(id, name string, version int, source []byte) (err erro
 
 	rt := goja.New()
 	rt.SetFieldNameMapper(goja.UncapFieldNameMapper())
-	ctx := newRunContext(nil, nil, model.SymbolMeta{}, bars.Window{}, nil)
+	ctx := newRunContext(nil, nil, nil, model.SymbolMeta{}, bars.Window{}, nil)
 	bindHost(rt, ctx)
 	if _, err := rt.RunProgram(program); err != nil {
 		return fmt.Errorf("indicators: load %s: %w", id, err)
@@ -120,7 +160,7 @@ func (e *Engine) Describe(id string) (Descriptor, error) {
 // the replay-safety boundary maxTs is ever visible — the same idiom
 // bars.AggregateChartWindow/aggregateRTHChartWindow already apply, since
 // SeekWindow itself has no notion of maxTs.
-func clampWindow(file *bars.BarFile, at int64, before, after int, maxTs int64) bars.Window {
+func clampWindow(file barSeries, at int64, before, after int, maxTs int64) bars.Window {
 	if maxTs < at {
 		at = maxTs
 	}
@@ -140,13 +180,39 @@ func clampWindow(file *bars.BarFile, at int64, before, after int, maxTs int64) b
 // into another request's Run. calendar is nilable — bars.AggregateChartWindow
 // degrades to a slower raw-bar-scan path without one; only the dailyRange
 // binding (used by the ipda-ranges script) actually needs it.
-func (e *Engine) Run(id string, file *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, params RunParams) (result RunResult, err error) {
+func (e *Engine) Run(requestCtx context.Context, id string, file *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, params RunParams) (result RunResult, err error) {
+	return e.run(requestCtx, id, fileSeries{file: file}, file, calendar, meta, params)
+}
+
+// RunChart executes a script on display-timeframe bars while retaining the
+// canonical 1m file for higher-timeframe bindings such as dailyRange.
+func (e *Engine) RunChart(requestCtx context.Context, id string, chartBars []bars.ChartBar, dailyFile *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, params RunParams) (result RunResult, err error) {
+	return e.run(requestCtx, id, chartSeries{items: chartBars}, dailyFile, calendar, meta, params)
+}
+
+func (e *Engine) run(requestCtx context.Context, id string, series barSeries, dailyFile *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, params RunParams) (result RunResult, err error) {
+	if err := requestCtx.Err(); err != nil {
+		return RunResult{}, err
+	}
 	e.mu.RLock()
 	script, ok := e.scripts[id]
 	e.mu.RUnlock()
 	if !ok {
 		return RunResult{}, fmt.Errorf("%w: %s", ErrUnknownScript, id)
 	}
+	window := clampWindow(series, params.At, params.Before, params.After, params.MaxTs)
+	key, cacheable := makeRunCacheKey(script, series, dailyFile, calendar, meta, params.Overrides, window)
+	compute := func(sharedCtx context.Context) (RunResult, error) {
+		return e.executeRun(sharedCtx, script, series, dailyFile, calendar, meta, params, window)
+	}
+	if !cacheable {
+		return compute(requestCtx)
+	}
+	return e.cachedRun(requestCtx, key, compute)
+}
+
+func (e *Engine) executeRun(requestCtx context.Context, script *Script, series barSeries, dailyFile *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, params RunParams, window bars.Window) (result RunResult, err error) {
+	e.executions.Add(1)
 
 	// Guards the Go glue below that runs outside any goja call (window
 	// math, result assembly) — script-execution panics (a JS throw, an
@@ -158,23 +224,23 @@ func (e *Engine) Run(id string, file *bars.BarFile, calendar *bars.Calendar, met
 		}
 	}()
 
-	window := clampWindow(file, params.At, params.Before, params.After, params.MaxTs)
-
 	rt := goja.New()
 	rt.SetFieldNameMapper(goja.UncapFieldNameMapper())
+	stopCancellation := context.AfterFunc(requestCtx, func() { rt.Interrupt(requestCtx.Err()) })
+	defer stopCancellation()
 	timer := time.AfterFunc(runTimeout, func() { rt.Interrupt("indicators: run exceeded time budget") })
 	defer timer.Stop()
 
-	ctx := newRunContext(file, calendar, meta, window, params.Overrides)
+	ctx := newRunContext(series, dailyFile, calendar, meta, window, params.Overrides)
 	bindHost(rt, ctx)
 	if _, err := rt.RunProgram(script.program); err != nil {
-		return RunResult{}, fmt.Errorf("%w: %v", ErrScriptFailed, err)
+		return RunResult{}, classifyRunError(err)
 	}
 	if err := callInit(rt, ctx); err != nil {
 		if errors.Is(err, ErrInvalidInput) {
 			return RunResult{}, err
 		}
-		return RunResult{}, fmt.Errorf("%w: %v", ErrScriptFailed, err)
+		return RunResult{}, classifyRunError(err)
 	}
 
 	onTick, ok := goja.AssertFunction(rt.Get("onTick"))
@@ -190,9 +256,188 @@ func (e *Engine) Run(id string, file *bars.BarFile, calendar *bars.Calendar, met
 		ctx.cursor = idx
 		length := idx - window.From + 1
 		if _, err := onTick(goja.Undefined(), rt.ToValue(length), momentCtor, goja.Undefined(), taObj, inputsObj); err != nil {
-			return RunResult{}, fmt.Errorf("%w: %v", ErrScriptFailed, err)
+			return RunResult{}, classifyRunError(err)
 		}
 	}
 
 	return ctx.result(), nil
+}
+
+func makeRunCacheKey(script *Script, series barSeries, dailyFile *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, overrides map[string]any, window bars.Window) (runCacheKey, bool) {
+	config, err := json.Marshal(struct {
+		Meta      model.SymbolMeta `json:"meta"`
+		Overrides map[string]any   `json:"overrides"`
+	}{Meta: meta, Overrides: overrides})
+	if err != nil {
+		// Preserve Run's existing validation/error semantics for non-JSON
+		// values by bypassing the optimization instead of failing here.
+		return runCacheKey{}, false
+	}
+	key := runCacheKey{
+		script:       script,
+		dailyFile:    dailyFile,
+		calendar:     calendar,
+		window:       window,
+		configDigest: sha256.Sum256(config),
+	}
+	switch source := series.(type) {
+	case fileSeries:
+		key.sourceFile = source.file
+	case chartSeries:
+		key.seriesDigest = digestChartBars(source.items)
+	default:
+		return runCacheKey{}, false
+	}
+	return key, true
+}
+
+func digestChartBars(items []bars.ChartBar) [sha256.Size]byte {
+	hash := sha256.New()
+	var encoded [32]byte
+	for _, item := range items {
+		binary.LittleEndian.PutUint64(encoded[0:8], uint64(item.Time))
+		binary.LittleEndian.PutUint32(encoded[8:12], uint32(item.OpenTicks))
+		binary.LittleEndian.PutUint32(encoded[12:16], uint32(item.HighTicks))
+		binary.LittleEndian.PutUint32(encoded[16:20], uint32(item.LowTicks))
+		binary.LittleEndian.PutUint32(encoded[20:24], uint32(item.CloseTicks))
+		binary.LittleEndian.PutUint64(encoded[24:32], item.Volume)
+		_, _ = hash.Write(encoded[:])
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest
+}
+
+// cachedRun combines a bounded result cache with cancellation-aware
+// singleflight. Every caller may leave independently; the shared work is
+// canceled only when its last waiter has gone away.
+func (e *Engine) cachedRun(requestCtx context.Context, key runCacheKey, compute func(context.Context) (RunResult, error)) (RunResult, error) {
+	if err := requestCtx.Err(); err != nil {
+		return RunResult{}, err
+	}
+
+	e.cacheMu.Lock()
+	entry, found := e.cache[key]
+	if found && entry.ready {
+		e.cacheLRU.MoveToFront(entry.element)
+		result, err := entry.result, entry.err
+		e.cacheMu.Unlock()
+		return cloneRunResult(result), err
+	}
+	if found {
+		entry.waiters++
+		e.cacheMu.Unlock()
+		return e.awaitCachedRun(requestCtx, key, entry)
+	}
+
+	workCtx, cancel := context.WithCancel(context.Background())
+	entry = &runCacheEntry{done: make(chan struct{}), cancel: cancel, waiters: 1}
+	e.cache[key] = entry
+	e.cacheMu.Unlock()
+
+	go e.finishCachedRun(workCtx, key, entry, compute)
+	return e.awaitCachedRun(requestCtx, key, entry)
+}
+
+func (e *Engine) finishCachedRun(workCtx context.Context, key runCacheKey, entry *runCacheEntry, compute func(context.Context) (RunResult, error)) {
+	result, err := compute(workCtx)
+	entry.cancel()
+
+	e.cacheMu.Lock()
+	entry.result = result
+	entry.err = err
+	entry.ready = true
+	if current, ok := e.cache[key]; ok && current == entry {
+		if err != nil {
+			delete(e.cache, key)
+		} else {
+			entry.element = e.cacheLRU.PushFront(key)
+			for e.cacheLRU.Len() > maxCachedRunResults {
+				oldest := e.cacheLRU.Back()
+				oldKey := oldest.Value.(runCacheKey)
+				e.cacheLRU.Remove(oldest)
+				delete(e.cache, oldKey)
+			}
+		}
+	}
+	close(entry.done)
+	e.cacheMu.Unlock()
+}
+
+func (e *Engine) awaitCachedRun(requestCtx context.Context, key runCacheKey, entry *runCacheEntry) (RunResult, error) {
+	select {
+	case <-entry.done:
+		if err := requestCtx.Err(); err != nil {
+			return RunResult{}, err
+		}
+		return cloneRunResult(entry.result), entry.err
+	case <-requestCtx.Done():
+		e.cacheMu.Lock()
+		if current, ok := e.cache[key]; ok && current == entry && !entry.ready {
+			entry.waiters--
+			if entry.waiters == 0 {
+				delete(e.cache, key)
+				entry.cancel()
+			}
+		}
+		e.cacheMu.Unlock()
+		return RunResult{}, requestCtx.Err()
+	}
+}
+
+func (e *Engine) cacheWaiters(key runCacheKey) int {
+	e.cacheMu.Lock()
+	defer e.cacheMu.Unlock()
+	if entry := e.cache[key]; entry != nil && !entry.ready {
+		return entry.waiters
+	}
+	return 0
+}
+
+func cloneRunResult(result RunResult) RunResult {
+	cloned := RunResult{
+		Draws: make([]DrawIntent, len(result.Draws)),
+		Plots: append([]PlotPoint(nil), result.Plots...),
+	}
+	for i, draw := range result.Draws {
+		cloned.Draws[i] = draw
+		cloned.Draws[i].Style = cloneStringMap(draw.Style)
+	}
+	return cloned
+}
+
+func cloneStringMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = cloneJSONValue(value)
+	}
+	return cloned
+}
+
+func cloneJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneStringMap(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for i := range typed {
+			cloned[i] = cloneJSONValue(typed[i])
+		}
+		return cloned
+	default:
+		return value
+	}
+}
+
+func classifyRunError(err error) error {
+	var interrupted *goja.InterruptedError
+	if errors.As(err, &interrupted) {
+		if cause, ok := interrupted.Value().(error); ok && (errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded)) {
+			return cause
+		}
+	}
+	return fmt.Errorf("%w: %v", ErrScriptFailed, err)
 }

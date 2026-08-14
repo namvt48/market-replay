@@ -1,6 +1,7 @@
 package indicators
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -146,7 +147,7 @@ func TestSampleScript_Gb69Cbmor_EndToEnd(t *testing.T) {
 	}
 
 	lastTs := specs[len(specs)-1].ts
-	result, err := e.Run("gb69-cbmor", file, nil, meta, RunParams{At: lastTs, Before: len(specs), MaxTs: lastTs})
+	result, err := e.Run(context.Background(), "gb69-cbmor", file, nil, meta, RunParams{At: lastTs, Before: len(specs), MaxTs: lastTs})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestSampleScript_Gb69Cbmor_EndToEnd(t *testing.T) {
 	})
 
 	t.Run("override removes exactly the disabled draw", func(t *testing.T) {
-		overridden, err := e.Run("gb69-cbmor", file, nil, meta, RunParams{
+		overridden, err := e.Run(context.Background(), "gb69-cbmor", file, nil, meta, RunParams{
 			At: lastTs, Before: len(specs), MaxTs: lastTs,
 			Overrides: map[string]any{"show_range_box": false},
 		})
@@ -299,7 +300,7 @@ func TestSampleScript_Gb69Cbmor_InvalidOverrideRejected(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	lastTs := specs[len(specs)-1].ts
-	_, err := e.Run("gb69-cbmor", file, nil, meta, RunParams{
+	_, err := e.Run(context.Background(), "gb69-cbmor", file, nil, meta, RunParams{
 		At: lastTs, Before: len(specs), MaxTs: lastTs,
 		Overrides: map[string]any{"i_calc_type": "Not A Real Option"},
 	})

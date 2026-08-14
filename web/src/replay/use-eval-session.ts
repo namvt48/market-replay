@@ -4,14 +4,14 @@
 // into the store, calling the store action imperatively so the bridge adds
 // no extra React state of its own.
 import { useEffect } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { flushEvalSessionPersistence, getEvalState, useEvalStore } from '../store/eval-store'
 import type { EvalFillState, EvalSessionState } from '../store/eval-store'
 import { replayEngine } from './replay-engine'
 
-/** Reactive view of the whole eval session; re-renders on eval ticks. */
-export function useEvalSession(): { session: EvalSessionState } {
-  const session = useEvalStore()
-  return { session }
+/** Reactive projection of the eval session with shallow result equality. */
+export function useEvalSession<Selection>(selector: (session: EvalSessionState) => Selection): Selection {
+  return useEvalStore(useShallow(selector))
 }
 
 /**

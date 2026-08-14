@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 
 	_ "modernc.org/sqlite"
 
@@ -25,15 +26,24 @@ var _ storage.Store = (*Store)(nil)
 // Open opens (creating if absent) the SQLite file at path. Callers must
 // call Init before first use and Close when done.
 //
-// MaxOpenConns is pinned to 1: PRAGMA settings (journal_mode, foreign_keys
-// in schema.go) are per-connection in SQLite, not persistent database
-// state. database/sql pools connections transparently, so without this a
-// pragma set during Init could silently stop applying the moment a query
-// lands on a different pooled connection. One connection is also simply
-// correct for this app's write pattern — a single user's sessions/trades
-// writes never need real concurrency.
+// Connection-scoped PRAGMAs live in the DSN so database/sql applies them
+// again whenever it replaces the underlying SQLite connection. Building the
+// DSN through net/url is load-bearing: DB_PATH is user-configurable and raw
+// '#', '?' or non-ASCII bytes must remain part of the filesystem path rather
+// than being parsed as URI syntax.
+//
+// MaxOpenConns is still pinned to 1 because a single user's sessions/trades
+// writes do not need concurrent writers, and serialising them avoids
+// self-inflicted SQLITE_BUSY failures inside this process.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn := url.URL{Scheme: "file", Path: path}
+	query := url.Values{}
+	query.Add("_pragma", "foreign_keys(ON)")
+	query.Add("_pragma", "synchronous(NORMAL)")
+	query.Add("_pragma", "busy_timeout(5000)")
+	dsn.RawQuery = query.Encode()
+
+	db, err := sql.Open("sqlite", dsn.String())
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %s: %w", path, err)
 	}
@@ -49,6 +59,9 @@ func (s *Store) Init(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("sqlite: init schema: %w", err)
 	}
+	if err := s.migrateTradeVisualColumns(ctx); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, drawingsSchema); err != nil {
 		return fmt.Errorf("sqlite: init drawings schema: %w", err)
 	}
@@ -59,6 +72,53 @@ func (s *Store) Init(ctx context.Context) error {
 	// but require an explicit Resume before it can accept more trades.
 	if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET status = ? WHERE status = ?`, "paused", "active"); err != nil {
 		return fmt.Errorf("sqlite: pause active sessions on startup: %w", err)
+	}
+	return nil
+}
+
+// migrateTradeVisualColumns upgrades databases created before closed-position
+// visuals were persisted. CREATE TABLE IF NOT EXISTS cannot add columns to an
+// existing journal, so keep this small migration explicit and idempotent.
+func (s *Store) migrateTradeVisualColumns(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(trades)`)
+	if err != nil {
+		return fmt.Errorf("sqlite: inspect trades schema: %w", err)
+	}
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlite: scan trades schema: %w", err)
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("sqlite: iterate trades schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("sqlite: close trades schema rows: %w", err)
+	}
+
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{name: "initial_stop_ticks", ddl: `ALTER TABLE trades ADD COLUMN initial_stop_ticks INTEGER`},
+		{name: "initial_take_profit_ticks", ddl: `ALTER TABLE trades ADD COLUMN initial_take_profit_ticks INTEGER`},
+		{name: "protection_adjustments_json", ddl: `ALTER TABLE trades ADD COLUMN protection_adjustments_json TEXT NOT NULL DEFAULT '[]'`},
+		{name: "exit_reason", ddl: `ALTER TABLE trades ADD COLUMN exit_reason TEXT NOT NULL DEFAULT 'manual'`},
+	}
+	for _, column := range columns {
+		if existing[column.name] {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, column.ddl); err != nil {
+			return fmt.Errorf("sqlite: add trades.%s: %w", column.name, err)
+		}
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import type {
 } from 'lightweight-charts'
 import type { IDrawing } from 'lightweight-charts-drawing'
 import { colorWithOpacity, getDrawingAppearance, type DrawingWorkbenchOptions } from './drawing-appearance'
+import { finiteMinMax } from './number-range'
 
 interface LabelBounds {
   left: number
@@ -140,7 +141,8 @@ class DrawingLabelsRenderer implements IPrimitivePaneRenderer {
         context.save()
         context.font = `${fontStyle}${fontWeight}${fontSize}px -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif`
         context.textBaseline = 'middle'
-        const textWidth = Math.max(...lines.map((line) => context.measureText(line).width), 1)
+        const textRange = finiteMinMax(lines.map((line) => context.measureText(line).width))
+        const textWidth = Math.max(textRange?.max ?? 0, 1)
         const boxWidth = textWidth + padding * 2
         const boxHeight = lines.length * lineHeight + padding * 2
 
@@ -235,11 +237,14 @@ export class DrawingLabelsPrimitive implements ISeriesPrimitive<Time> {
       return x === null || y === null ? [] : [{ x, y }]
     })
     if (points.length === 0) return null
+    const xRange = finiteMinMax(points.map((point) => point.x))
+    const yRange = finiteMinMax(points.map((point) => point.y))
+    if (!xRange || !yRange) return null
     return {
-      left: Math.min(...points.map((point) => point.x)),
-      right: Math.max(...points.map((point) => point.x)),
-      top: Math.min(...points.map((point) => point.y)),
-      bottom: Math.max(...points.map((point) => point.y)),
+      left: xRange.min,
+      right: xRange.max,
+      top: yRange.min,
+      bottom: yRange.max,
     }
   }
 }

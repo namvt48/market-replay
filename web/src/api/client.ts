@@ -22,6 +22,12 @@ const tradeSchema = z.object({
   qty: z.number().int(), entryTs: z.number(), entryPriceTicks: z.number(), exitTs: z.number(),
   exitPriceTicks: z.number(), realizedCents: z.number(), feesCents: z.number(),
   mfeTicks: z.number(), maeTicks: z.number(), rMultiple: z.number().nullable(), createdAt: z.number(),
+  initialStopTicks: z.number().int().nullable().default(null),
+  initialTakeProfitTicks: z.number().int().nullable().default(null),
+  protectionAdjustments: z.array(z.object({
+    role: z.enum(['stopLoss', 'takeProfit']), ts: z.number(), priceTicks: z.number().int(),
+  })).default([]),
+  exitReason: z.enum(['manual', 'stopLoss', 'takeProfit']).default('manual'),
 })
 const drawingSchema = z.object({
   id: z.string(), bucket: z.string(), symbol: z.string(), anchorTs: z.number(),
@@ -72,6 +78,15 @@ const indicatorDrawSchema = z.object({
 })
 const indicatorPlotSchema = z.object({ key: z.string(), time: z.number(), value: z.number() })
 const indicatorRunSchema = z.object({ draws: z.array(indicatorDrawSchema), plots: z.array(indicatorPlotSchema) })
+
+interface IndicatorRunFlight {
+  controller: AbortController
+  promise: Promise<IndicatorRunResult>
+  waiters: number
+  settled: boolean
+}
+
+const indicatorRunFlights = new Map<string, IndicatorRunFlight>()
 
 const TRANSIENT_GET_RETRY_DELAYS_MS = [150, 450, 900] as const
 
@@ -187,11 +202,72 @@ export async function runIndicator(
   inputs: Record<string, IndicatorInputValue>,
   signal?: AbortSignal,
 ): Promise<IndicatorRunResult> {
+  if (signal?.aborted) throw abortError()
+  const sortedInputs = Object.keys(inputs).sort().map((key) => {
+    const value = inputs[key]
+    return [key, typeof value === 'object' ? { r: value.r, g: value.g, b: value.b, a: value.a } : value]
+  })
+  const key = JSON.stringify([symbol, tf, script, at, sortedInputs])
+  let flight = indicatorRunFlights.get(key)
+  if (!flight) {
+    const controller = new AbortController()
+    const promise = requestIndicator(symbol, tf, script, at, inputs, controller.signal)
+    flight = { controller, promise, waiters: 0, settled: false }
+    indicatorRunFlights.set(key, flight)
+    const createdFlight = flight
+    void promise.then(
+      () => settleIndicatorFlight(key, createdFlight),
+      () => settleIndicatorFlight(key, createdFlight),
+    )
+  }
+  flight.waiters += 1
+  return waitForIndicatorFlight(key, flight, signal)
+}
+
+async function requestIndicator(
+  symbol: string,
+  tf: Timeframe,
+  script: string,
+  at: number,
+  inputs: Record<string, IndicatorInputValue>,
+  signal: AbortSignal,
+): Promise<IndicatorRunResult> {
   const query = new URLSearchParams({ symbol, tf, script, at: String(at), before: '1500', after: '0', to: String(at) })
   const response = await checkedFetch(`/api/v1/indicators/run?${query}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inputs }), signal,
   })
   return indicatorRunSchema.parse(await response.json()) as IndicatorRunResult
+}
+
+function settleIndicatorFlight(key: string, flight: IndicatorRunFlight): void {
+  flight.settled = true
+  if (indicatorRunFlights.get(key) === flight) indicatorRunFlights.delete(key)
+}
+
+function waitForIndicatorFlight(key: string, flight: IndicatorRunFlight, signal?: AbortSignal): Promise<IndicatorRunResult> {
+  return new Promise((resolve, reject) => {
+    let finished = false
+    const release = (): void => {
+      flight.waiters -= 1
+      if (flight.waiters === 0 && !flight.settled) {
+        if (indicatorRunFlights.get(key) === flight) indicatorRunFlights.delete(key)
+        flight.controller.abort()
+      }
+    }
+    const finish = (callback: () => void): void => {
+      if (finished) return
+      finished = true
+      signal?.removeEventListener('abort', handleAbort)
+      release()
+      callback()
+    }
+    const handleAbort = (): void => finish(() => reject(abortError()))
+    signal?.addEventListener('abort', handleAbort, { once: true })
+    flight.promise.then(
+      (result) => finish(() => resolve(result)),
+      (error: unknown) => finish(() => reject(error)),
+    )
+  })
 }
 
 export async function fetchWatchlist(): Promise<string[]> {

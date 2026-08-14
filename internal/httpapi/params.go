@@ -2,13 +2,13 @@ package httpapi
 
 import (
 	"fmt"
-	"net/http"
+	"net/url"
 	"strconv"
 )
 
 // requiredParam returns query param name, or errBadRequest if absent.
-func requiredParam(r *http.Request, name string) (string, error) {
-	v := r.URL.Query().Get(name)
+func requiredParam(query url.Values, name string) (string, error) {
+	v := query.Get(name)
 	if v == "" {
 		return "", fmt.Errorf("%w: %s is required", errBadRequest, name)
 	}
@@ -17,8 +17,8 @@ func requiredParam(r *http.Request, name string) (string, error) {
 
 // parseInt64 parses query param name as an int64, returning def if the
 // param is absent. Returns errBadRequest if present but unparseable.
-func parseInt64(r *http.Request, name string, def int64) (int64, error) {
-	raw := r.URL.Query().Get(name)
+func parseInt64(query url.Values, name string, def int64) (int64, error) {
+	raw := query.Get(name)
 	if raw == "" {
 		return def, nil
 	}
@@ -30,8 +30,8 @@ func parseInt64(r *http.Request, name string, def int64) (int64, error) {
 }
 
 // parseInt64Required is parseInt64 without a default — absent is an error.
-func parseInt64Required(r *http.Request, name string) (int64, error) {
-	raw, err := requiredParam(r, name)
+func parseInt64Required(query url.Values, name string) (int64, error) {
+	raw, err := requiredParam(query, name)
 	if err != nil {
 		return 0, err
 	}
@@ -44,8 +44,8 @@ func parseInt64Required(r *http.Request, name string) (int64, error) {
 
 // parseIntClamped parses query param name as an int, clamping the result
 // to [lo,hi]. Absent -> def (assumed already within [lo,hi]).
-func parseIntClamped(r *http.Request, name string, def, lo, hi int) (int, error) {
-	raw := r.URL.Query().Get(name)
+func parseIntClamped(query url.Values, name string, def, lo, hi int) (int, error) {
+	raw := query.Get(name)
 	if raw == "" {
 		return def, nil
 	}

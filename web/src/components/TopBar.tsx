@@ -1,4 +1,4 @@
-import { Activity, ChevronDown, Keyboard, PanelRightClose, PanelRightOpen, Rewind, Search } from 'lucide-react'
+import { ChevronDown, Keyboard, PanelRightClose, PanelRightOpen, Rewind, Search } from 'lucide-react'
 import type { Timeframe } from '../api/types'
 import { replayEngine } from '../replay/replay-engine'
 import { sortTimeframes } from '../replay/timeframe'
@@ -12,6 +12,7 @@ import { ChartWorkspaceControls } from './chart/ChartWorkspaceControls'
 import { useChartWorkspace } from '../chart-workspace/use-chart-workspace'
 import { IndicatorMenu } from './indicators/IndicatorMenu'
 import { paneIds } from '../chart-workspace/layout-presets'
+import { ReplayBrandMark } from './ReplayBrandMark'
 
 interface TopBarProps {
   layoutMenuRequest?: number
@@ -41,8 +42,8 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
   return (
     <header className="flex h-11 shrink-0 items-stretch border-b border-line bg-[#101114]" aria-label="Workspace controls">
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2 [scrollbar-width:none] md:gap-2 md:px-3">
-        <a href="#chart-workspace" className="mr-2 hidden shrink-0 items-center gap-2 text-ui-title font-semibold tracking-[-0.01em] text-ink sm:flex">
-          <span className="grid size-7 place-items-center rounded-control border border-active/40 bg-active/10 text-active-bright" aria-hidden="true"><Activity size={15} strokeWidth={1.75} /></span>
+        <a href="#chart-workspace" aria-label="Market Replay chart workspace" className="mr-1 flex shrink-0 items-center gap-2 text-ui-title font-semibold tracking-[-0.015em] text-ink sm:mr-2">
+          <ReplayBrandMark className="size-8 shrink-0" />
           <span className="hidden sm:inline">MARKET REPLAY</span>
         </a>
 

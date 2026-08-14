@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -42,8 +43,8 @@ func (s *Store) ReplaceTrades(ctx context.Context, sessionID string, trades []mo
 		return fmt.Errorf("sqlite: replace trades for session %s: clear: %w", sessionID, err)
 	}
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO trades (id, session_id, symbol, side, qty, entry_ts, entry_price_ticks, exit_ts, exit_price_ticks, realized_cents, fees_cents, mfe_ticks, mae_ticks, r_multiple, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO trades (id, session_id, symbol, side, qty, entry_ts, entry_price_ticks, exit_ts, exit_price_ticks, realized_cents, fees_cents, mfe_ticks, mae_ticks, r_multiple, initial_stop_ticks, initial_take_profit_ticks, protection_adjustments_json, exit_reason, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return fmt.Errorf("sqlite: replace trades for session %s: prepare: %w", sessionID, err)
@@ -60,7 +61,19 @@ func (s *Store) ReplaceTrades(ctx context.Context, sessionID string, trades []mo
 		if t.RMultiple != nil {
 			rMultiple = sql.NullFloat64{Float64: *t.RMultiple, Valid: true}
 		}
-		if _, err := stmt.ExecContext(ctx, t.ID, sessionID, t.Symbol, t.Side, t.Qty, t.EntryTs, t.EntryPriceTicks, t.ExitTs, t.ExitPriceTicks, t.RealizedCents, t.FeesCents, t.MfeTicks, t.MaeTicks, rMultiple, t.CreatedAt); err != nil {
+		protectionAdjustments := t.ProtectionAdjustments
+		if protectionAdjustments == nil {
+			protectionAdjustments = []model.ProtectionAdjustment{}
+		}
+		adjustments, err := json.Marshal(protectionAdjustments)
+		if err != nil {
+			return fmt.Errorf("sqlite: encode trade %s protection adjustments: %w", t.ID, err)
+		}
+		exitReason := t.ExitReason
+		if exitReason == "" {
+			exitReason = "manual"
+		}
+		if _, err := stmt.ExecContext(ctx, t.ID, sessionID, t.Symbol, t.Side, t.Qty, t.EntryTs, t.EntryPriceTicks, t.ExitTs, t.ExitPriceTicks, t.RealizedCents, t.FeesCents, t.MfeTicks, t.MaeTicks, rMultiple, t.InitialStopTicks, t.InitialTakeProfitTicks, string(adjustments), exitReason, t.CreatedAt); err != nil {
 			return fmt.Errorf("sqlite: replace trades for session %s: insert %s: %w", sessionID, t.ID, err)
 		}
 	}
@@ -85,7 +98,7 @@ func (s *Store) ReplaceTrades(ctx context.Context, sessionID string, trades []mo
 // than an error, which is what callers already relied on.
 func (s *Store) ListTrades(ctx context.Context, sessionID string) ([]model.Trade, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT t.id, t.session_id, t.symbol, t.side, t.qty, t.entry_ts, t.entry_price_ticks, t.exit_ts, t.exit_price_ticks, t.realized_cents, t.fees_cents, t.mfe_ticks, t.mae_ticks, t.r_multiple, t.created_at
+		SELECT t.id, t.session_id, t.symbol, t.side, t.qty, t.entry_ts, t.entry_price_ticks, t.exit_ts, t.exit_price_ticks, t.realized_cents, t.fees_cents, t.mfe_ticks, t.mae_ticks, t.r_multiple, t.initial_stop_ticks, t.initial_take_profit_ticks, t.protection_adjustments_json, t.exit_reason, t.created_at
 		FROM trades t JOIN sessions s ON s.id = t.session_id
 		WHERE t.session_id = ? AND t.exit_ts <= s.cursor_ts
 		ORDER BY t.created_at ASC, t.rowid ASC
@@ -99,12 +112,28 @@ func (s *Store) ListTrades(ctx context.Context, sessionID string) ([]model.Trade
 	for rows.Next() {
 		var t model.Trade
 		var rMultiple sql.NullFloat64
-		if err := rows.Scan(&t.ID, &t.SessionID, &t.Symbol, &t.Side, &t.Qty, &t.EntryTs, &t.EntryPriceTicks, &t.ExitTs, &t.ExitPriceTicks, &t.RealizedCents, &t.FeesCents, &t.MfeTicks, &t.MaeTicks, &rMultiple, &t.CreatedAt); err != nil {
+		var initialStop, initialTakeProfit sql.NullInt64
+		var adjustmentsJSON string
+		if err := rows.Scan(&t.ID, &t.SessionID, &t.Symbol, &t.Side, &t.Qty, &t.EntryTs, &t.EntryPriceTicks, &t.ExitTs, &t.ExitPriceTicks, &t.RealizedCents, &t.FeesCents, &t.MfeTicks, &t.MaeTicks, &rMultiple, &initialStop, &initialTakeProfit, &adjustmentsJSON, &t.ExitReason, &t.CreatedAt); err != nil {
 			return nil, fmt.Errorf("sqlite: scan trade: %w", err)
 		}
 		if rMultiple.Valid {
 			v := rMultiple.Float64
 			t.RMultiple = &v
+		}
+		if initialStop.Valid {
+			value := initialStop.Int64
+			t.InitialStopTicks = &value
+		}
+		if initialTakeProfit.Valid {
+			value := initialTakeProfit.Int64
+			t.InitialTakeProfitTicks = &value
+		}
+		if err := json.Unmarshal([]byte(adjustmentsJSON), &t.ProtectionAdjustments); err != nil {
+			return nil, fmt.Errorf("sqlite: decode trade %s protection adjustments: %w", t.ID, err)
+		}
+		if t.ProtectionAdjustments == nil {
+			t.ProtectionAdjustments = []model.ProtectionAdjustment{}
 		}
 		out = append(out, t)
 	}

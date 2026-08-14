@@ -57,7 +57,10 @@ describe('TopBar timeframe visibility', () => {
   it('uses the shared title and control typography roles', () => {
     render(<TopBar />)
 
-    expect(screen.getByText('MARKET REPLAY').closest('a')).toHaveClass('hidden', 'sm:flex', 'text-ui-title')
+    const brand = screen.getByRole('link', { name: 'Market Replay chart workspace' })
+    expect(brand).toHaveClass('flex', 'text-ui-title')
+    expect(brand).not.toHaveClass('hidden')
+    expect(brand.querySelector('[data-mark="market-replay-loop"]')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '1w', pressed: true })).toHaveClass('text-ui-control')
     expect(screen.getByRole('button', { name: 'Start bar replay' })).toHaveClass('text-ui-control')
     expect(screen.queryByText(/bars · bounded/i)).not.toBeInTheDocument()

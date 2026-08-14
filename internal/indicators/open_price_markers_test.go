@@ -1,6 +1,7 @@
 package indicators
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ func TestOpenPriceMarkers_RayFiresAtExactTrigger(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	last := specs[len(specs)-1].ts
-	result, err := e.Run("open-price-markers", file, nil, meta, RunParams{
+	result, err := e.Run(context.Background(), "open-price-markers", file, nil, meta, RunParams{
 		At: last, Before: len(specs), MaxTs: last,
 		Overrides: map[string]any{"show_h1": false, "show_h3": false},
 	})
@@ -63,7 +64,7 @@ func TestOpenPriceMarkers_KeepsOnlyLastNDays(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	last := specs[len(specs)-1].ts
-	result, err := e.Run("open-price-markers", file, nil, meta, RunParams{
+	result, err := e.Run(context.Background(), "open-price-markers", file, nil, meta, RunParams{
 		At: last, Before: len(specs), MaxTs: last,
 		Overrides: map[string]any{"show_h1": false, "show_h3": false, "maxDays": 2.0},
 	})

@@ -89,12 +89,18 @@ describe('ChartViewController.pushRawBars', () => {
     view.rebuild(Array.from({ length: 7 }, (_, index) => bar1m(index)), symbol)
 
     view.syncTrading([], [], [
-      { entryTime: 60, entryPrice: 100, exitTime: 300, exitPrice: 101 },
+      {
+        entryTime: 60, entryPrice: 100, exitTime: 300, exitPrice: 101,
+        protectionAdjustments: [{ role: 'stopLoss', time: 180, price: 99 }],
+      },
       { entryTime: 60, entryPrice: 100, exitTime: 360, exitPrice: 102 },
     ])
 
     expect(mock.setTradeConnections).toHaveBeenLastCalledWith([
-      { entryTime: 0, entryPrice: 100, exitTime: 300, exitPrice: 101 },
+      {
+        entryTime: 0, entryPrice: 100, exitTime: 300, exitPrice: 101,
+        protectionAdjustments: [{ role: 'stopLoss', time: 0, price: 99 }],
+      },
       { entryTime: 0, entryPrice: 100, exitTime: 300, exitPrice: 102 },
     ])
   })

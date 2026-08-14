@@ -124,7 +124,7 @@ export const DEFAULT_DRAWING_METADATA: DrawingWorkbenchMetadata = {
   verticalAlign: 'inside',
   bold: false,
   italic: false,
-  fontSize: 12,
+  fontSize: 13,
   fibonacciLevels: DEFAULT_FIBONACCI_LEVELS.map((level) => ({ ...level })),
   fibonacciExtend: false,
   fibonacciLevelDecimals: 3,

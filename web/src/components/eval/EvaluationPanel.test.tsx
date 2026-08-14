@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EVAL_PRESETS, customConfig, dayKey, fundedConfig, newRuntime, shortEvalAccountHash } from '../../eval/rules'
@@ -63,8 +63,10 @@ describe('EvaluationPanel', () => {
     expect(screen.getByText('TRADE HISTORY')).toBeVisible()
     expect(screen.getByText('LONG')).toBeVisible()
     expect(screen.getByText('1 NQ')).toBeVisible()
-    expect(screen.getByText('+$1,000')).toBeVisible()
-    expect(screen.getByLabelText('Maximum favorable excursion: 16 ticks. Maximum adverse excursion: 4 ticks.')).toHaveTextContent('MFE +16t · MAE −4t')
+    expect(screen.getByText('+$1,000.00')).toBeVisible()
+    const excursion = screen.getByLabelText('Maximum favorable excursion: 16 ticks. Maximum adverse excursion: 4 ticks.')
+    expect(within(excursion).getByText('+16t')).toBeVisible()
+    expect(within(excursion).getByText('−4t')).toBeVisible()
     expect(screen.getByLabelText(/Entry and exit time: Jan 15/)).toBeVisible()
     expect(screen.getByRole('link', { name: 'Create new evaluation account' })).toHaveAttribute('href', '/start/eval')
   })
@@ -160,8 +162,11 @@ describe('EvaluationPanel', () => {
     expect(screen.getByText('TRADE HISTORY')).toBeVisible()
     expect(screen.getByText('SHORT')).toBeVisible()
     expect(screen.getByText('2 NQ')).toBeVisible()
-    expect(screen.getAllByText('-$2,500')).toHaveLength(2)
-    expect(screen.getByLabelText('Maximum favorable excursion: 3 ticks. Maximum adverse excursion: 9 ticks.')).toHaveTextContent('MFE +3t · MAE −9t')
+    expect(screen.getByText('-$2,500')).toBeVisible()
+    expect(screen.getByText('-$2,500.00')).toBeVisible()
+    const excursion = screen.getByLabelText('Maximum favorable excursion: 3 ticks. Maximum adverse excursion: 9 ticks.')
+    expect(within(excursion).getByText('+3t')).toBeVisible()
+    expect(within(excursion).getByText('−9t')).toBeVisible()
   })
 
   it('resumes a previous account directly without an Open account step', async () => {

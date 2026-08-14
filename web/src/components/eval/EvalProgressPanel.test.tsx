@@ -49,6 +49,23 @@ describe('EvalProgressPanel', () => {
     expect(screen.getAllByText('$100,000').length).toBeGreaterThan(0)
   })
 
+  it('reuses module-level number formatters while rendering live ticks', () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '2024-01-15', START_TS)
+    const OriginalNumberFormat = Intl.NumberFormat
+    const numberFormat = vi.spyOn(Intl, 'NumberFormat').mockImplementation(
+      function NumberFormat(locales?: Intl.LocalesArgument, options?: Intl.NumberFormatOptions): Intl.NumberFormat {
+        return new OriginalNumberFormat(locales, options)
+      },
+    )
+
+    const view = render(<EvalProgressPanel />)
+    useEvalStore.setState({ lastEvalBalance: 101000, lastEvalEquity: 101250 })
+    view.rerender(<EvalProgressPanel />)
+
+    expect(numberFormat).not.toHaveBeenCalled()
+    numberFormat.mockRestore()
+  })
+
   it('hides the account strip when the current account is paused', () => {
     getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '2024-01-15', START_TS)
     const accountId = getEvalState().accountId

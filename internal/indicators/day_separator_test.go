@@ -1,6 +1,7 @@
 package indicators
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func TestDaySeparator_DrawsExactlyOnMidnightTransition(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	last := specs[len(specs)-1].ts
-	result, err := e.Run("day-separator", file, nil, meta, RunParams{At: last, Before: len(specs), MaxTs: last})
+	result, err := e.Run(context.Background(), "day-separator", file, nil, meta, RunParams{At: last, Before: len(specs), MaxTs: last})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestDaySeparator_OverrideDisables(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	last := specs[len(specs)-1].ts
-	result, err := e.Run("day-separator", file, nil, meta, RunParams{
+	result, err := e.Run(context.Background(), "day-separator", file, nil, meta, RunParams{
 		At: last, Before: len(specs), MaxTs: last,
 		Overrides: map[string]any{"show": false},
 	})

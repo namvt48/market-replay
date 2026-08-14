@@ -41,7 +41,19 @@ export interface Position {
   mfeTicks: number
   maeTicks: number
   initialRiskTicks: number | null
+  /** First protection levels attached to the position. Later edits never overwrite them. */
+  initialStopTicks: number | null
+  initialTakeProfitTicks: number | null
+  protectionAdjustments: ProtectionAdjustment[]
 }
+
+export interface ProtectionAdjustment {
+  role: 'stopLoss' | 'takeProfit'
+  ts: number
+  priceTicks: number
+}
+
+export type TradeExitReason = 'manual' | 'stopLoss' | 'takeProfit'
 
 export interface EngineTrade {
   id: string
@@ -57,6 +69,10 @@ export interface EngineTrade {
   mfeTicks: number
   maeTicks: number
   rMultiple: number | null
+  initialStopTicks: number | null
+  initialTakeProfitTicks: number | null
+  protectionAdjustments: ProtectionAdjustment[]
+  exitReason: TradeExitReason
 }
 
 export interface FillEngineState {

@@ -64,6 +64,16 @@ export interface TradeConnection {
   entryPrice: number
   exitTime: number
   exitPrice: number
+  priceDecimals?: number
+  side?: 'long' | 'short'
+  initialStop?: number | null
+  initialTakeProfit?: number | null
+  protectionAdjustments?: Array<{
+    role: 'stopLoss' | 'takeProfit'
+    time: number
+    price: number
+  }>
+  exitReason?: 'manual' | 'stopLoss' | 'takeProfit'
 }
 
 export interface EconomicEventMarker {

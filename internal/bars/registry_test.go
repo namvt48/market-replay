@@ -82,6 +82,27 @@ func TestRegistry_BasicLoadAndGet(t *testing.T) {
 	}
 }
 
+func TestOpenDatasetReleasesResidentPagesAfterBuildingIndexes(t *testing.T) {
+	dataDir := setupRegistryFixture(t, "NQ", "1m", 5)
+	binPath := filepath.Join(dataDir, "bin", "NQ.1m.bin")
+	original := discardMappedPages
+	calls := 0
+	discardMappedPages = func(*BarFile) error {
+		calls++
+		return nil
+	}
+	t.Cleanup(func() { discardMappedPages = original })
+
+	loaded := openDataset(binPath, model.SymbolMeta{Symbol: "NQ", TickSize: 0.25}, "NQ", "1m")
+	if loaded.err != nil {
+		t.Fatalf("openDataset: %v", loaded.err)
+	}
+	defer loaded.file.Close()
+	if calls != 1 {
+		t.Fatalf("discardMappedPages calls = %d, want 1", calls)
+	}
+}
+
 func TestRegistry_UnknownSymbolTF(t *testing.T) {
 	dataDir := setupRegistryFixture(t, "NQ", "1m", 5)
 	reg, err := NewRegistry(dataDir)

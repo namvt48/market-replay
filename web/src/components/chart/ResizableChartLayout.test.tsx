@@ -55,7 +55,6 @@ describe('ResizableChartLayout', () => {
     await user.keyboard('{Home}')
     expect(onResize).toHaveBeenLastCalledWith('root', 0, 0)
   })
-
   it('coalesces many pointermove events into a single onResize per animation frame', () => {
     // Regression: separator drag fired onResize on EVERY pointermove, causing
     // a full ChartWorkspace re-render (including popout tiles) at pointer-input
@@ -95,5 +94,17 @@ describe('ResizableChartLayout', () => {
     expect(document.documentElement.style.cursor).toBe('col-resize')
     fireEvent.pointerUp(separator, { pointerId: 7, clientX: 120 })
     expect(document.documentElement.style.cursor).toBe('')
+  })
+
+  it.each([
+    { layout: node, name: 'Resize horizontal chart split', sizeStyle: { width: '2px' }, cursor: 'col-resize' },
+    { layout: verticalNode, name: 'Resize vertical chart split', sizeStyle: { height: '2px' }, cursor: 'row-resize' },
+  ])('keeps every pointer hit target on the visible splitter line', ({ layout, name, sizeStyle, cursor }) => {
+    render(<ResizableChartLayout node={layout} renderPane={(id) => <div>{id}</div>} onResize={vi.fn()} />)
+
+    const separator = screen.getByRole('separator', { name })
+    expect(separator).toHaveStyle({ ...sizeStyle, cursor })
+    expect(separator).toHaveClass('z-10')
+    expect(separator.className).not.toContain('before:')
   })
 })

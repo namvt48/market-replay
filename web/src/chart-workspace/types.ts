@@ -16,7 +16,7 @@ export const LAYOUT_PRESET_IDS = [
 export type BuiltInLayoutPreset = (typeof LAYOUT_PRESET_IDS)[number]
 export type LayoutPreset = BuiltInLayoutPreset | 'custom'
 export type SplitOrientation = 'horizontal' | 'vertical'
-export const CHART_SPLIT_SEPARATOR_SIZE_PX = 4
+export const CHART_SPLIT_SEPARATOR_SIZE_PX = 2
 
 export interface ChartSyncFlags {
   crosshair: boolean

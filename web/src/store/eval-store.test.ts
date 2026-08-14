@@ -40,6 +40,10 @@ function makeTrade(id: string, exitTs: number, realizedCents = 0): EngineTrade {
     mfeTicks: 0,
     maeTicks: 0,
     rMultiple: null,
+    initialStopTicks: null,
+    initialTakeProfitTicks: null,
+    protectionAdjustments: [],
+    exitReason: 'manual',
   }
 }
 

@@ -1,9 +1,11 @@
 package indicators
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"market-replay/internal/bars"
 	"market-replay/internal/model"
 )
 
@@ -59,7 +61,7 @@ func TestDailyRange_WindowsCompletedDaysAndExcludesToday(t *testing.T) {
 	// "Today" is day 10 (the fixture's last bar); dailyRange(3) must cover
 	// days 7,8,9 and never day 10 itself.
 	today := specs[9].ts
-	result, err := e.Run("daily", file, nil, dailyRangeMeta, RunParams{At: today, Before: 1, MaxTs: today})
+	result, err := e.Run(context.Background(), "daily", file, nil, dailyRangeMeta, RunParams{At: today, Before: 1, MaxTs: today})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -102,11 +104,44 @@ func TestDailyRange_InsufficientHistoryReturnsUndefinedNotError(t *testing.T) {
 	file := openFixtureFile(t, "NQ", "1m", specs, dailyRangeMeta)
 
 	today := specs[1].ts
-	result, err := e.Run("daily", file, nil, dailyRangeMeta, RunParams{At: today, Before: 1, MaxTs: today})
+	result, err := e.Run(context.Background(), "daily", file, nil, dailyRangeMeta, RunParams{At: today, Before: 1, MaxTs: today})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(result.Plots) != 0 {
 		t.Fatalf("want 0 plots (na, not enough history), got %d: %+v", len(result.Plots), result.Plots)
+	}
+}
+
+func TestDailyRange_AggregatesOncePerSessionDay(t *testing.T) {
+	e := NewEngine()
+	if err := e.Register("daily", "Daily", 1, []byte(dailyRangeScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	specs := dailyFixtureSpecs(6)
+	start := time.Date(2024, 1, 7, 9, 30, 0, 0, time.UTC)
+	for index := 0; index < 100; index++ {
+		specs = append(specs, barSpec{
+			ts:   start.Add(time.Duration(index) * time.Minute).Unix(),
+			open: 2000, high: 2100, low: 1900, close: 2000, volume: 1,
+		})
+	}
+	file := openFixtureFile(t, "NQ", "1m", specs, dailyRangeMeta)
+
+	original := aggregateDailyRange
+	calls := 0
+	aggregateDailyRange = func(file *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, timeframe string, at int64, before, after int, maxTs int64, session string) ([]bars.ChartBar, error) {
+		calls++
+		return original(file, calendar, meta, timeframe, at, before, after, maxTs, session)
+	}
+	defer func() { aggregateDailyRange = original }()
+
+	at := specs[len(specs)-1].ts
+	if _, err := e.Run(context.Background(), "daily", file, nil, dailyRangeMeta, RunParams{At: at, Before: 100, MaxTs: at}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("daily aggregation calls = %d, want 1 for 100 ticks in one session day", calls)
 	}
 }

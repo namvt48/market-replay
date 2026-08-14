@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS trades (
 	mfe_ticks INTEGER NOT NULL,
 	mae_ticks INTEGER NOT NULL,
 	r_multiple REAL,
+	initial_stop_ticks INTEGER,
+	initial_take_profit_ticks INTEGER,
+	protection_adjustments_json TEXT NOT NULL DEFAULT '[]',
+	exit_reason TEXT NOT NULL DEFAULT 'manual',
 	created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_trades_session ON trades(session_id, created_at);

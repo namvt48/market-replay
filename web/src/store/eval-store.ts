@@ -151,6 +151,12 @@ const persistedSessionSchema = z.object({
     mfeTicks: z.number().finite().optional(),
     maeTicks: z.number().finite().optional(),
     rMultiple: z.number().finite().nullable().optional(),
+    initialStopTicks: z.number().finite().nullable().optional(),
+    initialTakeProfitTicks: z.number().finite().nullable().optional(),
+    protectionAdjustments: z.array(z.object({
+      role: z.enum(['stopLoss', 'takeProfit']), ts: z.number().finite().nonnegative(), priceTicks: z.number().finite(),
+    })).optional(),
+    exitReason: z.enum(['manual', 'stopLoss', 'takeProfit']).optional(),
   })),
   payoutHistory: z.array(payoutRecordSchema).default([]),
 })
@@ -168,6 +174,19 @@ export interface EvalFinancials {
   equity: number
   status: EvalStatus
 }
+
+type EvalFinancialSession = Pick<EvalSessionState,
+  | 'config'
+  | 'runtime'
+  | 'phase'
+  | 'baselineRealizedCents'
+  | 'baselineEquityCents'
+  | 'needsFillRebase'
+  | 'lastEvalBalance'
+  | 'lastEvalEquity'
+  | 'trades'
+  | 'sessionTimezone'
+>
 
 function idleSession(): EvalSessionData {
   return {
@@ -382,7 +401,7 @@ export function flushEvalSessionPersistence(): void {
   persistSession(pending)
 }
 
-export function deriveEvalFinancials(session: EvalSessionState, fill: EvalFillState | null): EvalFinancials | null {
+export function deriveEvalFinancials(session: EvalFinancialSession, fill: EvalFillState | null): EvalFinancials | null {
   const { config, runtime } = session
   if (!config || !runtime) return null
   const baselinesReady = session.phase === 'running'
@@ -515,6 +534,10 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
           mfeTicks: trade.mfeTicks,
           maeTicks: trade.maeTicks,
           rMultiple: trade.rMultiple,
+          initialStopTicks: trade.initialStopTicks,
+          initialTakeProfitTicks: trade.initialTakeProfitTicks,
+          protectionAdjustments: trade.protectionAdjustments,
+          exitReason: trade.exitReason,
         }))]
       }
     }

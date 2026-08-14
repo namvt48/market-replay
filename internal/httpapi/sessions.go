@@ -158,6 +158,16 @@ func validateJournal(trades []model.Trade) error {
 			// Not merely odd: the journal is ordered and cursor-bounded by
 			// exit_ts, so a trade that exits before it enters corrupts both.
 			return fmt.Errorf("%w: trade at index %d exits at %d, before its entry at %d", errBadRequest, index, t.ExitTs, t.EntryTs)
+		case t.ExitReason != "" && t.ExitReason != "manual" && t.ExitReason != "stopLoss" && t.ExitReason != "takeProfit":
+			return fmt.Errorf("%w: trade at index %d has invalid exit reason %q", errBadRequest, index, t.ExitReason)
+		}
+		for adjustmentIndex, adjustment := range t.ProtectionAdjustments {
+			if adjustment.Role != "stopLoss" && adjustment.Role != "takeProfit" {
+				return fmt.Errorf("%w: trade at index %d adjustment %d has invalid role %q", errBadRequest, index, adjustmentIndex, adjustment.Role)
+			}
+			if adjustment.Ts < t.EntryTs || adjustment.Ts > t.ExitTs {
+				return fmt.Errorf("%w: trade at index %d adjustment %d is outside the position lifetime", errBadRequest, index, adjustmentIndex)
+			}
 		}
 	}
 	return nil

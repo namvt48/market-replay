@@ -25,6 +25,15 @@ type BarFile struct {
 	rollups *rollups
 }
 
+// discardMappedPages drops the page-cache residency caused by fail-fast
+// validation and startup rollup construction. The mapping remains valid;
+// later reads fault in only the small windows requests actually touch.
+// Kept as a variable so the registry call site can be proven without
+// relying on kernel residency heuristics in a unit test.
+var discardMappedPages = func(file *BarFile) error {
+	return unix.Madvise(file.data, unix.MADV_DONTNEED)
+}
+
 // openBarFile mmaps path and validates it fail-fast: magic/version/flags,
 // file size matching the header's declared count, and every ts strictly
 // increasing. A corrupt or truncated file is rejected here, not discovered

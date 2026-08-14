@@ -3,6 +3,7 @@ package httpapi
 import (
 	"compress/gzip"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -13,7 +14,7 @@ import (
 // response this server serves.
 //
 // gzipTextPool handles the embedded frontend (JS/CSS, several hundred KB
-// that compress 3-4x) and every JSON body: served rarely, cached by the
+// that compress 3-4x) and non-chart JSON: served rarely, cached by the
 // browser afterwards, and dominated by transfer size rather than CPU.
 //
 // gzipBinaryPool handles the RBR1 bar frame, which is six int32 columns and
@@ -27,61 +28,96 @@ var (
 	gzipBinaryPool = sync.Pool{New: func() any { w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed); return w }}
 )
 
-// poolForContentType routes a response to the pool whose level suits its
-// body. Unknown/absent types get the text level: a wrong guess there costs
-// CPU on a small body, while guessing "fast" for real text would cost
-// bandwidth on every asset.
-func poolForContentType(contentType string) *sync.Pool {
-	if strings.HasPrefix(contentType, bars.ContentType) {
+const minGzipSize = 1 << 10
+
+// poolForResponse routes the hot chart-bars JSON endpoint and binary RBR1
+// frames to BestSpeed. Unknown/absent types keep the text level: guessing
+// "fast" for real frontend assets would cost bandwidth on every load.
+func poolForResponse(path, contentType string) *sync.Pool {
+	if path == "/api/v1/chart-bars/at" || strings.HasPrefix(contentType, bars.ContentType) {
 		return &gzipBinaryPool
 	}
 	return &gzipTextPool
 }
 
-// gzipResponseWriter buffers nothing — it streams straight into a pooled
-// gzip.Writer — but must intercept WriteHeader to drop Content-Length
-// (compression changes the byte count) and skip wrapping entirely when a
-// handler already picked its own encoding. No handler does today; the guard
-// stays because re-gzipping an already-encoded body corrupts it, and that
-// is not a failure mode worth rediscovering later.
-//
-// The writer is acquired inside WriteHeader rather than up front because
-// that is the first moment Content-Type is known — and therefore the first
-// moment the compression level can be chosen. A response that never
-// compresses never takes a writer out of a pool at all.
+// gzipResponseWriter delays its compression decision until the body crosses
+// minGzipSize. It buffers at most that prefix, then streams the rest straight
+// into a pooled writer; small responses never acquire a writer or grow from
+// gzip headers. Pre-encoded and bodyless responses pass through unchanged.
 type gzipResponseWriter struct {
 	http.ResponseWriter
+	requestPath string
+	method      string
 	gz          *gzip.Writer
 	pool        *sync.Pool
+	pending     []byte
+	status      int
 	wroteHeader bool
+	decided     bool
 	compress    bool
 }
 
 func (g *gzipResponseWriter) WriteHeader(status int) {
-	if !g.wroteHeader {
-		g.wroteHeader = true
-		hasBody := status != http.StatusNoContent && status != http.StatusNotModified
-		if hasBody && g.Header().Get("Content-Encoding") == "" {
-			g.compress = true
-			g.pool = poolForContentType(g.Header().Get("Content-Type"))
-			g.gz = g.pool.Get().(*gzip.Writer)
-			g.gz.Reset(g.ResponseWriter)
-			g.Header().Del("Content-Length")
-			g.Header().Set("Content-Encoding", "gzip")
-		}
-		g.Header().Add("Vary", "Accept-Encoding")
+	if g.wroteHeader {
+		return
 	}
-	g.ResponseWriter.WriteHeader(status)
+	g.wroteHeader = true
+	g.status = status
+	g.Header().Add("Vary", "Accept-Encoding")
+	hasBody := g.method != http.MethodHead && status >= http.StatusOK && status != http.StatusNoContent && status != http.StatusNotModified
+	if !hasBody || g.Header().Get("Content-Encoding") != "" {
+		g.decided = true
+		g.ResponseWriter.WriteHeader(status)
+	}
 }
 
 func (g *gzipResponseWriter) Write(b []byte) (int, error) {
 	if !g.wroteHeader {
 		g.WriteHeader(http.StatusOK)
 	}
-	if !g.compress {
+	if g.decided {
+		if g.compress {
+			return g.gz.Write(b)
+		}
 		return g.ResponseWriter.Write(b)
 	}
-	return g.gz.Write(b)
+
+	prefix := len(g.pending)
+	g.pending = append(g.pending, b...)
+	if len(g.pending) <= minGzipSize {
+		return len(b), nil
+	}
+	g.startCompression()
+	written, err := g.gz.Write(g.pending)
+	g.pending = nil
+	current := written - prefix
+	if current < 0 {
+		current = 0
+	}
+	if current > len(b) {
+		current = len(b)
+	}
+	return current, err
+}
+
+func (g *gzipResponseWriter) startCompression() {
+	g.decided = true
+	g.compress = true
+	g.pool = poolForResponse(g.requestPath, g.Header().Get("Content-Type"))
+	g.gz = g.pool.Get().(*gzip.Writer)
+	g.gz.Reset(g.ResponseWriter)
+	g.Header().Del("Content-Length")
+	g.Header().Set("Content-Encoding", "gzip")
+	g.ResponseWriter.WriteHeader(g.status)
+}
+
+func (g *gzipResponseWriter) flushUncompressed() {
+	g.decided = true
+	g.ResponseWriter.WriteHeader(g.status)
+	if len(g.pending) > 0 {
+		_, _ = g.ResponseWriter.Write(g.pending)
+		g.pending = nil
+	}
 }
 
 // release flushes and returns the writer. It is a no-op for a response that
@@ -90,6 +126,9 @@ func (g *gzipResponseWriter) Write(b []byte) (int, error) {
 // corrupting a passthrough body (pre-encoded content, or a No
 // Content/Not Modified status) that never wrote a byte through gz.
 func (g *gzipResponseWriter) release() {
+	if g.wroteHeader && !g.decided {
+		g.flushUncompressed()
+	}
 	if g.gz == nil {
 		return
 	}
@@ -98,15 +137,53 @@ func (g *gzipResponseWriter) release() {
 	g.gz = nil
 }
 
+func acceptsGzip(header string) bool {
+	explicitSeen, explicitAccepted := false, false
+	wildcardSeen, wildcardAccepted := false, false
+	for _, item := range strings.Split(header, ",") {
+		parts := strings.Split(item, ";")
+		name := strings.ToLower(strings.TrimSpace(parts[0]))
+		if name != "gzip" && name != "*" {
+			continue
+		}
+		quality := 1.0
+		valid := true
+		for _, parameter := range parts[1:] {
+			keyValue := strings.SplitN(strings.TrimSpace(parameter), "=", 2)
+			if len(keyValue) != 2 || !strings.EqualFold(strings.TrimSpace(keyValue[0]), "q") {
+				continue
+			}
+			parsed, err := strconv.ParseFloat(strings.Trim(strings.TrimSpace(keyValue[1]), `"`), 64)
+			if err != nil || parsed < 0 || parsed > 1 {
+				valid = false
+				break
+			}
+			quality = parsed
+		}
+		accepted := valid && quality > 0
+		if name == "gzip" {
+			explicitSeen = true
+			explicitAccepted = accepted
+		} else {
+			wildcardSeen = true
+			wildcardAccepted = accepted
+		}
+	}
+	if explicitSeen {
+		return explicitAccepted
+	}
+	return wildcardSeen && wildcardAccepted
+}
+
 // withCompression gzips every response the client says it accepts, unless
 // the handler already set its own Content-Encoding.
 func withCompression(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		if !acceptsGzip(r.Header.Get("Accept-Encoding")) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		gzw := &gzipResponseWriter{ResponseWriter: w}
+		gzw := &gzipResponseWriter{ResponseWriter: w, requestPath: r.URL.Path, method: r.Method}
 		defer gzw.release()
 		next.ServeHTTP(gzw, r)
 	})

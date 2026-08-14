@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHandleListIndicators(t *testing.T) {
@@ -63,6 +65,87 @@ func TestHandleRunIndicator_Success(t *testing.T) {
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v, body = %s", err, rec.Body.String())
+	}
+}
+
+func TestHandleRunIndicator_AggregatesDisplayTimeframeFromOneMinute(t *testing.T) {
+	s := newTestServer(t)
+	at := int64(testFixtureStart) + int64(testFixtureN-1)*60
+	req := httptest.NewRequest(http.MethodPost, testRunURL("NQ", "fractals", at, "&tf=5m"), nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s; want indicator aggregated from canonical 1m data", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Draws []any `json:"draws"`
+		Plots []any `json:"plots"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v, body = %s", err, rec.Body.String())
+	}
+}
+
+func TestHandleRunIndicator_SupportsEveryBuiltInUITimeframe(t *testing.T) {
+	s := newTestServer(t)
+	at := int64(testFixtureStart) + int64(testFixtureN-1)*60
+	for _, timeframe := range []string{
+		"1m", "2m", "3m", "5m", "10m", "15m", "30m", "45m",
+		"1h", "2h", "3h", "4h", "6h", "12h", "1d", "1w", "1M",
+	} {
+		t.Run(timeframe, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, testRunURL("NQ", "fractals", at, "&tf="+timeframe), nil)
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleRunIndicator_ClientDisconnectStopsHandler(t *testing.T) {
+	s := newTestServer(t)
+	const infiniteLoopScript = `
+init = () => { indicator({onMainPanel: true}); };
+onTick = () => { while (true) {} };
+`
+	if err := s.Indicators.Register("disconnect", "Disconnect", 1, []byte(infiniteLoopScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	server := httptest.NewServer(s.Handler())
+	at := int64(testFixtureStart) + int64(testFixtureN-1)*60
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+testRunURL("NQ", "disconnect", at, ""), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := server.Client().Do(req)
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		requestDone <- requestErr
+	}()
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP client did not observe cancellation")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		server.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("indicator handler kept running after its client disconnected")
 	}
 }
 

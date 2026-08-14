@@ -14,7 +14,7 @@ const drawing: DrawingAppearance = {
   id: 'drawing-1', type: 'trend-line', lineWidth: 2, extendLeft: false, extendRight: true, supportsExtend: true,
   strokeColor: '#e9a23b', strokeOpacity: 1, borderStyle: 'solid', fillColor: '#e9a23b', fillOpacity: 0.12,
   text: 'Breakout', textColor: '#e8edf0', textOpacity: 1, backgroundColor: '#070d12', backgroundOpacity: 0.82,
-  horizontalAlign: 'center', verticalAlign: 'inside', bold: true, italic: false, fontSize: 12,
+  horizontalAlign: 'center', verticalAlign: 'inside', bold: true, italic: false, fontSize: 13,
 }
 
 describe('drawing templates', () => {

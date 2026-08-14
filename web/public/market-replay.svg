@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Market Replay">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#151923" stroke="#36558f" stroke-width="2"/>
+  <path d="M18.6 17A20 20 0 1 1 12.8 36.8" fill="none" stroke="#5b8cff" stroke-width="4.4" stroke-linecap="round"/>
+  <path d="M11.8 11.4v10.4h10.4" fill="none" stroke="#5b8cff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M24 24.4v16.4M32 19.8v23.4M40 24.4v16.4" stroke="#d1d4dc" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="21.2" y="28.4" width="5.6" height="7.6" rx="1.4" fill="#22ab94"/>
+  <rect x="29.2" y="24" width="5.6" height="10.4" rx="1.4" fill="#5b8cff"/>
+  <rect x="37.2" y="30" width="5.6" height="6.4" rx="1.4" fill="#f23645"/>
+</svg>

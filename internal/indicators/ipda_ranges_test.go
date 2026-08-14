@@ -1,6 +1,7 @@
 package indicators
 
 import (
+	"context"
 	"testing"
 
 	"market-replay/internal/model"
@@ -16,7 +17,7 @@ func TestIpdaRanges_20DayBoxMatchesDailyRollup(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	today := specs[len(specs)-1].ts
-	result, err := e.Run("ipda-ranges", file, nil, meta, RunParams{
+	result, err := e.Run(context.Background(), "ipda-ranges", file, nil, meta, RunParams{
 		At: today, Before: 1, MaxTs: today,
 		Overrides: map[string]any{"show40": false, "show60": false},
 	})
@@ -74,7 +75,7 @@ func TestIpdaRanges_InsufficientHistoryProducesNoDraws(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	today := specs[len(specs)-1].ts
-	result, err := e.Run("ipda-ranges", file, nil, meta, RunParams{At: today, Before: 1, MaxTs: today})
+	result, err := e.Run(context.Background(), "ipda-ranges", file, nil, meta, RunParams{At: today, Before: 1, MaxTs: today})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

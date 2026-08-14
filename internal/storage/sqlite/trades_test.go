@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"market-replay/internal/model"
@@ -22,12 +23,17 @@ func TestReplaceTrades_RoundTrip(t *testing.T) {
 	sess := newTestSession(t, s)
 
 	r := 1.5
+	stop := int64(79900)
+	target := int64(80200)
 	in := model.Trade{
 		ID: "trade-1", Symbol: "NQ", Side: "long", Qty: 2,
 		EntryTs: 1000, EntryPriceTicks: 80000,
 		ExitTs: 1300, ExitPriceTicks: 80100,
 		RealizedCents: 50000, FeesCents: 209,
 		MfeTicks: 150, MaeTicks: -20, RMultiple: &r, CreatedAt: 1300,
+		InitialStopTicks: &stop, InitialTakeProfitTicks: &target,
+		ProtectionAdjustments: []model.ProtectionAdjustment{{Role: "stopLoss", Ts: 1200, PriceTicks: 80020}},
+		ExitReason:            "manual",
 	}
 	if err := s.ReplaceTrades(ctx, sess.ID, []model.Trade{in}); err != nil {
 		t.Fatalf("ReplaceTrades: %v", err)
@@ -57,6 +63,57 @@ func TestReplaceTrades_RoundTrip(t *testing.T) {
 	}
 	if got.RealizedCents != 50000 || got.RMultiple == nil || *got.RMultiple != 1.5 {
 		t.Errorf("got = %+v, unexpected", got)
+	}
+	if got.InitialStopTicks == nil || *got.InitialStopTicks != stop || got.InitialTakeProfitTicks == nil || *got.InitialTakeProfitTicks != target {
+		t.Errorf("protection levels = (%v, %v), want (%d, %d)", got.InitialStopTicks, got.InitialTakeProfitTicks, stop, target)
+	}
+	if len(got.ProtectionAdjustments) != 1 || got.ProtectionAdjustments[0].PriceTicks != 80020 || got.ExitReason != "manual" {
+		t.Errorf("trade visual metadata = %+v / %q, unexpected", got.ProtectionAdjustments, got.ExitReason)
+	}
+}
+
+func TestInitMigratesTradeVisualColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE trades (
+			id TEXT PRIMARY KEY, session_id TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+			qty INTEGER NOT NULL, entry_ts INTEGER NOT NULL, entry_price_ticks INTEGER NOT NULL,
+			exit_ts INTEGER NOT NULL, exit_price_ticks INTEGER NOT NULL, realized_cents INTEGER NOT NULL,
+			fees_cents INTEGER NOT NULL, mfe_ticks INTEGER NOT NULL, mae_ticks INTEGER NOT NULL,
+			r_multiple REAL, created_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create legacy trades: %v", err)
+	}
+	if err := s.Init(ctx); err != nil {
+		t.Fatalf("Init legacy database: %v", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(trades)`)
+	if err != nil {
+		t.Fatalf("table info: %v", err)
+	}
+	defer rows.Close()
+	found := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan table info: %v", err)
+		}
+		found[name] = true
+	}
+	for _, name := range []string{"initial_stop_ticks", "initial_take_profit_ticks", "protection_adjustments_json", "exit_reason"} {
+		if !found[name] {
+			t.Errorf("missing migrated column %s", name)
+		}
 	}
 }
 

@@ -22,6 +22,11 @@ const positionSchema = z.object({
   mfeTicks: z.number(),
   maeTicks: z.number(),
   initialRiskTicks: z.number().nullable(),
+  initialStopTicks: z.number().int().nullable().default(null),
+  initialTakeProfitTicks: z.number().int().nullable().default(null),
+  protectionAdjustments: z.array(z.object({
+    role: z.enum(['stopLoss', 'takeProfit']), ts: z.number(), priceTicks: z.number().int(),
+  })).default([]),
 }).nullable()
 
 const indicatorColorSchema = z.object({
@@ -94,6 +99,10 @@ function toEngineTrade(trade: ClosedTrade): EngineTrade {
     mfeTicks: trade.mfeTicks,
     maeTicks: trade.maeTicks,
     rMultiple: trade.rMultiple,
+    initialStopTicks: trade.initialStopTicks,
+    initialTakeProfitTicks: trade.initialTakeProfitTicks,
+    protectionAdjustments: trade.protectionAdjustments,
+    exitReason: trade.exitReason,
   }
 }
 

@@ -43,17 +43,18 @@ func (s *Server) handleUpsertDrawings(w http.ResponseWriter, r *http.Request) {
 // optional and its anti-spoiler effect only applies to "session:"
 // buckets (model.DrawingFilter / storage layer enforces this, not here).
 func (s *Server) handleListDrawings(w http.ResponseWriter, r *http.Request) {
-	bucket, err := requiredParam(r, "bucket")
+	query := r.URL.Query()
+	bucket, err := requiredParam(query, "bucket")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	symbol, err := requiredParam(r, "symbol")
+	symbol, err := requiredParam(query, "symbol")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	createdTf := r.URL.Query()["createdTf"]
+	createdTf := query["createdTf"]
 	for _, timeframe := range createdTf {
 		if !validTimeframe(timeframe) {
 			writeError(w, fmt.Errorf("%w: invalid createdTf", errBadRequest))
@@ -62,8 +63,8 @@ func (s *Server) handleListDrawings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var cursorTs *int64
-	if raw := r.URL.Query().Get("cursorTs"); raw != "" {
-		v, err := parseInt64Required(r, "cursorTs")
+	if raw := query.Get("cursorTs"); raw != "" {
+		v, err := parseInt64Required(query, "cursorTs")
 		if err != nil {
 			writeError(w, err)
 			return

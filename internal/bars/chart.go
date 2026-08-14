@@ -120,6 +120,21 @@ func chartBucketStart(timestamp int64, timeframe chartTimeframe, meta model.Symb
 	return sessionOpen(time.Date(groupYear, groupMonthOfYear, 1, 12, 0, 0, 0, location), meta, location)
 }
 
+// SessionDayStart returns the canonical ETH daily bucket for timestamp.
+// Indicator bindings use this to key per-day work without duplicating the
+// futures 18:00 rollover and timezone rules owned by chart aggregation.
+func SessionDayStart(timestamp int64, meta model.SymbolMeta) (int64, error) {
+	location := time.UTC
+	var err error
+	if meta.SessionTz != "" {
+		location, err = cachedLoadLocation(meta.SessionTz)
+		if err != nil {
+			return 0, fmt.Errorf("load session timezone %q: %w", meta.SessionTz, err)
+		}
+	}
+	return sessionOpen(sessionDate(timestamp, meta, location), meta, location), nil
+}
+
 // AggregateChartWindow returns display buckets surrounding atTs. before is
 // the total number of buckets ending at the anchor; after is additional
 // buckets following it. maxTs is a hard replay spoiler boundary.
@@ -235,6 +250,9 @@ func AggregateChartWindowForSession(file *BarFile, calendar *Calendar, meta mode
 		if err != nil {
 			return nil, fmt.Errorf("load session timezone %q: %w", meta.SessionTz, err)
 		}
+	}
+	if entries := rthRollupFor(file, timeframe); entries != nil {
+		return aggregateRTHRollupChartWindow(file, entries, timeframe, atTs, before, after, maxTs, location), nil
 	}
 	return aggregateRTHChartWindow(file, timeframe, atTs, before, after, maxTs, location), nil
 }
@@ -397,6 +415,31 @@ func rollupFor(file *BarFile, calendar *Calendar, timeframe chartTimeframe) []ro
 	return nil
 }
 
+// rthRollupFor mirrors rollupFor with regular-session indexes. An RTH day
+// is exactly one rthDaily entry, so daily entries nest cleanly inside week
+// and month buckets without admitting overnight bars.
+func rthRollupFor(file *BarFile, timeframe chartTimeframe) []rollupBar {
+	r := file.rollups
+	if r == nil {
+		return nil
+	}
+	switch timeframe.unit {
+	case 'd', 'w', 'M':
+		if len(r.rthDaily) > 0 {
+			return r.rthDaily
+		}
+	case 'h':
+		if len(r.rthHourly) > 0 {
+			return r.rthHourly
+		}
+	case 'm':
+		if timeframe.multiplier%60 == 0 && len(r.rthHourly) > 0 {
+			return r.rthHourly
+		}
+	}
+	return nil
+}
+
 // aggregateRollupChartWindow answers one /chart-bars/at seek from a
 // precomputed index: it groups consecutive rollup entries that share a
 // chartBucketStart, then folds each group's already-aggregated OHLCV.
@@ -413,6 +456,24 @@ func rollupFor(file *BarFile, calendar *Calendar, timeframe chartTimeframe) []ro
 func aggregateRollupChartWindow(
 	file *BarFile, entries []rollupBar, meta model.SymbolMeta, timeframe chartTimeframe,
 	atTs int64, before, after int, maxTs int64, location *time.Location,
+) []ChartBar {
+	return aggregateIndexedRollupChartWindow(file, entries, atTs, before, after, maxTs, func(timestamp int64) int64 {
+		return chartBucketStart(timestamp, timeframe, meta, location)
+	})
+}
+
+func aggregateRTHRollupChartWindow(
+	file *BarFile, entries []rollupBar, timeframe chartTimeframe,
+	atTs int64, before, after int, maxTs int64, location *time.Location,
+) []ChartBar {
+	return aggregateIndexedRollupChartWindow(file, entries, atTs, before, after, maxTs, func(timestamp int64) int64 {
+		return rthBucketStart(timestamp, timeframe, location)
+	})
+}
+
+func aggregateIndexedRollupChartWindow(
+	file *BarFile, entries []rollupBar, atTs int64, before, after int, maxTs int64,
+	bucketForTimestamp func(int64) int64,
 ) []ChartBar {
 	if maxTs < atTs {
 		atTs = maxTs
@@ -431,7 +492,7 @@ func aggregateRollupChartWindow(
 	entries = entries[:usable]
 
 	bucketStart := func(i int) int64 {
-		return chartBucketStart(file.TsAt(int(entries[i].from)), timeframe, meta, location)
+		return bucketForTimestamp(file.TsAt(int(entries[i].from)))
 	}
 
 	wantedBefore := before
@@ -445,8 +506,14 @@ func aggregateRollupChartWindow(
 	center := sort.Search(len(entries), func(i int) bool { return bucketStart(i) >= atTs })
 	if !(center < len(entries) && bucketStart(center) == atTs) {
 		center = sort.Search(len(entries), func(i int) bool { return int(entries[i].to) > centerIndex })
-		if center >= len(entries) || int(entries[center].from) > centerIndex {
+		if center < len(entries) && int(entries[center].from) > centerIndex {
+			center--
+		}
+		if center >= len(entries) {
 			center = len(entries) - 1
+		}
+		if center < 0 {
+			return []ChartBar{}
 		}
 	}
 
@@ -473,7 +540,7 @@ func aggregateRollupChartWindow(
 			if len(windows) == wantedBefore {
 				break
 			}
-			current = chartBucketStart(ts, timeframe, meta, location)
+			current = bucketForTimestamp(ts)
 			end = i + 1
 		}
 		if i == 0 {

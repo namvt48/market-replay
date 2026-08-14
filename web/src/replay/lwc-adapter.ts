@@ -270,7 +270,7 @@ export class LwcAdapter implements ChartAdapter {
       // Lightweight Charts autoSize enabled creates a second observer whose
       // queued callback can outlive a chart moved back from a pop-out window.
       autoSize: false,
-      layout: { background: { type: ColorType.Solid, color: this.appearance.backgroundColor }, textColor: this.appearance.textColor, fontFamily: UI_FONT_FAMILY, fontSize: 12, attributionLogo: false, panes: { separatorColor: '#2a2e39', enableResize: true } },
+      layout: { background: { type: ColorType.Solid, color: this.appearance.backgroundColor }, textColor: this.appearance.textColor, fontFamily: UI_FONT_FAMILY, fontSize: 13, attributionLogo: false, panes: { separatorColor: '#2a2e39', enableResize: true } },
       grid: { vertLines: { color: this.appearance.verticalGridColor, visible: this.appearance.showGrid }, horzLines: { color: this.appearance.horizontalGridColor, visible: this.appearance.showGrid } },
       crosshair: { mode: CrosshairMode.Normal, vertLine: { color: '#787b8688', labelBackgroundColor: '#2a2e39' }, horzLine: { color: '#787b8688', labelBackgroundColor: '#2a2e39' } },
       rightPriceScale: { borderColor: '#434651', scaleMargins: { top: 0.08, bottom: 0.06 } },
@@ -626,6 +626,7 @@ export class LwcAdapter implements ChartAdapter {
     const draggingOrder = this.draggingOrder
     if (!draggingOrder) {
       this.orderPrimitive.setLines(lines)
+      this.syncOrderKeyboardState(lines)
       return
     }
 
@@ -639,6 +640,7 @@ export class LwcAdapter implements ChartAdapter {
       : line)
     this.draggingOrder = nextLines.find((line) => line.id === draggingOrder.id) ?? draggingOrder
     this.orderPrimitive.setLines(nextLines)
+    this.syncOrderKeyboardState(nextLines)
   }
   onOrderLineMove(handler: (id: string, price: number) => void): void { this.orderMoveHandler = handler }
   onOrderLineDragStart(handler: (id: string) => void): void { this.orderDragStartHandler = handler }
@@ -1280,6 +1282,13 @@ export class LwcAdapter implements ChartAdapter {
       event.stopPropagation()
       return
     }
+    if (event.key === 'Enter' && this.orderPrimitive.lines.some((line) => line.stage === 'draft' && line.role === 'entry')) {
+      event.preventDefault()
+      event.stopPropagation()
+      this.closeQuantityEditor()
+      this.orderActionHandler({ type: 'confirm' })
+      return
+    }
     if (this.replaySelectionState.mode !== 'selecting' || this.history.length === 0) return
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
       const direction = event.key === 'ArrowLeft' ? -1 : 1
@@ -1585,6 +1594,7 @@ export class LwcAdapter implements ChartAdapter {
       if (!leg) return
       this.draggingOrder = leg
       this.protectionDrag = { role, pointerId: event.pointerId, startY: point.y, moved: false, wasActive }
+      this.syncOrderKeyboardState(this.orderPrimitive.lines, true)
       this.container.setPointerCapture(event.pointerId)
       this.applyChartInteractionLock()
       event.preventDefault()
@@ -1604,6 +1614,7 @@ export class LwcAdapter implements ChartAdapter {
       this.orderDragStartHandler(this.draggingOrder.id)
       const draftLine = this.orderPrimitive.lines.find((line) => line.stage === 'draft' && line.role === this.draggingOrder?.role)
       if (draftLine) this.draggingOrder = draftLine
+      this.syncOrderKeyboardState(this.orderPrimitive.lines, true)
       this.container.setPointerCapture(event.pointerId)
       this.applyChartInteractionLock()
       event.preventDefault()
@@ -1964,6 +1975,21 @@ export class LwcAdapter implements ChartAdapter {
     this.chart?.applyOptions({ handleScroll: !locked, handleScale: !locked })
   }
 
+  private syncOrderKeyboardState(lines: OrderLine[], focus = false): void {
+    if (!this.container || this.replaySelectionState.mode === 'selecting') return
+    const hasDraftOrder = lines.some((line) => line.stage === 'draft' && line.role === 'entry')
+    if (!hasDraftOrder) {
+      this.container.removeAttribute('tabindex')
+      this.container.removeAttribute('role')
+      this.container.removeAttribute('aria-label')
+      return
+    }
+    this.container.tabIndex = 0
+    this.container.setAttribute('role', 'group')
+    this.container.setAttribute('aria-label', 'Order ticket active. Drag entry, take profit, or stop loss. Press Enter to confirm.')
+    if (focus) this.container.focus({ preventScroll: true })
+  }
+
   private applyReplaySelectionState(): void {
     let state = this.replaySelectionState
     if (state.mode === 'active') {
@@ -1988,9 +2014,7 @@ export class LwcAdapter implements ChartAdapter {
         this.container.setAttribute('aria-label', 'Select replay start bar. Use Left and Right arrows, then Enter.')
         queueMicrotask(() => this.container?.focus({ preventScroll: true }))
       } else {
-        this.container.removeAttribute('tabindex')
-        this.container.removeAttribute('role')
-        this.container.removeAttribute('aria-label')
+        this.syncOrderKeyboardState(this.orderPrimitive.lines)
       }
     }
     this.applyChartInteractionLock()

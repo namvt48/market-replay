@@ -85,7 +85,7 @@ function ShortcutHelp({ onClose }: { onClose: () => void }) {
                 {entries.map((shortcut) => (
                   <li key={shortcut.id} className="grid gap-1 border-b border-line px-3 py-2.5 last:border-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-4">
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2 text-ui-body text-ink">{shortcut.support === 'unavailable' ? <CircleSlash2 size={13} className="shrink-0 text-dim" /> : <Check size={13} className="shrink-0 text-profit-bright" />}<span>{shortcut.action}</span>{shortcut.support === 'adapted' ? <span className="rounded-[3px] bg-active/10 px-1.5 py-0.5 text-[10px] font-semibold text-active-bright">ADAPTED</span> : null}</div>
+                      <div className="flex items-center gap-2 text-ui-body text-ink">{shortcut.support === 'unavailable' ? <CircleSlash2 size={13} className="shrink-0 text-dim" /> : <Check size={13} className="shrink-0 text-profit-bright" />}<span>{shortcut.action}</span>{shortcut.support === 'adapted' ? <span className="rounded-[3px] bg-active/10 px-1.5 py-0.5 text-ui-meta font-semibold text-active-bright">ADAPTED</span> : null}</div>
                       {shortcut.note ? <p className="mt-1 pl-5 text-ui-meta leading-relaxed text-dim">{shortcut.note}</p> : null}
                     </div>
                     <div className="flex flex-wrap gap-1 pl-5 sm:justify-end sm:pl-0">{shortcut.keys.map((key) => <kbd key={key} className="rounded-[3px] border border-line-strong bg-surface-2 px-1.5 py-0.5 font-mono text-ui-meta text-muted">{key}</kbd>)}</div>

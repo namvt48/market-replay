@@ -6,6 +6,47 @@ export class BarSource {
 
   constructor(frame: BarFrame) { this.frame = frame }
 
+  append(page: BarFrame): BarSource {
+    if (page.count === 0) return this
+    if (page.tickNum !== this.frame.tickNum || page.tickDen !== this.frame.tickDen) {
+      throw new Error('Cannot append bars with a different tick size')
+    }
+    let pageFrom = 0
+    while (pageFrom < page.count && page.ts[pageFrom] <= this.lastTs) pageFrom += 1
+    if (pageFrom === page.count) return this
+    const appended = page.count - pageFrom
+    const count = this.frame.count + appended
+    const ts = new Uint32Array(count)
+    const open = new Int32Array(count)
+    const high = new Int32Array(count)
+    const low = new Int32Array(count)
+    const close = new Int32Array(count)
+    const volume = new Uint32Array(count)
+    ts.set(this.frame.ts)
+    open.set(this.frame.open)
+    high.set(this.frame.high)
+    low.set(this.frame.low)
+    close.set(this.frame.close)
+    volume.set(this.frame.volume)
+    ts.set(page.ts.subarray(pageFrom), this.frame.count)
+    open.set(page.open.subarray(pageFrom), this.frame.count)
+    high.set(page.high.subarray(pageFrom), this.frame.count)
+    low.set(page.low.subarray(pageFrom), this.frame.count)
+    close.set(page.close.subarray(pageFrom), this.frame.count)
+    volume.set(page.volume.subarray(pageFrom), this.frame.count)
+    return new BarSource({
+      count,
+      tickNum: this.frame.tickNum,
+      tickDen: this.frame.tickDen,
+      ts,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    })
+  }
+
   get count(): number { return this.frame.count }
   get firstTs(): number { return this.frame.count > 0 ? this.frame.ts[0] : 0 }
   get lastTs(): number { return this.frame.count > 0 ? this.frame.ts[this.frame.count - 1] : 0 }

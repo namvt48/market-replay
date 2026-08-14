@@ -33,36 +33,41 @@ func (s *Server) handleListIndicators(w http.ResponseWriter, _ *http.Request) {
 // objects) rather than query-string-shaped, same reasoning already applied
 // to POST /api/v1/drawings.
 func (s *Server) handleRunIndicator(w http.ResponseWriter, r *http.Request) {
-	symbol, err := requiredParam(r, "symbol")
+	query := r.URL.Query()
+	symbol, err := requiredParam(query, "symbol")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	scriptID, err := requiredParam(r, "script")
+	scriptID, err := requiredParam(query, "script")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	tf := r.URL.Query().Get("tf")
+	tf := query.Get("tf")
 	if tf == "" {
 		tf = "1m"
 	}
-	at, err := parseInt64Required(r, "at")
+	if !validTimeframe(tf) {
+		writeError(w, fmt.Errorf("%w: invalid chart timeframe", errBadRequest))
+		return
+	}
+	at, err := parseInt64Required(query, "at")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	before, err := parseIntClamped(r, "before", 1500, 0, 20000)
+	before, err := parseIntClamped(query, "before", 1500, 0, 20000)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	after, err := parseIntClamped(r, "after", 0, 0, 20000)
+	after, err := parseIntClamped(query, "after", 0, 0, 20000)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	maxTs, err := parseInt64(r, "to", at)
+	maxTs, err := parseInt64(query, "to", at)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -92,11 +97,20 @@ func (s *Server) handleRunIndicator(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result indicators.RunResult
-	err = s.Registry.WithDataset(symbol, tf, func(file *bars.BarFile, cal *bars.Calendar, _ string) error {
+	err = s.Registry.WithDataset(symbol, "1m", func(file *bars.BarFile, cal *bars.Calendar, _ string) error {
 		var runErr error
-		result, runErr = s.Indicators.Run(scriptID, file, cal, meta, indicators.RunParams{
+		params := indicators.RunParams{
 			At: at, Before: before, After: after, MaxTs: maxTs, Overrides: body.Inputs,
-		})
+		}
+		if tf == "1m" {
+			result, runErr = s.Indicators.Run(r.Context(), scriptID, file, cal, meta, params)
+			return runErr
+		}
+		displayBars, err := bars.AggregateChartWindow(file, cal, meta, tf, at, before, after, maxTs)
+		if err != nil {
+			return err
+		}
+		result, runErr = s.Indicators.RunChart(r.Context(), scriptID, displayBars, file, cal, meta, params)
 		return runErr
 	})
 	if err != nil {

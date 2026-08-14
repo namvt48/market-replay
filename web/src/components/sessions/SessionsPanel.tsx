@@ -1,4 +1,4 @@
-import { ChevronDown, Clock3, Download, Pause, Play, Square, Trash2 } from 'lucide-react'
+import { ChevronDown, Clock3, Download, Pause, Play, Plus, Square, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { deleteEmptySessions, deleteSession, fetchSessions, fetchTrades, patchSession } from '../../api/client'
@@ -9,11 +9,11 @@ import { useDismissableLayer } from '../../hooks/use-dismissable-layer'
 import { replayEngine } from '../../replay/replay-engine'
 import { shortReplaySessionHash } from '../../replay/session-state'
 import { useReplaySelector } from '../../replay/use-replay'
+import { TradeHistoryTable } from '../trades/TradeHistoryTable'
 import { tradeHistoryCsv } from './trade-history-csv'
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 })
-const dateTime = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-
+const sessionDateTime = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 function durationLabel(seconds: number): string {
   const totalMinutes = Math.max(0, Math.floor(seconds / 60))
   const days = Math.floor(totalMinutes / 1440)
@@ -115,25 +115,23 @@ function SessionDetails({ session, trades, loading, current, deleting, onRefresh
         </div>
       </dl>
 
-      <div className="flex min-h-11 items-center justify-between gap-2 border-y border-line px-3">
-        <div className="flex items-baseline gap-2"><h4 className="text-ui-meta font-semibold text-muted">TRADE JOURNAL</h4><span className="font-mono text-ui-meta text-dim">{loading ? 'Loading…' : `${trades.length} closed`}</span></div>
-        <button type="button" disabled={loading || trades.length === 0} onClick={() => downloadTradeHistory(session, trades)} className="secondary-button h-8 min-h-8 px-2.5" aria-label="Download trade history"><Download size={13} />CSV</button>
-      </div>
-      {trades.length > 0 ? (
-        <ol className="divide-y divide-line">
-          {trades.toReversed().map((trade) => (
-            <li key={trade.id} className="grid grid-cols-[1fr_auto] gap-3 px-3 py-2.5 text-ui-body [content-visibility:auto]">
-              <div className="min-w-0">
-                <span className={trade.side === 'long' ? 'text-profit-bright' : 'text-loss-bright'}>{trade.side.toUpperCase()}</span>
-                <span className="ml-1.5 text-ink">{trade.qty} {trade.symbol}</span>
-                <time className="mt-0.5 block truncate font-mono text-ui-meta text-dim" dateTime={new Date(trade.exitTs * 1000).toISOString()}>{dateTime.format(trade.entryTs * 1000)} → {dateTime.format(trade.exitTs * 1000)}</time>
-                <span className="mt-0.5 block font-mono text-ui-meta text-muted">MFE {trade.mfeTicks}t · MAE {trade.maeTicks}t · R {trade.rMultiple === null ? '—' : trade.rMultiple.toFixed(2)}</span>
-              </div>
-              <span className={`font-mono font-semibold ${trade.realizedCents >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{money.format(trade.realizedCents / 100)}</span>
-            </li>
-          ))}
-        </ol>
-      ) : loading ? <p className="px-3 py-4 text-center text-ui-body text-dim">Loading the complete journal…</p> : null}
+      <TradeHistoryTable
+        headingId={`session-trade-history-${session.id}`}
+        loading={loading}
+        trades={trades.map((trade) => ({
+          id: trade.id,
+          symbol: trade.symbol,
+          side: trade.side,
+          qty: trade.qty,
+          entryTime: trade.entryTs,
+          exitTime: trade.exitTs,
+          realizedCents: trade.realizedCents,
+          mfeTicks: trade.mfeTicks,
+          maeTicks: trade.maeTicks,
+          rMultiple: trade.rMultiple,
+        }))}
+        action={<button type="button" disabled={loading || trades.length === 0} onClick={() => downloadTradeHistory(session, trades)} className="secondary-button h-8 min-h-8 px-2.5" aria-label="Download trade history"><Download size={13} />CSV</button>}
+      />
     </section>
   )
 }
@@ -251,7 +249,7 @@ export function SessionsPanel() {
           <h2 className="text-ui-body font-semibold text-ink">Journal</h2>
           <p className={`text-ui-meta ${replay.sessionId ? 'text-profit-bright' : 'text-dim'}`}>{replay.sessionId ? `Active #${shortReplaySessionHash(replay.sessionId)}` : 'No active session · replay is temporary'}</p>
         </div>
-        <button type="button" onClick={() => replayEngine.beginReplaySelection({ createSession: true })} className="secondary-button h-8 min-h-8 px-2.5">New session</button>
+        <button type="button" onClick={() => replayEngine.beginReplaySelection({ createSession: true })} className="primary-button h-7 px-2.5" aria-label="New session"><Plus size={13} />New</button>
       </div>
       {emptyLegacyCount > 0 ? (
         <div className="flex items-center justify-between border-b border-line px-3 py-2 text-ui-meta">
@@ -295,7 +293,7 @@ export function SessionsPanel() {
                         <ChevronDown size={13} className={`text-dim transition-transform ${selectedRow ? 'rotate-180' : ''}`} aria-hidden="true" />
                       </span>
                     </span>
-                    <span className="mt-0.5 block truncate font-mono text-ui-meta text-dim">{dateTime.format((session.cursorTs || session.startTs) * 1000)}</span>
+                    <span className="mt-0.5 block truncate font-mono text-ui-meta text-dim">{sessionDateTime.format((session.cursorTs || session.startTs) * 1000)}</span>
                   </span>
                 </span>
                 <dl className="grid grid-cols-4 border-t border-line text-center text-ui-meta">

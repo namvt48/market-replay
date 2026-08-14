@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  amendOrder,
   cancelAllOrders,
   cancelOrder,
   createFillEngine,
@@ -148,6 +149,33 @@ describe('fill engine rules', () => {
     expect(closed.position).toBeNull()
     expect(closed.orders).toEqual([])
     expect(closed.trades).toHaveLength(1)
+  })
+
+  it('freezes original protection and records later stop/target adjustments on the closed trade', () => {
+    const pending = placeEntryBracket(visibleState(), {
+      side: 'buy', type: 'limit', qty: 1, priceTicks: 100,
+      stopLossTicks: 95, takeProfitTicks: 105,
+    })
+    const opened = stepFillEngine(pending, bar(120, 100, 101, 99, 100))
+    const stop = opened.orders.find((order) => order.role === 'stopLoss')
+    const target = opened.orders.find((order) => order.role === 'takeProfit')
+    expect(stop).toBeDefined()
+    expect(target).toBeDefined()
+
+    const trailed = amendOrder(opened, stop?.id ?? '', 97)
+    const adjusted = amendOrder(trailed, target?.id ?? '', 108)
+    const exitPending = placeOrder(adjusted, { side: 'sell', type: 'market', qty: 1 })
+    const closed = stepFillEngine(exitPending, bar(180, 102))
+
+    expect(closed.trades[0]).toMatchObject({
+      initialStopTicks: 95,
+      initialTakeProfitTicks: 105,
+      exitReason: 'manual',
+      protectionAdjustments: [
+        { role: 'stopLoss', ts: 120, priceTicks: 97 },
+        { role: 'takeProfit', ts: 120, priceTicks: 108 },
+      ],
+    })
   })
 
   it('calculates tick P&L and round-trip fees in integer cents', () => {

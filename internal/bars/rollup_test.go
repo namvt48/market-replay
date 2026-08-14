@@ -146,6 +146,112 @@ func TestAggregateChartWindowRollupMatchesScan(t *testing.T) {
 	}
 }
 
+// TestAggregateRTHChartWindowRollupMatchesScan keeps the RTH index honest by
+// comparing it with the existing raw-filter implementation. The cases include
+// multi-hour, daily, weekly and monthly buckets plus spoiler boundaries that
+// cut the newest RTH entry in half.
+func TestAggregateRTHChartWindowRollupMatchesScan(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := model.SymbolMeta{Kind: "future", SessionTz: "America/New_York"}
+	file, calendar := buildSessionFixture(t, 70, time.Date(2025, time.January, 5, 18, 0, 0, 0, location))
+	if err := file.attachRTHRollups(meta); err != nil {
+		t.Fatal(err)
+	}
+	scanOnly := *file
+	scanOnly.rollups = &rollups{hourly: file.rollups.hourly, daily: file.rollups.daily}
+
+	lastTs := file.TsAt(file.Count() - 1)
+	midTs := file.TsAt(file.Count() / 2)
+	anchors := []struct {
+		name string
+		at   int64
+	}{
+		{"last", lastTs},
+		{"mid", midTs},
+		{"mid-session", midTs + 211*60},
+	}
+	boundaries := []struct {
+		name  string
+		delta int64
+	}{
+		{"exact", 0},
+		{"minus-47m", -47 * 60},
+		{"minus-2d", -2 * 86_400},
+	}
+
+	for _, tf := range []string{"1h", "2h", "4h", "120m", "1d", "1w", "2w", "1M"} {
+		parsed, err := parseChartTimeframe(tf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rthRollupFor(file, parsed) == nil {
+			t.Fatalf("%s is not routed through an RTH rollup; this table proves nothing for it", tf)
+		}
+		if rthRollupFor(&scanOnly, parsed) != nil {
+			t.Fatalf("%s reference path still has an RTH index attached", tf)
+		}
+		for _, anchor := range anchors {
+			for _, boundary := range boundaries {
+				for _, window := range [][2]int{{1, 0}, {12, 0}, {60, 0}, {3, 4}} {
+					name := fmt.Sprintf("%s/%s/%s/before=%d,after=%d", tf, anchor.name, boundary.name, window[0], window[1])
+					t.Run(name, func(t *testing.T) {
+						maxTs := anchor.at + boundary.delta
+						got, err := AggregateChartWindowForSession(file, calendar, meta, tf, anchor.at, window[0], window[1], maxTs, "rth")
+						if err != nil {
+							t.Fatalf("RTH rollup path: %v", err)
+						}
+						want, err := AggregateChartWindowForSession(&scanOnly, calendar, meta, tf, anchor.at, window[0], window[1], maxTs, "rth")
+						if err != nil {
+							t.Fatalf("RTH scan path: %v", err)
+						}
+						if len(got) != len(want) {
+							t.Fatalf("len = %d, want %d\n got=%+v\nwant=%+v", len(got), len(want), got, want)
+						}
+						for i := range want {
+							if got[i] != want[i] {
+								t.Fatalf("bar %d = %+v, want %+v", i, got[i], want[i])
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestAggregateRTHChartWindowFallsBackWhenIndexIsUnavailable(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := model.SymbolMeta{Kind: "future", SessionTz: "America/New_York"}
+	file, calendar := buildSessionFixture(t, 20, time.Date(2025, time.March, 3, 18, 0, 0, 0, location))
+	if err := file.attachRTHRollups(meta); err != nil {
+		t.Fatal(err)
+	}
+	indexed, err := AggregateChartWindowForSession(file, calendar, meta, "1w", file.TsAt(file.Count()-1), 8, 0, file.TsAt(file.Count()-1), "rth")
+	if err != nil {
+		t.Fatalf("indexed aggregation: %v", err)
+	}
+	file.rollups.rthHourly = nil
+	file.rollups.rthDaily = nil
+	fallback, err := AggregateChartWindowForSession(file, calendar, meta, "1w", file.TsAt(file.Count()-1), 8, 0, file.TsAt(file.Count()-1), "rth")
+	if err != nil {
+		t.Fatalf("fallback aggregation: %v", err)
+	}
+	if len(fallback) != len(indexed) {
+		t.Fatalf("fallback bars = %d, want %d", len(fallback), len(indexed))
+	}
+	for i := range indexed {
+		if fallback[i] != indexed[i] {
+			t.Fatalf("fallback bar %d = %+v, want %+v", i, fallback[i], indexed[i])
+		}
+	}
+}
+
 // TestRollupFallsBackWithoutCalendar pins the routing table: no .idx means
 // no daily index, so session timeframes keep using the raw scan (and the
 // hourly index still serves 'h').
@@ -304,5 +410,36 @@ func BenchmarkAggregateChartWindow_Scan_Monthly(b *testing.B) {
 		if _, err := AggregateChartWindow(&scanOnly, calendar, meta, "1M", lastTs, 240, 0, lastTs); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkAggregateRTHChartWindow_Monthly(b *testing.B) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		b.Fatal(err)
+	}
+	meta := model.SymbolMeta{Kind: "future", SessionTz: "America/New_York"}
+	file, calendar := buildSessionFixture(b, 400, time.Date(2023, time.January, 2, 18, 0, 0, 0, location))
+	if err := file.attachRTHRollups(meta); err != nil {
+		b.Fatal(err)
+	}
+	scanOnly := *file
+	scanOnly.rollups = &rollups{hourly: file.rollups.hourly, daily: file.rollups.daily}
+	lastTs := file.TsAt(file.Count() - 1)
+
+	for _, benchmark := range []struct {
+		name string
+		file *BarFile
+	}{
+		{"rollup", file},
+		{"scan", &scanOnly},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if _, err := AggregateChartWindowForSession(benchmark.file, calendar, meta, "1M", lastTs, 240, 0, lastTs, "rth"); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

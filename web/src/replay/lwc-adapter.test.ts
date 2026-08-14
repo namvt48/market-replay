@@ -392,6 +392,53 @@ describe('LwcAdapter drawing preview', () => {
     expect(chartMocks.chartApplyOptions).toHaveBeenLastCalledWith({ handleScroll: true, handleScale: true })
   })
 
+  it('confirms a chart order with Enter after dragging its take-profit leg', async () => {
+    const container = document.createElement('div')
+    const outsideControl = document.createElement('button')
+    document.body.append(outsideControl, container)
+    outsideControl.focus()
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    Object.defineProperties(container, {
+      setPointerCapture: { value: vi.fn() },
+      hasPointerCapture: { value: vi.fn().mockReturnValue(true) },
+      releasePointerCapture: { value: vi.fn() },
+    })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+    adapter.orderPrimitive.attached({
+      series: { priceToCoordinate: (price: number) => price, coordinateToPrice: (coordinate: number) => coordinate },
+      requestUpdate: vi.fn(), chart: {},
+    } as never)
+    const entry: OrderLine = {
+      id: 'ticket-entry', price: 100, label: 'Buy Limit', color: '#2962ff', kind: 'limit', editable: true,
+      role: 'entry', stage: 'draft', qty: 1, priceLabel: '100.00', showControls: true,
+      protectionEnabled: { takeProfit: true, stopLoss: true }, maxQuantity: 1_000,
+    }
+    adapter.setOrderLines([
+      entry,
+      { ...entry, id: 'ticket-take-profit', role: 'takeProfit', kind: 'takeProfit', price: 120, priceLabel: '120.00', label: 'Take Profit', color: '#089981', showControls: false },
+      { ...entry, id: 'ticket-stop-loss', role: 'stopLoss', kind: 'stopLoss', price: 90, priceLabel: '90.00', label: 'Stop Loss', color: '#ff9800', showControls: false },
+    ])
+    const moved = vi.fn()
+    const actions = vi.fn()
+    adapter.onOrderLineMove(moved)
+    adapter.onOrderLineAction(actions)
+
+    container.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 13, clientX: 300, clientY: 120 }))
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, buttons: 1, pointerId: 13, clientX: 300, clientY: 110 }))
+    container.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 13, clientX: 300, clientY: 110 }))
+    expect(document.activeElement).toBe(container)
+    const confirm = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    document.activeElement?.dispatchEvent(confirm)
+
+    expect(moved).toHaveBeenCalledWith('ticket-take-profit', 110)
+    expect(actions).toHaveBeenCalledWith({ type: 'confirm' })
+    expect(confirm.defaultPrevented).toBe(true)
+    adapter.destroy()
+    outsideControl.remove()
+    container.remove()
+  })
+
   it('keeps preview transient and persists only the completed drawing', async () => {
     const container = document.createElement('div')
     container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })

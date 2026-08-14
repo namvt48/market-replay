@@ -199,6 +199,12 @@ export class ChartViewController {
       ...connection,
       entryTime: this.projectTimestamp(connection.entryTime),
       exitTime: this.projectTimestamp(connection.exitTime),
+      ...(connection.protectionAdjustments ? {
+        protectionAdjustments: connection.protectionAdjustments.map((adjustment) => ({
+          ...adjustment,
+          time: this.projectTimestamp(adjustment.time),
+        })),
+      } : {}),
     })))
   }
 

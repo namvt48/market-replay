@@ -119,6 +119,19 @@ describe('dayKey', () => {
     })
   }
 
+  it('reuses the timezone conversion for an identical timestamp and reset rule', () => {
+    const formatToParts = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts')
+    const timestamp = 1_987_654_321
+
+    const expected = dayKey(timestamp, 17, 'America/New_York')
+    for (let index = 0; index < 20; index += 1) {
+      expect(dayKey(timestamp, 17, 'America/New_York')).toBe(expected)
+    }
+
+    expect(formatToParts).toHaveBeenCalledTimes(1)
+    formatToParts.mockRestore()
+  })
+
   it('keeps a whole 5pm-to-5pm session under one key across UTC midnight', () => {
     expect(dayKey(DAY0, 17)).toBe(dayKey(DAY0 + 16 * 3600, 17))
     expect(dayKey(DAY0 + 17 * 3600, 17)).toBe(dayKey(DAY0 + 16 * 3600, 17) + 1)

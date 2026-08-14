@@ -58,6 +58,7 @@ describe('chart view controller (one replay animation frame, per pane)', () => {
     setHistory: () => undefined,
     pushBars: () => undefined,
     setSpacerTimes: () => undefined,
+    setEconomicEventMarkers: () => undefined,
   } as unknown as ChartAdapter
   const controller = new ChartViewController({
     id: 'bench',
@@ -161,6 +162,7 @@ describe('trade stats', () => {
           entryTs: index, entryPriceTicks: 100, exitTs: index + 1, exitPriceTicks: 105,
           realizedCents: index % 3 === 0 ? -500 : 700, feesCents: 418,
           mfeTicks: 8, maeTicks: 3, rMultiple: 1.2,
+          initialStopTicks: null, initialTakeProfitTicks: null, protectionAdjustments: [], exitReason: 'manual',
         }],
       }
     }

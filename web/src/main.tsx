@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import '@fontsource-variable/roboto'
 import '@fontsource-variable/jetbrains-mono'
 import './index.css'
+import { loadDuringHydration } from './bootstrap-loader'
 import { hydratePreferences } from './store/preference-sync'
 
 // Workspace settings (chart appearance, layouts, timeframe preferences,
@@ -12,8 +13,10 @@ import { hydratePreferences } from './store/preference-sync'
 // hence the await plus a dynamic import rather than a static one at the
 // top. hydratePreferences never rejects and is time-bounded: an
 // unreachable backend delays the workspace, it does not stop it.
-await hydratePreferences()
-const { default: App } = await import('./App.tsx')
+const { default: App } = await loadDuringHydration(
+  hydratePreferences,
+  () => import('./App.tsx'),
+)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -16,6 +16,20 @@ import (
 // and override in the DSL scripts uses (e.g. "2000-0200").
 var sessionPattern = regexp.MustCompile(`^\d{4}-\d{4}$`)
 
+var aggregateDailyRange = bars.AggregateChartWindowForSession
+
+type dailyRangeCacheKey struct {
+	n          int
+	sessionDay int64
+}
+
+type dailyRangeCacheValue struct {
+	time      int64
+	high      float64
+	low       float64
+	available bool
+}
+
 // runContext is one Run's (or one Register describe-pass's) complete
 // mutable state: the bounded bar window, the current tick cursor, the
 // input descriptors/overrides/resolved values harvested during init(),
@@ -24,12 +38,13 @@ var sessionPattern = regexp.MustCompile(`^\d{4}-\d{4}$`)
 // requests, which is what keeps one script's module-level `let` state
 // from leaking between them.
 type runContext struct {
-	file     *bars.BarFile
-	calendar *bars.Calendar // nilable; only the dailyRange binding needs it, degrades to a raw-scan fallback when nil
-	symbol   model.SymbolMeta
-	window   bars.Window
-	tickSize float64
-	cursor   int // absolute bar index into file; valid only during onTick
+	file      barSeries
+	dailyFile *bars.BarFile
+	calendar  *bars.Calendar // nilable; only the dailyRange binding needs it, degrades to a raw-scan fallback when nil
+	symbol    model.SymbolMeta
+	window    bars.Window
+	tickSize  float64
+	cursor    int // absolute bar index into file; valid only during onTick
 
 	overrides map[string]any // caller-supplied; nil during Register's describe pass
 
@@ -37,18 +52,20 @@ type runContext struct {
 	descriptors []InputDescriptor
 	effective   map[string]any // key -> resolved value, built during init()
 
-	nextDrawID int64
-	draws      map[int64]*DrawIntent
-	drawOrder  []int64 // insertion order; ids are never reused, deletes just leave a gap
-	plots      []PlotPoint
+	nextDrawID  int64
+	draws       map[int64]*DrawIntent
+	drawOrder   []int64 // insertion order; ids are never reused, deletes just leave a gap
+	plots       []PlotPoint
+	dailyRanges map[dailyRangeCacheKey]dailyRangeCacheValue
 }
 
-func newRunContext(file *bars.BarFile, calendar *bars.Calendar, symbol model.SymbolMeta, window bars.Window, overrides map[string]any) *runContext {
+func newRunContext(file barSeries, dailyFile *bars.BarFile, calendar *bars.Calendar, symbol model.SymbolMeta, window bars.Window, overrides map[string]any) *runContext {
 	return &runContext{
-		file: file, calendar: calendar, symbol: symbol, window: window, tickSize: symbol.TickSize,
-		overrides: overrides,
-		effective: make(map[string]any),
-		draws:     make(map[int64]*DrawIntent),
+		file: file, dailyFile: dailyFile, calendar: calendar, symbol: symbol, window: window, tickSize: symbol.TickSize,
+		overrides:   overrides,
+		effective:   make(map[string]any),
+		draws:       make(map[int64]*DrawIntent),
+		dailyRanges: make(map[dailyRangeCacheKey]dailyRangeCacheValue),
 	}
 }
 
@@ -95,7 +112,7 @@ func (c *runContext) volumeAt(n int) float64 {
 	if idx < c.window.From || idx >= c.window.To {
 		return math.NaN()
 	}
-	return float64(c.file.VolumeAt(idx))
+	return c.file.VolumeAt(idx)
 }
 
 func (c *runContext) currentTime() int64 {
@@ -116,10 +133,22 @@ func (c *runContext) currentTime() int64 {
 // rather than hand-rolling daily bucketing a second time.
 func (c *runContext) dailyRange(n int) (map[string]any, error) {
 	at := c.currentTime()
-	if c.file == nil || at == 0 {
+	if c.dailyFile == nil || at == 0 {
 		return nil, nil
 	}
-	chartBars, err := bars.AggregateChartWindowForSession(c.file, c.calendar, c.symbol, "1d", at, n+2, 0, at, "eth")
+	sessionDay, err := bars.SessionDayStart(at, c.symbol)
+	if err != nil {
+		return nil, err
+	}
+	key := dailyRangeCacheKey{n: n, sessionDay: sessionDay}
+	if cached, ok := c.dailyRanges[key]; ok {
+		if !cached.available {
+			return nil, nil
+		}
+		return map[string]any{"time": cached.time, "high": cached.high, "low": cached.low}, nil
+	}
+
+	chartBars, err := aggregateDailyRange(c.dailyFile, c.calendar, c.symbol, "1d", at, n+2, 0, at, "eth")
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +160,7 @@ func (c *runContext) dailyRange(n int) (map[string]any, error) {
 		chartBars = chartBars[:len(chartBars)-1]
 	}
 	if len(chartBars) < n {
+		c.dailyRanges[key] = dailyRangeCacheValue{}
 		return nil, nil
 	}
 	window := chartBars[len(chartBars)-n:]
@@ -143,11 +173,12 @@ func (c *runContext) dailyRange(n int) (map[string]any, error) {
 			low = bar.LowTicks
 		}
 	}
-	return map[string]any{
-		"time": window[0].Time,
-		"high": float64(high) * c.tickSize,
-		"low":  float64(low) * c.tickSize,
-	}, nil
+	value := dailyRangeCacheValue{
+		time: window[0].Time, high: float64(high) * c.tickSize,
+		low: float64(low) * c.tickSize, available: true,
+	}
+	c.dailyRanges[key] = value
+	return map[string]any{"time": value.time, "high": value.high, "low": value.low}, nil
 }
 
 func (c *runContext) addDraw(kind string, t0 int64, y0 float64, t1 int64, y1 float64, label string, style map[string]any) int64 {

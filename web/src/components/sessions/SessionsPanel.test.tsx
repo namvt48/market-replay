@@ -45,6 +45,7 @@ const trade: ClosedTrade = {
   id: 'trade-1', sessionId: saved.id, symbol: 'NQ', side: 'long', qty: 1,
   entryTs: saved.startTs, entryPriceTicks: 60000, exitTs: saved.startTs + 600,
   exitPriceTicks: 60020, realizedCents: 25_000, feesCents: 0, mfeTicks: 24, maeTicks: 3, rMultiple: 2, createdAt: saved.startTs + 600,
+  initialStopTicks: null, initialTakeProfitTicks: null, protectionAdjustments: [], exitReason: 'manual',
 }
 
 beforeEach(() => {
@@ -70,6 +71,8 @@ describe('SessionsPanel', () => {
     expect(screen.getAllByText(/paused/i).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('$250.00')).length).toBeGreaterThan(0)
     expect(screen.getByText('100%')).toBeVisible()
+    expect(screen.getByRole('table', { name: 'Trade history' })).toBeVisible()
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual(['Trade', 'Time', 'MFE/MAE', 'P&L / R'])
     expect(screen.getByText('LONG')).toBeVisible()
   })
 
@@ -108,7 +111,11 @@ describe('SessionsPanel', () => {
   it('marks only the Journal action as an explicit session creation', async () => {
     const user = userEvent.setup()
     render(<SessionsPanel />)
-    await user.click(screen.getByRole('button', { name: 'New session' }))
+    const newSession = screen.getByRole('button', { name: 'New session' })
+    expect(newSession).toHaveClass('primary-button', 'h-7', 'px-2.5')
+    expect(newSession.querySelector('svg')).toBeInTheDocument()
+    expect(newSession).toHaveTextContent(/^New$/)
+    await user.click(newSession)
     expect(mocks.beginReplaySelection).toHaveBeenCalledWith({ createSession: true })
   })
 

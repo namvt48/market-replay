@@ -109,6 +109,14 @@ export interface ClosedTrade {
   mfeTicks: number
   maeTicks: number
   rMultiple: number | null
+  initialStopTicks: number | null
+  initialTakeProfitTicks: number | null
+  protectionAdjustments: Array<{
+    role: 'stopLoss' | 'takeProfit'
+    ts: number
+    priceTicks: number
+  }>
+  exitReason: 'manual' | 'stopLoss' | 'takeProfit'
   createdAt: number
 }
 

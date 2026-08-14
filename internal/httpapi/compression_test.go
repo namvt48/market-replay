@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -14,11 +15,15 @@ import (
 )
 
 func TestWithCompression_GzipsJSONWhenAccepted(t *testing.T) {
-	s := newTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/symbols", nil)
+	payload := []byte(`{"data":"` + strings.Repeat("x", minGzipSize) + `"}`)
+	handler := withCompression(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(payload)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/large-json", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -42,8 +47,8 @@ func TestWithCompression_GzipsJSONWhenAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decompress: %v", err)
 	}
-	if !bytes.Contains(decoded, []byte(`"symbol":"NQ"`)) {
-		t.Errorf("decompressed body missing expected content: %s", decoded)
+	if !bytes.Equal(decoded, payload) {
+		t.Errorf("decompressed body differs from payload")
 	}
 }
 
@@ -58,6 +63,36 @@ func TestWithCompression_SkipsWhenNotAccepted(t *testing.T) {
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte(`"symbol":"NQ"`)) {
 		t.Errorf("body missing expected content: %s", rec.Body.String())
+	}
+}
+
+func TestWithCompression_SkipsSmallResponse(t *testing.T) {
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want unset for a small response", got)
+	}
+	if got := rec.Body.String(); got != `{"status":"ok"}`+"\n" {
+		t.Fatalf("body = %q, want health payload unchanged", got)
+	}
+}
+
+func TestWithCompression_RespectsGzipQualityZero(t *testing.T) {
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/symbols", nil)
+	req.Header.Set("Accept-Encoding", "br, gzip;q=0")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding = %q, want unset for gzip;q=0", got)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"symbol":"NQ"`)) {
+		t.Fatalf("body is not the uncompressed symbols payload: %s", rec.Body.String())
 	}
 }
 
@@ -147,11 +182,14 @@ func TestHandleSPA_NoCache(t *testing.T) {
 // frame gets the cheap level (it is int32 columns fetched on every seek),
 // everything else keeps the ratio-optimised default.
 func TestCompressionLevelByContentType(t *testing.T) {
-	if got := poolForContentType(bars.ContentType); got != &gzipBinaryPool {
+	if got := poolForResponse("/api/v1/bars/at", bars.ContentType); got != &gzipBinaryPool {
 		t.Errorf("bar frame routed to the text pool")
 	}
+	if got := poolForResponse("/api/v1/chart-bars/at", "application/json"); got != &gzipBinaryPool {
+		t.Errorf("chart-bars JSON routed to the text pool")
+	}
 	for _, contentType := range []string{"application/json", "text/html; charset=utf-8", "text/css", ""} {
-		if got := poolForContentType(contentType); got != &gzipTextPool {
+		if got := poolForResponse("/api/v1/symbols", contentType); got != &gzipTextPool {
 			t.Errorf("%q routed to the binary pool", contentType)
 		}
 	}

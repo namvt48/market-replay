@@ -155,6 +155,59 @@ describe('ReplayEngine multi-view invariant', () => {
     engine.destroy()
   })
 
+  it('executes one indicator request for panes sharing symbol, timeframe, cursor, and inputs', async () => {
+    const engine = new ReplayEngine()
+    const panes = [adapter(), adapter(), adapter(), adapter()]
+    for (const [index, pane] of panes.entries()) {
+      await engine.registerChartView(`pane-${index}`, document.createElement('div'), pane.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    }
+    await engine.seek(120)
+    engineMocks.runIndicator.mockClear()
+    panes.forEach((pane) => pane.setIndicators.mockClear())
+
+    engine.addIndicator({
+      id: 'killzones', name: 'Killzones', version: 1, meta: { onMainPanel: true },
+      inputs: [{ kind: 'bool', key: 'show_asia', label: 'Show Asia', default: true }],
+    })
+
+    await vi.waitFor(() => expect(panes.every((pane) => (
+      pane.setIndicators.mock.calls.some(([results]) => results.length === 1)
+    ))).toBe(true))
+    expect(engineMocks.runIndicator).toHaveBeenCalledOnce()
+    expect(engineMocks.runIndicator).toHaveBeenCalledWith(
+      'NQ', '1m', 'killzones', 120, { show_asia: true }, expect.any(AbortSignal),
+    )
+    engine.destroy()
+  })
+
+  it('fans three indicator executions out to four identical panes', async () => {
+    const engine = new ReplayEngine()
+    const panes = [adapter(), adapter(), adapter(), adapter()]
+    for (const [index, pane] of panes.entries()) {
+      await engine.registerChartView(`pane-${index}`, document.createElement('div'), pane.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    }
+    await engine.seek(120)
+    for (const id of ['killzones', 'fractals', 'gb69-cbmor']) {
+      engine.addIndicator({ id, name: id, version: 1, meta: { onMainPanel: true }, inputs: [] })
+      await vi.waitFor(() => expect(panes.every((pane) => (
+        pane.setIndicators.mock.calls.some(([results]) => results.length === engine.getSnapshot().indicators.length)
+      ))).toBe(true))
+    }
+    engineMocks.runIndicator.mockClear()
+    panes.forEach((pane) => pane.setIndicators.mockClear())
+
+    engine.refreshIndicator('killzones')
+
+    await vi.waitFor(() => expect(panes.every((pane) => (
+      pane.setIndicators.mock.calls.some(([results]) => results.length === 3)
+    ))).toBe(true))
+    expect(engineMocks.runIndicator).toHaveBeenCalledTimes(3)
+    expect(new Set(engineMocks.runIndicator.mock.calls.map((call) => call[2]))).toEqual(
+      new Set(['killzones', 'fractals', 'gb69-cbmor']),
+    )
+    engine.destroy()
+  })
+
   it('clears stale indicator output before rendering the next replay cursor', async () => {
     const engine = new ReplayEngine()
     const view = adapter()
@@ -217,6 +270,36 @@ describe('ReplayEngine multi-view invariant', () => {
 
     engine.stepBack()
     expect(engine.getSnapshot().cursorTs).toBe(0)
+    engine.destroy()
+  })
+
+  it('prefetches the next raw page before replay reaches the loaded window edge', async () => {
+    const nextFrame: BarFrame = {
+      count: 5,
+      tickNum: 1,
+      tickDen: 4,
+      ts: new Uint32Array([240, 300, 360, 420, 480]),
+      open: new Int32Array([404, 405, 406, 407, 408]),
+      high: new Int32Array([408, 409, 410, 411, 412]),
+      low: new Int32Array([400, 401, 402, 403, 404]),
+      close: new Int32Array([406, 407, 408, 409, 410]),
+      volume: new Uint32Array([10, 10, 10, 10, 10]),
+    }
+    engineMocks.fetchBarsAt.mockResolvedValueOnce(apiData.frame).mockResolvedValueOnce(nextFrame)
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.beginReplaySelection()
+    view.fireReplayBarSelect(180)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    engine.stepForward()
+    await vi.waitFor(() => expect(engineMocks.fetchBarsAt).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => {
+      engine.stepForward()
+      expect(engine.getSnapshot().cursorTs).toBe(300)
+    })
+    expect(engine.getSnapshot().status).toBe('ready')
     engine.destroy()
   })
 
@@ -360,7 +443,10 @@ describe('ReplayEngine multi-view invariant', () => {
       { time: 180, price: 102, text: '-1 @ 102.00', color: '#089981', shape: 'circle' },
     ])
     expect(view.setTradeConnections).toHaveBeenLastCalledWith([
-      { entryTime: 120, entryPrice: 100, exitTime: 180, exitPrice: 102 },
+      {
+        entryTime: 120, entryPrice: 100, exitTime: 180, exitPrice: 102, priceDecimals: 2, side: 'long',
+        initialStop: null, initialTakeProfit: null, protectionAdjustments: [], exitReason: 'manual',
+      },
     ])
     engine.destroy()
   })
@@ -417,8 +503,13 @@ describe('ReplayEngine multi-view invariant', () => {
       entryTs: 180,
       exitTs: 240,
     })])
-    expect(view.setTradeMarkers).toHaveBeenLastCalledWith([])
-    expect(view.setTradeConnections).toHaveBeenLastCalledWith([])
+    expect(view.setTradeMarkers).toHaveBeenLastCalledWith([
+      expect.objectContaining({ time: 180, shape: 'arrowUp' }),
+      expect.objectContaining({ time: 240, shape: 'circle' }),
+    ])
+    expect(view.setTradeConnections).toHaveBeenLastCalledWith([
+      expect.objectContaining({ entryTime: 180, exitTime: 240, side: 'long' }),
+    ])
     engine.destroy()
   })
 
@@ -531,6 +622,7 @@ describe('ReplayEngine multi-view invariant', () => {
       id: 'trade-1', sessionId: session.id, symbol: 'NQ', side: 'long', qty: 1,
       entryTs: 60, entryPriceTicks: 400, exitTs: 120, exitPriceTicks: 404,
       realizedCents: 500, feesCents: 0, mfeTicks: 8, maeTicks: 2, rMultiple: 2, createdAt: 120,
+      initialStopTicks: null, initialTakeProfitTicks: null, protectionAdjustments: [], exitReason: 'manual',
     }
     engineMocks.fetchTrades.mockResolvedValueOnce([trade])
 
@@ -554,11 +646,13 @@ describe('ReplayEngine multi-view invariant', () => {
       id: 'trade-short', sessionId: session.id, symbol: 'NQ', side: 'short', qty: 5,
       entryTs: 60, entryPriceTicks: 115_104, exitTs: 120, exitPriceTicks: 114_349,
       realizedCents: 18_875_000, feesCents: 0, mfeTicks: 755, maeTicks: 0, rMultiple: 2, createdAt: 120,
+      initialStopTicks: null, initialTakeProfitTicks: null, protectionAdjustments: [], exitReason: 'manual',
     }
     const longTrade: ClosedTrade = {
       id: 'trade-long', sessionId: session.id, symbol: 'NQ', side: 'long', qty: 2,
       entryTs: 120, entryPriceTicks: 112_000, exitTs: 180, exitPriceTicks: 112_400,
       realizedCents: 20_000, feesCents: 0, mfeTicks: 400, maeTicks: 0, rMultiple: 2, createdAt: 180,
+      initialStopTicks: null, initialTakeProfitTicks: null, protectionAdjustments: [], exitReason: 'manual',
     }
     engineMocks.fetchTrades.mockResolvedValueOnce([trade, longTrade])
 
@@ -571,8 +665,61 @@ describe('ReplayEngine multi-view invariant', () => {
       { time: 180, price: 28_100, text: '-2 @ 28,100.00', color: '#089981', shape: 'circle' },
     ])
     expect(view.setTradeConnections).toHaveBeenLastCalledWith([
-      { entryTime: 60, entryPrice: 28_776, exitTime: 120, exitPrice: 28_587.25 },
-      { entryTime: 120, entryPrice: 28_000, exitTime: 180, exitPrice: 28_100 },
+      {
+        entryTime: 60, entryPrice: 28_776, exitTime: 120, exitPrice: 28_587.25, priceDecimals: 2, side: 'short',
+        initialStop: null, initialTakeProfit: null, protectionAdjustments: [], exitReason: 'manual',
+      },
+      {
+        entryTime: 120, entryPrice: 28_000, exitTime: 180, exitPrice: 28_100, priceDecimals: 2, side: 'long',
+        initialStop: null, initialTakeProfit: null, protectionAdjustments: [], exitReason: 'manual',
+      },
+    ])
+    engine.destroy()
+  })
+
+  it('restores saved session trades after replay passes their exit', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    const session: ReplaySession = {
+      id: 'history-replay-session', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
+      equityCents: 1_000_000, status: 'paused', config: {}, createdAt: 0, updatedAt: 240,
+    }
+    const trade: ClosedTrade = {
+      id: 'history-trade', sessionId: session.id, symbol: 'NQ', side: 'long', qty: 1,
+      entryTs: 60, entryPriceTicks: 400, exitTs: 180, exitPriceTicks: 408,
+      realizedCents: 4_000, feesCents: 0, mfeTicks: 8, maeTicks: 0, rMultiple: 2, createdAt: 180,
+      initialStopTicks: null, initialTakeProfitTicks: null, protectionAdjustments: [], exitReason: 'manual',
+    }
+    engineMocks.fetchTrades.mockResolvedValueOnce([trade])
+
+    await engine.resumeSession(session)
+    expect(view.setTradeConnections).toHaveBeenLastCalledWith([
+      {
+        entryTime: 60, entryPrice: 100, exitTime: 180, exitPrice: 102, priceDecimals: 2, side: 'long',
+        initialStop: null, initialTakeProfit: null, protectionAdjustments: [], exitReason: 'manual',
+      },
+    ])
+
+    view.setTradeMarkers.mockClear()
+    view.setTradeConnections.mockClear()
+    engine.beginReplaySelection()
+    view.fireReplayBarSelect(120)
+    await vi.waitFor(() => expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', cursorTs: 120 }))
+    expect(view.setTradeMarkers).toHaveBeenLastCalledWith([])
+    expect(view.setTradeConnections).toHaveBeenLastCalledWith([])
+
+    engine.stepForward()
+    expect(engine.getSnapshot().cursorTs).toBe(180)
+    expect(view.setTradeMarkers).toHaveBeenLastCalledWith([
+      { time: 60, price: 100, text: '+1 @ 100.00', color: '#089981', shape: 'arrowUp' },
+      { time: 180, price: 102, text: '-1 @ 102.00', color: '#089981', shape: 'circle' },
+    ])
+    expect(view.setTradeConnections).toHaveBeenLastCalledWith([
+      {
+        entryTime: 60, entryPrice: 100, exitTime: 180, exitPrice: 102, priceDecimals: 2, side: 'long',
+        initialStop: null, initialTakeProfit: null, protectionAdjustments: [], exitReason: 'manual',
+      },
     ])
     engine.destroy()
   })

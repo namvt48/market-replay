@@ -1,10 +1,13 @@
 package indicators
 
 import (
+	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"market-replay/internal/bars"
 	"market-replay/internal/model"
 )
 
@@ -49,7 +52,7 @@ func TestEngine_VerticalLineAndMarkerBindings(t *testing.T) {
 	}
 	specs := linearSpecs(1_700_000_000, 3)
 	file := openFixtureFile(t, "NQ", "1m", specs, testMeta)
-	result, err := e.Run("vm", file, nil, testMeta, RunParams{At: specs[2].ts, Before: 3, MaxTs: specs[2].ts})
+	result, err := e.Run(context.Background(), "vm", file, nil, testMeta, RunParams{At: specs[2].ts, Before: 3, MaxTs: specs[2].ts})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -88,7 +91,7 @@ func TestEngine_RegisterRejectsMissingOnTick(t *testing.T) {
 	if err := e2.Register("no-ontick", "No OnTick", 1, []byte(noOnTickScript)); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	_, err := e2.Run("no-ontick", file, nil, testMeta, RunParams{At: 1_700_000_000 + 240, Before: 5, MaxTs: 1_700_000_000 + 240})
+	_, err := e2.Run(context.Background(), "no-ontick", file, nil, testMeta, RunParams{At: 1_700_000_000 + 240, Before: 5, MaxTs: 1_700_000_000 + 240})
 	if !errors.Is(err, ErrScriptFailed) {
 		t.Fatalf("want ErrScriptFailed, got %v", err)
 	}
@@ -100,7 +103,7 @@ func TestEngine_DescribeAndRunUnknownScript(t *testing.T) {
 		t.Fatalf("Describe: want ErrUnknownScript, got %v", err)
 	}
 	file := openFixtureFile(t, "NQ", "1m", linearSpecs(1_700_000_000, 5), testMeta)
-	if _, err := e.Run("nope", file, nil, testMeta, RunParams{At: 1_700_000_000, Before: 1, MaxTs: 1_700_000_000}); !errors.Is(err, ErrUnknownScript) {
+	if _, err := e.Run(context.Background(), "nope", file, nil, testMeta, RunParams{At: 1_700_000_000, Before: 1, MaxTs: 1_700_000_000}); !errors.Is(err, ErrUnknownScript) {
 		t.Fatalf("Run: want ErrUnknownScript, got %v", err)
 	}
 }
@@ -133,7 +136,7 @@ func TestEngine_RunRejectsInvalidOverride(t *testing.T) {
 	}
 	file := openFixtureFile(t, "NQ", "1m", linearSpecs(1_700_000_000, 5), testMeta)
 
-	_, err := e.Run("minimal", file, nil, testMeta, RunParams{
+	_, err := e.Run(context.Background(), "minimal", file, nil, testMeta, RunParams{
 		At: 1_700_000_000 + 240, Before: 5, MaxTs: 1_700_000_000 + 240,
 		Overrides: map[string]any{"count": "not-a-number"},
 	})
@@ -141,7 +144,7 @@ func TestEngine_RunRejectsInvalidOverride(t *testing.T) {
 		t.Fatalf("want ErrInvalidInput, got %v", err)
 	}
 
-	_, err = e.Run("minimal", file, nil, testMeta, RunParams{
+	_, err = e.Run(context.Background(), "minimal", file, nil, testMeta, RunParams{
 		At: 1_700_000_000 + 240, Before: 5, MaxTs: 1_700_000_000 + 240,
 		Overrides: map[string]any{"count": 1000.0}, // above declared max 100
 	})
@@ -160,7 +163,7 @@ func TestEngine_RunAppliesValidOverride(t *testing.T) {
 	// count=0 makes the script's own `if (inputs.count > 0)` guard skip
 	// every horizontalRay call — proves the override actually reaches the
 	// script, not just that it validates.
-	result, err := e.Run("minimal", file, nil, testMeta, RunParams{
+	result, err := e.Run(context.Background(), "minimal", file, nil, testMeta, RunParams{
 		At: 1_700_000_000 + 120, Before: 3, MaxTs: 1_700_000_000 + 120,
 		Overrides: map[string]any{"count": 0.0},
 	})
@@ -185,7 +188,7 @@ func TestEngine_RunRespectsMaxTsReplaySafety(t *testing.T) {
 	file := openFixtureFile(t, "NQ", "1m", specs, testMeta)
 
 	maxTs := start + 10*60 // the 11th bar (index 10)
-	result, err := e.Run("minimal", file, nil, testMeta, RunParams{
+	result, err := e.Run(context.Background(), "minimal", file, nil, testMeta, RunParams{
 		At: start + 19*60, Before: 20, After: 0, MaxTs: maxTs,
 	})
 	if err != nil {
@@ -221,12 +224,270 @@ onTick = (length, _moment, _, ta, inputs) => { while (true) {} };
 	file := openFixtureFile(t, "NQ", "1m", linearSpecs(1_700_000_000, 2), testMeta)
 
 	started := time.Now()
-	_, err := e.Run("infinite", file, nil, testMeta, RunParams{At: 1_700_000_000, Before: 1, MaxTs: 1_700_000_000})
+	_, err := e.Run(context.Background(), "infinite", file, nil, testMeta, RunParams{At: 1_700_000_000, Before: 1, MaxTs: 1_700_000_000})
 	elapsed := time.Since(started)
 	if !errors.Is(err, ErrScriptFailed) {
 		t.Fatalf("want ErrScriptFailed, got %v", err)
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("interrupt took too long: %v", elapsed)
+	}
+}
+
+func TestEngine_RunStopsWhenContextIsCanceled(t *testing.T) {
+	const infiniteLoopScript = `
+init = () => { indicator({onMainPanel: true}); };
+onTick = (length, _moment, _, ta, inputs) => { while (true) {} };
+`
+
+	e := NewEngine()
+	if err := e.Register("cancel", "Cancel", 1, []byte(infiniteLoopScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	file := openFixtureFile(t, "NQ", "1m", linearSpecs(1_700_000_000, 2), testMeta)
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(25*time.Millisecond, cancel)
+	defer timer.Stop()
+
+	started := time.Now()
+	_, err := e.Run(ctx, "cancel", file, nil, testMeta, RunParams{
+		At: 1_700_000_000, Before: 1, MaxTs: 1_700_000_000,
+	})
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("context cancellation took too long: %v", elapsed)
+	}
+}
+
+func TestEngine_RunCachesIdenticalResultWithoutSharingMutableState(t *testing.T) {
+	e := NewEngine()
+	if err := e.Register("minimal", "Minimal", 1, []byte(minimalScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	specs := linearSpecs(1_700_000_000, 8)
+	file := openFixtureFile(t, "NQ", "1m", specs, testMeta)
+	params := RunParams{At: specs[7].ts, Before: 8, MaxTs: specs[7].ts}
+	before := e.executions.Load()
+
+	first, err := e.Run(context.Background(), "minimal", file, nil, testMeta, params)
+	if err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	first.Plots[0].Value = -999
+	first.Draws[0].Style["callerMutation"] = true
+
+	second, err := e.Run(context.Background(), "minimal", file, nil, testMeta, params)
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if got := e.executions.Load() - before; got != 1 {
+		t.Fatalf("identical runs executed JS %d times, want 1", got)
+	}
+	if second.Plots[0].Value == -999 {
+		t.Fatal("cached plots share mutable backing storage with the caller")
+	}
+	if _, ok := second.Draws[0].Style["callerMutation"]; ok {
+		t.Fatal("cached drawing style shares mutable state with the caller")
+	}
+}
+
+func TestEngine_RunCacheSeparatesWindowAndOverrides(t *testing.T) {
+	e := NewEngine()
+	if err := e.Register("minimal", "Minimal", 1, []byte(minimalScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	specs := linearSpecs(1_700_000_000, 8)
+	file := openFixtureFile(t, "NQ", "1m", specs, testMeta)
+	before := e.executions.Load()
+
+	cases := []RunParams{
+		{At: specs[7].ts, Before: 8, MaxTs: specs[7].ts},
+		{At: specs[7].ts, Before: 4, MaxTs: specs[7].ts},
+		{At: specs[7].ts, Before: 8, MaxTs: specs[7].ts, Overrides: map[string]any{"count": 0.0}},
+	}
+	for _, params := range cases {
+		if _, err := e.Run(context.Background(), "minimal", file, nil, testMeta, params); err != nil {
+			t.Fatalf("Run(%+v): %v", params, err)
+		}
+	}
+	if got := e.executions.Load() - before; got != int64(len(cases)) {
+		t.Fatalf("distinct cache inputs executed JS %d times, want %d", got, len(cases))
+	}
+}
+
+func TestEngine_RunChartCacheIncludesAggregatedBarContent(t *testing.T) {
+	e := NewEngine()
+	if err := e.Register("minimal", "Minimal", 1, []byte(minimalScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	specs := linearSpecs(1_700_000_000, 2)
+	file := openFixtureFile(t, "NQ", "1m", specs, testMeta)
+	firstBars := []bars.ChartBar{{Time: specs[0].ts, OpenTicks: 10, HighTicks: 12, LowTicks: 9, CloseTicks: 11, Volume: 5}}
+	secondBars := []bars.ChartBar{{Time: specs[0].ts, OpenTicks: 20, HighTicks: 22, LowTicks: 19, CloseTicks: 21, Volume: 5}}
+	params := RunParams{At: specs[0].ts, Before: 1, MaxTs: specs[0].ts}
+	before := e.executions.Load()
+
+	first, err := e.RunChart(context.Background(), "minimal", firstBars, file, nil, testMeta, params)
+	if err != nil {
+		t.Fatalf("first RunChart: %v", err)
+	}
+	second, err := e.RunChart(context.Background(), "minimal", secondBars, file, nil, testMeta, params)
+	if err != nil {
+		t.Fatalf("second RunChart: %v", err)
+	}
+	if got := e.executions.Load() - before; got != 2 {
+		t.Fatalf("different chart content executed JS %d times, want 2", got)
+	}
+	if first.Plots[0].Value == second.Plots[0].Value {
+		t.Fatalf("different chart content returned the same close: %v", first.Plots[0].Value)
+	}
+}
+
+func TestEngine_RunCacheInvalidatesWhenScriptIsReregistered(t *testing.T) {
+	e := NewEngine()
+	const firstSource = `
+init = () => { indicator({onMainPanel: true}); };
+onTick = () => { plot('value', 1); };
+`
+	const secondSource = `
+init = () => { indicator({onMainPanel: true}); };
+onTick = () => { plot('value', 2); };
+`
+	if err := e.Register("replaceable", "Replaceable", 1, []byte(firstSource)); err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+	specs := linearSpecs(1_700_000_000, 2)
+	file := openFixtureFile(t, "NQ", "1m", specs, testMeta)
+	params := RunParams{At: specs[1].ts, Before: 1, MaxTs: specs[1].ts}
+
+	first, err := e.Run(context.Background(), "replaceable", file, nil, testMeta, params)
+	if err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if err := e.Register("replaceable", "Replaceable", 2, []byte(secondSource)); err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+	second, err := e.Run(context.Background(), "replaceable", file, nil, testMeta, params)
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+
+	if got := e.executions.Load(); got != 2 {
+		t.Fatalf("JS executions = %d, want 2 after script replacement", got)
+	}
+	if first.Plots[0].Value != 1 || second.Plots[0].Value != 2 {
+		t.Fatalf("plots before/after replacement = %v/%v, want 1/2", first.Plots[0].Value, second.Plots[0].Value)
+	}
+}
+
+func TestEngine_RunCacheInvalidatesWhenDatasetIsReopened(t *testing.T) {
+	e := NewEngine()
+	if err := e.Register("minimal", "Minimal", 1, []byte(minimalScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	specs := linearSpecs(1_700_000_000, 2)
+	firstFile := openFixtureFile(t, "NQ-first", "1m", specs, testMeta)
+	secondSpecs := append([]barSpec(nil), specs...)
+	secondSpecs[1].close = specs[1].close + 20
+	secondFile := openFixtureFile(t, "NQ-second", "1m", secondSpecs, testMeta)
+	params := RunParams{At: specs[1].ts, Before: 1, MaxTs: specs[1].ts}
+
+	first, err := e.Run(context.Background(), "minimal", firstFile, nil, testMeta, params)
+	if err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	second, err := e.Run(context.Background(), "minimal", secondFile, nil, testMeta, params)
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+
+	if got := e.executions.Load(); got != 2 {
+		t.Fatalf("JS executions = %d, want 2 after dataset reopen", got)
+	}
+	if first.Plots[0].Value == second.Plots[0].Value {
+		t.Fatalf("reopened dataset reused stale value %v", first.Plots[0].Value)
+	}
+}
+
+func TestEngine_CachedRunCancelsOnlyAfterLastWaiterLeaves(t *testing.T) {
+	e := NewEngine()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int64
+	compute := func(ctx context.Context) (RunResult, error) {
+		calls.Add(1)
+		close(started)
+		select {
+		case <-release:
+			return RunResult{Plots: []PlotPoint{{Key: "ok", Value: 1}}}, nil
+		case <-ctx.Done():
+			return RunResult{}, ctx.Err()
+		}
+	}
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := e.cachedRun(firstCtx, runCacheKey{}, compute)
+		firstResult <- err
+	}()
+	<-started
+
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := e.cachedRun(context.Background(), runCacheKey{}, compute)
+		secondResult <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for e.cacheWaiters(runCacheKey{}) != 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := e.cacheWaiters(runCacheKey{}); got != 2 {
+		t.Fatalf("waiters = %d, want 2", got)
+	}
+
+	cancelFirst()
+	if err := <-firstResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled waiter: got %v, want context.Canceled", err)
+	}
+	close(release)
+	if err := <-secondResult; err != nil {
+		t.Fatalf("remaining waiter lost shared computation: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("shared computation ran %d times, want 1", got)
+	}
+}
+
+func TestEngine_RunCacheKeepsSixtyFourMostRecentResults(t *testing.T) {
+	e := NewEngine()
+	if err := e.Register("minimal", "Minimal", 1, []byte(minimalScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	specs := linearSpecs(1_700_000_000, 65)
+	file := openFixtureFile(t, "NQ", "1m", specs, testMeta)
+	before := e.executions.Load()
+	runAt := func(index int) {
+		t.Helper()
+		if _, err := e.Run(context.Background(), "minimal", file, nil, testMeta, RunParams{
+			At: specs[index].ts, Before: 1, MaxTs: specs[index].ts,
+		}); err != nil {
+			t.Fatalf("Run at index %d: %v", index, err)
+		}
+	}
+
+	for index := 0; index < 64; index++ {
+		runAt(index)
+	}
+	runAt(0)  // refresh the oldest entry
+	runAt(64) // evicts index 1, now the least recently used
+	runAt(0)  // still cached
+	runAt(1)  // must execute again after eviction
+
+	if got := e.executions.Load() - before; got != 66 {
+		t.Fatalf("JS executions = %d, want 66 for a 64-entry LRU", got)
 	}
 }

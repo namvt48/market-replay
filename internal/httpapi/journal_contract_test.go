@@ -120,12 +120,14 @@ func TestJournalRejectsMalformedTrades(t *testing.T) {
 	id := createTestSession(t, s)
 
 	cases := map[string]string{
-		"no symbol":         `[{"id":"t1","side":"long","qty":1,"entryTs":1,"exitTs":2,"createdAt":2}]`,
-		"unknown side":      `[{"id":"t1","symbol":"NQ","side":"banana","qty":1,"entryTs":1,"exitTs":2,"createdAt":2}]`,
-		"zero quantity":     `[{"id":"t1","symbol":"NQ","side":"long","qty":0,"entryTs":1,"exitTs":2,"createdAt":2}]`,
-		"negative quantity": `[{"id":"t1","symbol":"NQ","side":"long","qty":-3,"entryTs":1,"exitTs":2,"createdAt":2}]`,
-		"negative time":     `[{"id":"t1","symbol":"NQ","side":"long","qty":1,"entryTs":-5,"exitTs":2,"createdAt":2}]`,
-		"exit before entry": `[{"id":"t1","symbol":"NQ","side":"long","qty":1,"entryTs":900,"exitTs":100,"createdAt":100}]`,
+		"no symbol":           `[{"id":"t1","side":"long","qty":1,"entryTs":1,"exitTs":2,"createdAt":2}]`,
+		"unknown side":        `[{"id":"t1","symbol":"NQ","side":"banana","qty":1,"entryTs":1,"exitTs":2,"createdAt":2}]`,
+		"zero quantity":       `[{"id":"t1","symbol":"NQ","side":"long","qty":0,"entryTs":1,"exitTs":2,"createdAt":2}]`,
+		"negative quantity":   `[{"id":"t1","symbol":"NQ","side":"long","qty":-3,"entryTs":1,"exitTs":2,"createdAt":2}]`,
+		"negative time":       `[{"id":"t1","symbol":"NQ","side":"long","qty":1,"entryTs":-5,"exitTs":2,"createdAt":2}]`,
+		"exit before entry":   `[{"id":"t1","symbol":"NQ","side":"long","qty":1,"entryTs":900,"exitTs":100,"createdAt":100}]`,
+		"invalid exit reason": `[{"id":"t1","symbol":"NQ","side":"long","qty":1,"entryTs":1,"exitTs":2,"exitReason":"liquidated","createdAt":2}]`,
+		"invalid adjustment":  `[{"id":"t1","symbol":"NQ","side":"long","qty":1,"entryTs":1,"exitTs":2,"protectionAdjustments":[{"role":"stopLoss","ts":3,"priceTicks":10}],"createdAt":2}]`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
