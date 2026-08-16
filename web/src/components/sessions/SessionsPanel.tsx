@@ -1,4 +1,4 @@
-import { ChevronDown, Clock3, Download, Pause, Play, Plus, Square, Trash2 } from 'lucide-react'
+import { ChevronDown, ClipboardCheck, Clock3, Download, Pause, Play, Plus, Square, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { deleteEmptySessions, deleteSession, fetchSessions, fetchTrades, patchSession } from '../../api/client'
@@ -9,6 +9,7 @@ import { useDismissableLayer } from '../../hooks/use-dismissable-layer'
 import { replayEngine } from '../../replay/replay-engine'
 import { shortReplaySessionHash } from '../../replay/session-state'
 import { useReplaySelector } from '../../replay/use-replay'
+import { useUiStore } from '../../store/ui-store'
 import { TradeHistoryTable } from '../trades/TradeHistoryTable'
 import { tradeHistoryCsv } from './trade-history-csv'
 
@@ -69,7 +70,7 @@ function SessionDetails({ session, trades, loading, current, deleting, onRefresh
   }
 
   return (
-    <section id={`session-details-${session.id}`} aria-label={`${session.symbol} ${session.tf} session journal`} className="border-t border-line bg-surface-0/35">
+    <section id={`session-details-${session.id}`} aria-label={`${session.symbol} ${session.tf} replay session`} className="border-t border-line bg-surface-0/35">
       <div className="flex items-center gap-2 p-3">
         {!current ? (
           <button type="button" disabled={busy} onClick={() => void run(() => replayEngine.resumeSession(session))} className="primary-button flex-1"><Play size={14} fill="currentColor" /> Activate</button>
@@ -144,6 +145,7 @@ interface SessionContextMenu {
 }
 
 export function SessionsPanel() {
+  const openReview = useUiStore((state) => state.openReview)
   const replay = useReplaySelector((snapshot) => ({
     sessionId: snapshot.sessionId,
     sessionStatus: snapshot.sessionStatus,
@@ -190,7 +192,7 @@ export function SessionsPanel() {
       }
       setTradesBySession(nextTrades)
       setLoadingTradeIds(new Set())
-      if (failedHistory) setError('Some journals could not be loaded. Activate a session after persistence reconnects to restore its full history.')
+      if (failedHistory) setError('Some trade histories could not be loaded. Activate a session after persistence reconnects to restore its full history.')
     } catch {
       if (version !== refreshVersion.current) return
       setLoadingTradeIds(new Set())
@@ -241,15 +243,23 @@ export function SessionsPanel() {
   const emptyLegacyCount = sessions.filter((session) => session.status !== 'active' && session.cursorTs === session.startTs && session.equityCents === 0 && Object.keys(session.config ?? {}).length === 0).length
   const contextSession = contextMenu ? sessions.find((session) => session.id === contextMenu.sessionId) ?? null : null
   const contextSessionCurrent = contextSession?.id === replay.sessionId && replay.sessionStatus === 'active'
+  const activeSession = replay.sessionStatus === 'active'
+    ? sessions.find((session) => session.id === replay.sessionId) ?? null
+    : null
 
   return (
     <div className="min-h-0 overflow-y-auto">
       <div className="flex min-h-12 items-center justify-between border-b border-line px-3">
         <div>
-          <h2 className="text-ui-body font-semibold text-ink">Journal</h2>
+          <h2 className="text-ui-body font-semibold text-ink">Replay sessions</h2>
           <p className={`text-ui-meta ${replay.sessionId ? 'text-profit-bright' : 'text-dim'}`}>{replay.sessionId ? `Active #${shortReplaySessionHash(replay.sessionId)}` : 'No active session · replay is temporary'}</p>
         </div>
-        <button type="button" onClick={() => replayEngine.beginReplaySelection({ createSession: true })} className="primary-button h-7 px-2.5" aria-label="New session"><Plus size={13} />New</button>
+        <div className="flex items-center gap-1.5">
+          {activeSession ? (
+            <button type="button" onClick={() => openReview({ id: activeSession.id, type: 'session', title: `${activeSession.symbol} · ${activeSession.tf} · #${shortReplaySessionHash(activeSession.id)}` })} className="secondary-button h-7 min-h-7 px-2.5" aria-label="Review active session"><ClipboardCheck size={13} />Review</button>
+          ) : null}
+          <button type="button" onClick={() => replayEngine.beginReplaySelection({ createSession: true })} className="primary-button h-7 px-2.5" aria-label="New session"><Plus size={13} />New</button>
+        </div>
       </div>
       {emptyLegacyCount > 0 ? (
         <div className="flex items-center justify-between border-b border-line px-3 py-2 text-ui-meta">
@@ -279,15 +289,16 @@ export function SessionsPanel() {
                 onClick={() => setSelectedId((currentId) => currentId === session.id ? null : session.id)}
                 onKeyDown={(event) => handleRowKeyDown(event, session)}
                 aria-expanded={selectedRow}
+                aria-current={current ? 'true' : undefined}
                 aria-controls={`session-details-${session.id}`}
                 aria-label={`Inspect ${session.symbol} ${session.tf} session ${shortReplaySessionHash(session.id)}`}
-                className="w-full text-left hover:bg-surface-2 aria-expanded:bg-surface-2"
+                className={`w-full text-left transition-colors ${current ? 'bg-active/10 ring-1 ring-inset ring-active/35 hover:bg-active/15 aria-expanded:bg-active/15' : 'hover:bg-surface-2 aria-expanded:bg-surface-2'}`}
               >
                 <span className="flex items-start gap-2.5 px-3 py-2.5">
                   <span className={`mt-0.5 grid size-7 shrink-0 place-items-center rounded-control ${current ? 'bg-active/15 text-active-bright' : 'bg-surface-3 text-muted'}`}><Clock3 size={13} /></span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between gap-2">
-                      <span className="min-w-0 truncate"><strong className="text-ui-body text-ink">{session.symbol} · {session.tf}</strong><span className="ml-1.5 font-mono text-ui-meta text-dim">#{shortReplaySessionHash(session.id)}</span></span>
+                      <span className="min-w-0 truncate"><strong className={`text-ui-body ${current ? 'text-active-bright' : 'text-ink'}`}>{session.symbol} · {session.tf}</strong><span className={`ml-1.5 font-mono text-ui-meta ${current ? 'text-[#9db7ff]' : 'text-dim'}`}>#{shortReplaySessionHash(session.id)}</span></span>
                       <span className="flex shrink-0 items-center gap-1.5">
                         <span className={`rounded-control px-1.5 py-0.5 text-ui-meta font-semibold uppercase ${statusTone(status)}`}>{status}</span>
                         <ChevronDown size={13} className={`text-dim transition-transform ${selectedRow ? 'rotate-180' : ''}`} aria-hidden="true" />
@@ -309,7 +320,7 @@ export function SessionsPanel() {
         })}
       </ul>
       {sessions.length > visibleCount ? <button type="button" onClick={() => setVisibleCount((count) => count + 30)} className="h-10 w-full border-t border-line text-ui-body text-muted hover:bg-surface-2 hover:text-ink">Show 30 older sessions</button> : null}
-      {!error && sessions.length === 0 ? <div className="grid place-items-center px-6 py-12 text-center"><Clock3 className="mb-3 text-dim" size={22} /><p className="text-ui-body text-muted">No saved sessions.</p><p className="mt-1 text-ui-meta text-dim">Replay normally for temporary practice, or create a session when you want to keep the journal.</p></div> : null}
+      {!error && sessions.length === 0 ? <div className="grid place-items-center px-6 py-12 text-center"><Clock3 className="mb-3 text-dim" size={22} /><p className="text-ui-body text-muted">No saved sessions.</p><p className="mt-1 text-ui-meta text-dim">Replay normally for temporary practice, or create a session when you want to preserve its trades and review.</p></div> : null}
       {contextMenu && contextSession ? createPortal(
         <div ref={contextMenuRef} role="menu" aria-label={`Session ${shortReplaySessionHash(contextSession.id)} actions`} style={{ left: contextMenu.left, top: contextMenu.top }} className="fixed z-[90] w-48 rounded-control border border-line-strong bg-[#111214] p-1 shadow-overlay">
           <button

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { ChartWorkspace } from './components/chart/ChartWorkspace'
 import { KeyboardCommandDialogs } from './components/KeyboardCommandDialogs'
 import { EvalProgressPanel } from './components/eval/EvalProgressPanel'
@@ -8,6 +9,8 @@ import { useHotkeys } from './hooks/use-hotkeys'
 import { ChartWorkspaceProvider } from './chart-workspace/ChartWorkspaceContext'
 import { useEvalTicker } from './replay/use-eval-session'
 import { EconomicCalendarChartSync } from './components/calendar/EconomicCalendarChartSync'
+
+const AnalyticsScreen = lazy(() => import('./components/analytics/AnalyticsScreen').then((module) => ({ default: module.AnalyticsScreen })))
 
 // Layout shell matching docs §16.5: chart+toolbar on the left, position/
 // orders/watchlist/study-list stack on the right, replay transport strip
@@ -52,6 +55,10 @@ function WorkspaceShell() {
 
 function App() {
   const path = typeof window !== 'undefined' ? window.location.pathname : ''
+  const analyticsSource = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('analytics') : null
+  if (path.startsWith('/analytics') || analyticsSource) {
+    return <Suspense fallback={<div className="grid h-full place-items-center bg-surface-0 text-ui-body text-muted" role="status">Loading analytics…</div>}><AnalyticsScreen /></Suspense>
+  }
   if (path.startsWith('/start')) {
     return <EvalSetupScreen />
   }

@@ -62,6 +62,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/econ/meta", s.handleEconMeta)
 	mux.HandleFunc("GET /api/v1/econ/week", s.handleEconWeek)
 
+	mux.HandleFunc("GET /api/v1/analytics/sources", s.handleAnalyticsSources)
+	mux.HandleFunc("GET /api/v1/analytics/performance", s.handleAnalyticsPerformance)
+	mux.HandleFunc("GET /api/v1/analytics/drawdown", s.handleAnalyticsDrawdown)
+	mux.HandleFunc("POST /api/v1/analytics/simulations/stop-loss", s.handleSimulationStopLoss)
+	mux.HandleFunc("POST /api/v1/analytics/simulations/risk-reward", s.handleSimulationRiskReward)
+	mux.HandleFunc("POST /api/v1/analytics/simulations/monte-carlo", s.handleSimulationMonteCarlo)
+	mux.HandleFunc("GET /api/v1/analytics/edge", s.handleAnalyticsEdge)
+	mux.HandleFunc("GET /api/v1/analytics/execution-discipline", s.handleAnalyticsExecution)
+
 	mux.HandleFunc("GET /api/v1/preferences", s.handleListPreferences)
 	mux.HandleFunc("PUT /api/v1/preferences/{key}", s.handlePutPreference)
 	mux.HandleFunc("DELETE /api/v1/preferences/{key}", s.handleDeletePreference)

@@ -9,14 +9,21 @@ import type { Timeframe } from '../api/types'
 
 export type CalendarImportanceFilter = '' | 'medium' | 'high'
 
+export interface ReviewSource {
+  id: string
+  type: 'session' | 'evaluation'
+  title: string
+}
+
 interface UiState {
   activeSymbol: string | null
   activeTf: Timeframe
   activePaneId: string
   activeTool: string | null
   maximizedPaneId: string | null
-  sidebarTab: 'trade' | 'sessions' | 'calendar' | 'evaluation'
+  sidebarTab: 'sessions' | 'calendar' | 'evaluation' | 'review' | 'analytics'
   sidebarOpen: boolean
+  reviewSource: ReviewSource | null
   calendarImportance: CalendarImportanceFilter
   calendarCountry: string
   setActiveSymbol: (symbol: string) => void
@@ -27,6 +34,7 @@ interface UiState {
   clearMaximizedPane: () => void
   setSidebarTab: (tab: UiState['sidebarTab']) => void
   setSidebarOpen: (open: boolean) => void
+  openReview: (source: ReviewSource) => void
   setCalendarImportance: (importance: CalendarImportanceFilter) => void
   setCalendarCountry: (country: string) => void
 }
@@ -37,8 +45,9 @@ export const useUiStore = create<UiState>((set) => ({
   activePaneId: 'pane-1',
   activeTool: null,
   maximizedPaneId: null,
-  sidebarTab: 'trade',
+  sidebarTab: 'sessions',
   sidebarOpen: true,
+  reviewSource: null,
   calendarImportance: 'high',
   calendarCountry: 'US',
   setActiveSymbol: (symbol) => set({ activeSymbol: symbol }),
@@ -49,6 +58,7 @@ export const useUiStore = create<UiState>((set) => ({
   clearMaximizedPane: () => set({ maximizedPaneId: null }),
   setSidebarTab: (sidebarTab) => set({ sidebarTab }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
+  openReview: (reviewSource) => set({ reviewSource, sidebarTab: 'review', sidebarOpen: true }),
   setCalendarImportance: (calendarImportance) => set({ calendarImportance }),
   setCalendarCountry: (calendarCountry) => set({ calendarCountry }),
 }))

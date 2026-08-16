@@ -1,6 +1,9 @@
 BINARY := bin/replay-server
-ECON_DUCKDB ?= ../data-engineering/economic-calendar/data/econ_calendar.duckdb
-ECON_JSONL ?= data/econ/economic_events.jsonl
+# Optional overrides — left empty, pipeline/export_econ_duckdb.py falls back
+# to config.yaml's pipeline.econ_duckdb / pipeline.econ_jsonl (the canonical
+# source of these paths; see config.yaml).
+ECON_DUCKDB ?=
+ECON_JSONL ?=
 
 .PHONY: build web-install web-build web-dev vet test test-race run econ-import econ-reload clean
 
@@ -33,7 +36,9 @@ run: build
 # Convert the normalized UTC DuckDB calendar into the spoiler-safe JSONL
 # source consumed by internal/econ. The exporter replaces the shard atomically.
 econ-import:
-	python3 pipeline/export_econ_duckdb.py --db "$(ECON_DUCKDB)" --out "$(ECON_JSONL)"
+	python3 pipeline/export_econ_duckdb.py \
+		$(if $(ECON_DUCKDB),--db "$(ECON_DUCKDB)") \
+		$(if $(ECON_JSONL),--out "$(ECON_JSONL)")
 
 # Import and hot-reload a running Compose service without rebuilding the image.
 econ-reload: econ-import

@@ -37,6 +37,7 @@ RUN apk add --no-cache ca-certificates wget \
     && addgroup -S replay && adduser -S replay -G replay
 WORKDIR /srv/replay
 COPY --from=go-build /out/replay-server ./replay-server
+COPY config.yaml ./config.yaml
 RUN mkdir -p /srv/replay/data && chown -R replay:replay /srv/replay
 USER replay
 

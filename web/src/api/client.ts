@@ -15,6 +15,7 @@ const sessionSchema = z.object({
   id: z.string(), symbol: z.string(), tf: timeframeSchema,
   startTs: z.number(), cursorTs: z.number(), equityCents: z.number(),
   status: z.enum(['active', 'paused', 'stopped']),
+  kind: z.enum(['replay', 'eval']),
   config: z.record(z.string(), z.unknown()).nullable(), createdAt: z.number(), updatedAt: z.number(),
 })
 const tradeSchema = z.object({
@@ -143,6 +144,11 @@ async function checkedFetch(input: RequestInfo | URL, init?: RequestInit): Promi
     const detail = await response.text().catch(() => '')
     throw new Error(`${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`)
   }
+}
+
+/** Shared validated API transport for domain clients that keep their own Zod schemas. */
+export async function fetchApi(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return checkedFetch(input, init)
 }
 
 export async function fetchSymbols(): Promise<SymbolMeta[]> {
@@ -288,10 +294,13 @@ export async function putWatchlist(symbols: string[]): Promise<string[]> {
   return z.array(z.string()).parse(await response.json())
 }
 
-export async function createSession(symbol: string, tf: Timeframe, startTs: number): Promise<string> {
+export async function createSession(
+  symbol: string, tf: Timeframe, startTs: number,
+  opts?: { kind?: 'replay' | 'eval'; initialBalanceCents?: number },
+): Promise<string> {
   const response = await checkedFetch('/api/v1/sessions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol, tf, startTs, config: {} }),
+    body: JSON.stringify({ symbol, tf, startTs, config: {}, kind: opts?.kind, initialBalanceCents: opts?.initialBalanceCents }),
   })
   return z.object({ id: z.string() }).parse(await response.json()).id
 }

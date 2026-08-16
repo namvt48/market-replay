@@ -22,10 +22,15 @@ function copyWorkspaceHead(targetDocument: Document): void {
   })
 }
 
-export function openChartPopout(paneId: string, title: string): ChartPopoutTarget | null {
+interface WorkspacePopoutOptions {
+  width: number
+  height: number
+}
+
+export function openWorkspacePopout(viewId: string, title: string, options: WorkspacePopoutOptions): ChartPopoutTarget | null {
   const left = Math.max(0, window.screenX + 72)
   const top = Math.max(0, window.screenY + 56)
-  const popup = window.open('', `market-replay-${paneId}`, `popup=yes,width=1280,height=800,left=${left},top=${top}`)
+  const popup = window.open('', `market-replay-${viewId}`, `popup=yes,width=${options.width},height=${options.height},left=${left},top=${top}`)
   if (!popup) return null
 
   const popupDocument = popup.document
@@ -42,4 +47,8 @@ export function openChartPopout(paneId: string, title: string): ChartPopoutTarge
   popupDocument.body.append(root)
   popup.focus()
   return { window: popup, root }
+}
+
+export function openChartPopout(paneId: string, title: string): ChartPopoutTarget | null {
+  return openWorkspacePopout(paneId, title, { width: 1280, height: 800 })
 }

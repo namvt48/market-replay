@@ -21,6 +21,8 @@ from typing import Any, Iterator, Sequence
 
 import duckdb
 
+from _pipeline_config import load_pipeline_config, resolve_repo_path
+
 IMPORTANCE_BY_LEVEL = {0: "none", 1: "low", 2: "medium", 3: "high"}
 EXPORT_QUERY = """
 SELECT
@@ -46,10 +48,23 @@ def utc_epoch_seconds(value: datetime) -> int:
 
 
 def event_record(row: Sequence[Any]) -> dict[str, Any]:
-    event_id, scheduled_utc, country, currency, title, impact_level, actual, forecast, previous, source = row
+    (
+        event_id,
+        scheduled_utc,
+        country,
+        currency,
+        title,
+        impact_level,
+        actual,
+        forecast,
+        previous,
+        source,
+    ) = row
     importance = IMPORTANCE_BY_LEVEL.get(int(impact_level))
     if importance is None:
-        raise ValueError(f"unsupported impact_level {impact_level!r} for event {event_id!r}")
+        raise ValueError(
+            f"unsupported impact_level {impact_level!r} for event {event_id!r}"
+        )
     record: dict[str, Any] = {
         "id": str(event_id),
         "ts": utc_epoch_seconds(scheduled_utc),
@@ -59,13 +74,19 @@ def event_record(row: Sequence[Any]) -> dict[str, Any]:
         "importance": importance,
         "source": str(source),
     }
-    for key, value in (("actual", actual), ("forecast", forecast), ("previous", previous)):
+    for key, value in (
+        ("actual", actual),
+        ("forecast", forecast),
+        ("previous", previous),
+    ):
         if value is not None and str(value) != "":
             record[key] = str(value)
     return record
 
 
-def rows(connection: duckdb.DuckDBPyConnection, batch_size: int = 5_000) -> Iterator[Sequence[Any]]:
+def rows(
+    connection: duckdb.DuckDBPyConnection, batch_size: int = 5_000
+) -> Iterator[Sequence[Any]]:
     cursor = connection.execute(EXPORT_QUERY)
     while batch := cursor.fetchmany(batch_size):
         yield from batch
@@ -89,7 +110,11 @@ def export_calendar(database: Path, output: Path) -> int:
         ) as temporary:
             temporary_path = Path(temporary.name)
             for row in rows(connection):
-                temporary.write(json.dumps(event_record(row), ensure_ascii=False, separators=(",", ":")))
+                temporary.write(
+                    json.dumps(
+                        event_record(row), ensure_ascii=False, separators=(",", ":")
+                    )
+                )
                 temporary.write("\n")
                 count += 1
             temporary.flush()
@@ -105,15 +130,37 @@ def export_calendar(database: Path, output: Path) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", required=True, type=Path, help="source econ_calendar.duckdb")
-    parser.add_argument("--out", required=True, type=Path, help="destination Market Replay JSONL shard")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        help="source econ_calendar.duckdb (default: config.yaml pipeline.econ_duckdb)",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="destination Market Replay JSONL shard (default: config.yaml pipeline.econ_jsonl)",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    count = export_calendar(args.db.resolve(), args.out.resolve())
-    print(json.dumps({"events": count, "output": str(args.out.resolve())}))
+    cfg = load_pipeline_config()
+
+    database = args.db.resolve() if args.db else None
+    if database is None and cfg.get("econ_duckdb"):
+        database = resolve_repo_path(cfg["econ_duckdb"])
+    output = args.out.resolve() if args.out else None
+    if output is None and cfg.get("econ_jsonl"):
+        output = resolve_repo_path(cfg["econ_jsonl"])
+    if database is None or output is None:
+        raise SystemExit(
+            "error: --db/--out not given, and not found in config.yaml "
+            "(pipeline.econ_duckdb / pipeline.econ_jsonl)"
+        )
+
+    count = export_calendar(database, output)
+    print(json.dumps({"events": count, "output": str(output)}))
     return 0
 
 

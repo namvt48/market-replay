@@ -42,6 +42,12 @@ type createSessionRequest struct {
 	Tf      string          `json:"tf"`
 	StartTs int64           `json:"startTs"`
 	Config  json.RawMessage `json:"config"`
+	// Kind and InitialBalanceCents are optional so pre-existing clients keep
+	// working unchanged: an empty Kind defaults to model.SessionKindReplay
+	// (see storage.Store.CreateSession), matching every session created
+	// before analytics needed to tell replay and evaluation apart.
+	Kind                string `json:"kind"`
+	InitialBalanceCents *int64 `json:"initialBalanceCents"`
 }
 
 // handleCreateSession serves POST /api/v1/sessions -> {id}. The server
@@ -61,9 +67,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, fmt.Errorf("%w: tf must be 1-1440m, 1-12h, 1d, 1-52w, or 1-12M", errBadRequest))
 		return
 	}
+	if req.Kind != "" && !model.ValidSessionKind(req.Kind) {
+		writeError(w, fmt.Errorf("%w: kind must be %q or %q", errBadRequest, model.SessionKindReplay, model.SessionKindEval))
+		return
+	}
 
 	sess, err := s.Store.CreateSession(r.Context(), model.Session{
 		Symbol: req.Symbol, Tf: req.Tf, StartTs: req.StartTs, Config: req.Config,
+		Kind: req.Kind, InitialBalanceCents: req.InitialBalanceCents,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -127,7 +138,9 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 // maxJournalTrades bounds one journal write. A hand-traded replay session
 // closes tens of trades, not thousands; the cap exists so a malformed or
 // runaway client cannot push an unbounded body through a single transaction.
-const maxJournalTrades = 10_000
+// A var, not a const, so ApplyLimits (limits.go) can override it from
+// config.yaml's limits.max_journal_trades at startup.
+var maxJournalTrades = 10_000
 
 // validateJournal checks the journal against the same rules the client's own
 // schema enforces when it reads the journal back. Ids are not among them: row

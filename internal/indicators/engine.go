@@ -45,6 +45,14 @@ type Engine struct {
 	cache    map[runCacheKey]*runCacheEntry
 	cacheLRU list.List
 
+	// sessions are suspended Runtimes, keyed by the stream of runs each may
+	// serve. They are the second layer under `cache`: the result cache
+	// answers an exactly-repeated request, a session answers the far more
+	// common "same stream, cursor moved forward" one. See session.go.
+	sessionMu  sync.Mutex
+	sessions   map[sessionKey]*runSession
+	sessionLRU list.List
+
 	// executions counts actual goja executions, excluding cache hits. It is
 	// intentionally internal; tests use it to prove deduplication rather
 	// than relying on timing assertions.
@@ -53,12 +61,29 @@ type Engine struct {
 
 func NewEngine() *Engine {
 	return &Engine{
-		scripts: make(map[string]*Script),
-		cache:   make(map[runCacheKey]*runCacheEntry),
+		scripts:  make(map[string]*Script),
+		cache:    make(map[runCacheKey]*runCacheEntry),
+		sessions: make(map[sessionKey]*runSession),
 	}
 }
 
-const maxCachedRunResults = 64
+// maxCachedRunResults is a var, not a const, so ApplyLimits can override it
+// from config.yaml's limits.indicator_cache_size at startup.
+var maxCachedRunResults = 64
+
+// ApplyLimits overrides the engine's LRU cache size and per-run wall-clock
+// budget from startup config (cmd/server, from config.yaml's
+// limits.indicator_cache_size / limits.indicator_run_timeout_seconds). Call
+// once before NewEngine/RegisterBuiltins — see runTimeout's own doc above
+// for why both are vars, not consts.
+func ApplyLimits(cacheSize int, timeout time.Duration) {
+	if cacheSize > 0 {
+		maxCachedRunResults = cacheSize
+	}
+	if timeout > 0 {
+		runTimeout = timeout
+	}
+}
 
 type runCacheKey struct {
 	script       *Script
@@ -171,6 +196,19 @@ func clampWindow(file barSeries, at int64, before, after int, maxTs int64) bars.
 	if window.To < window.From {
 		window.To = window.From
 	}
+	// Snap the start to a block boundary so consecutive cursors share one
+	// anchor and can be served from a suspended Runtime — see
+	// runWindowAnchorDivisor. It only ever moves From backwards, so
+	// To >= From still holds.
+	//
+	// The From >= block guard keeps the snap from reaching the front of the
+	// file. Without it a short window near the start of history has its
+	// anchor pulled all the way to bar 0, quietly turning "the last N bars"
+	// into "everything"; requiring the anchor to be at least one block in
+	// bounds the widening by its own distance from the start.
+	if block := before / runWindowAnchorDivisor; block > 1 && window.From >= block {
+		window.From -= window.From % block
+	}
 	return window
 }
 
@@ -211,9 +249,17 @@ func (e *Engine) run(requestCtx context.Context, id string, series barSeries, da
 	return e.cachedRun(requestCtx, key, compute)
 }
 
+// executeRun produces one run's result, preferring a suspended Runtime
+// already positioned inside this window over building a new one.
+//
+// The session path is limited to a file-backed series on purpose. Its bars
+// are the same mmap'd bytes across requests and its indices only ever extend,
+// so "continue from bar N" is exactly equivalent to replaying from the start.
+// A chart series is re-aggregated per request and its newest bucket is still
+// forming, so it has no stable prefix to continue from — that path instead
+// gets its repeat-hit from quantizing the request to the last closed bucket
+// (see httpapi.quantizeToClosedBucket), which the result cache then serves.
 func (e *Engine) executeRun(requestCtx context.Context, script *Script, series barSeries, dailyFile *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, params RunParams, window bars.Window) (result RunResult, err error) {
-	e.executions.Add(1)
-
 	// Guards the Go glue below that runs outside any goja call (window
 	// math, result assembly) — script-execution panics (a JS throw, an
 	// Interrupt, a panicking host binding) are already converted to plain
@@ -224,53 +270,49 @@ func (e *Engine) executeRun(requestCtx context.Context, script *Script, series b
 		}
 	}()
 
-	rt := goja.New()
-	rt.SetFieldNameMapper(goja.UncapFieldNameMapper())
-	stopCancellation := context.AfterFunc(requestCtx, func() { rt.Interrupt(requestCtx.Err()) })
-	defer stopCancellation()
-	timer := time.AfterFunc(runTimeout, func() { rt.Interrupt("indicators: run exceeded time budget") })
-	defer timer.Stop()
-
-	ctx := newRunContext(series, dailyFile, calendar, meta, window, params.Overrides)
-	bindHost(rt, ctx)
-	if _, err := rt.RunProgram(script.program); err != nil {
-		return RunResult{}, classifyRunError(err)
-	}
-	if err := callInit(rt, ctx); err != nil {
-		if errors.Is(err, ErrInvalidInput) {
-			return RunResult{}, err
-		}
-		return RunResult{}, classifyRunError(err)
-	}
-
-	onTick, ok := goja.AssertFunction(rt.Get("onTick"))
-	if !ok {
-		return RunResult{}, fmt.Errorf("%w: script has no onTick function", ErrScriptFailed)
-	}
-
-	momentCtor := rt.ToValue(func(ts int64) *momentValue { return newMomentValue(ts) })
-	taObj := rt.NewObject()
-	inputsObj := rt.ToValue(ctx.effective)
-
-	for idx := window.From; idx < window.To; idx++ {
-		ctx.cursor = idx
-		length := idx - window.From + 1
-		if _, err := onTick(goja.Undefined(), rt.ToValue(length), momentCtor, goja.Undefined(), taObj, inputsObj); err != nil {
-			return RunResult{}, classifyRunError(err)
+	if source, ok := series.(fileSeries); ok {
+		if result, handled, err := e.continueRun(requestCtx, script, source, dailyFile, calendar, meta, params, window); handled {
+			return result, err
 		}
 	}
-
-	return ctx.result(), nil
+	return e.freshRun(requestCtx, script, series, dailyFile, calendar, meta, params, window)
 }
 
-func makeRunCacheKey(script *Script, series barSeries, dailyFile *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, overrides map[string]any, window bars.Window) (runCacheKey, bool) {
+// freshRun builds a throwaway Runtime, replays the whole window into it and
+// discards it — the behaviour every run had before sessions existed, still
+// used for chart series and for a rewind the session path declines.
+func (e *Engine) freshRun(requestCtx context.Context, script *Script, series barSeries, dailyFile *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, params RunParams, window bars.Window) (RunResult, error) {
+	e.executions.Add(1)
+
+	session := &runSession{}
+	if err := session.initialize(script, series, dailyFile, calendar, meta, window, params.Overrides); err != nil {
+		return RunResult{}, err
+	}
+	if err := session.advance(requestCtx, window.To); err != nil {
+		return RunResult{}, err
+	}
+	return session.ctx.result(), nil
+}
+
+// configDigest fingerprints everything about a run that is neither the script
+// nor the bars: the symbol's metadata and the caller's input overrides.
+// ok is false for overrides JSON cannot represent, which both callers treat
+// as "not cacheable" rather than an error — Run's own validation still gets
+// to reject the value with its existing message.
+func configDigest(meta model.SymbolMeta, overrides map[string]any) ([sha256.Size]byte, bool) {
 	config, err := json.Marshal(struct {
 		Meta      model.SymbolMeta `json:"meta"`
 		Overrides map[string]any   `json:"overrides"`
 	}{Meta: meta, Overrides: overrides})
 	if err != nil {
-		// Preserve Run's existing validation/error semantics for non-JSON
-		// values by bypassing the optimization instead of failing here.
+		return [sha256.Size]byte{}, false
+	}
+	return sha256.Sum256(config), true
+}
+
+func makeRunCacheKey(script *Script, series barSeries, dailyFile *bars.BarFile, calendar *bars.Calendar, meta model.SymbolMeta, overrides map[string]any, window bars.Window) (runCacheKey, bool) {
+	digest, ok := configDigest(meta, overrides)
+	if !ok {
 		return runCacheKey{}, false
 	}
 	key := runCacheKey{
@@ -278,7 +320,7 @@ func makeRunCacheKey(script *Script, series barSeries, dailyFile *bars.BarFile, 
 		dailyFile:    dailyFile,
 		calendar:     calendar,
 		window:       window,
-		configDigest: sha256.Sum256(config),
+		configDigest: digest,
 	}
 	switch source := series.(type) {
 	case fileSeries:

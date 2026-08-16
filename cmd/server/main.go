@@ -29,6 +29,22 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	// Apply config.yaml's limits: section before constructing anything that
+	// reads these packages' tunable vars (econ.Open scans with maxLineBytes,
+	// indicators.NewEngine/RegisterBuiltins picks up the cache size and run
+	// timeout at their first use, httpapi's are read per-request).
+	econ.ApplyLimits(cfg.Limits.EconLineBytes)
+	indicators.ApplyLimits(cfg.Limits.IndicatorCacheSize, time.Duration(cfg.Limits.IndicatorRunTimeoutSeconds)*time.Second)
+	httpapi.ApplyLimits(httpapi.Limits{
+		GzipMinBytes:                  cfg.Limits.GzipMinBytes,
+		PreferencePayloadBytes:        cfg.Limits.PreferencePayloadBytes,
+		IndicatorRunPayloadBytes:      cfg.Limits.IndicatorRunPayloadBytes,
+		DrawingTemplatePayloadBytes:   cfg.Limits.DrawingTemplatePayloadBytes,
+		WorkspaceSnapshotPayloadBytes: cfg.Limits.WorkspaceSnapshotPayloadBytes,
+		SimulationPayloadBytes:        cfg.Limits.SimulationPayloadBytes,
+		MaxJournalTrades:              cfg.Limits.MaxJournalTrades,
+	})
+
 	reg, err := bars.NewRegistry(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("bars: %v", err)

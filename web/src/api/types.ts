@@ -89,6 +89,7 @@ export interface ReplaySession {
   cursorTs: number
   equityCents: number
   status: 'active' | 'paused' | 'stopped'
+  kind: 'replay' | 'eval'
   config: Record<string, unknown> | null
   createdAt: number
   updatedAt: number

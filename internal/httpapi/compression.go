@@ -28,7 +28,9 @@ var (
 	gzipBinaryPool = sync.Pool{New: func() any { w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed); return w }}
 )
 
-const minGzipSize = 1 << 10
+// minGzipSize is a var, not a const, so ApplyLimits (limits.go) can override
+// it from config.yaml's limits.gzip_min_bytes at startup.
+var minGzipSize = 1 << 10
 
 // poolForResponse routes the hot chart-bars JSON endpoint and binary RBR1
 // frames to BestSpeed. Unknown/absent types keep the text level: guessing

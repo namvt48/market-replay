@@ -20,19 +20,18 @@ init = () => {
   input.color('09:30 Color', { r: 0, g: 0, b: 0, a: 1 }, 'color_h3', 'Triggers', undefined);
 };
 
-const isExactBarTime = (hhmm, _moment, t0) => {
-  const nyTime = _moment(t0).tz('America/New_York');
-  const hh = Math.floor(hhmm / 100);
-  const mm = hhmm % 100;
-  return nyTime.hour() === hh && nyTime.minute() === mm;
-};
+// Takes the already-resolved NY hour/minute rather than the bar timestamp:
+// all three triggers on a given tick read the same wall clock, so building a
+// _moment and doing a tzdata lookup per trigger was two thirds waste.
+const isExactBarTime = (hhmm, nyHour, nyMinute) =>
+  nyHour === Math.floor(hhmm / 100) && nyMinute === hhmm % 100;
 
 let ids = {};
 
-const processTrigger = (key, show, hhmm, color, maxDays, _moment, t0, o) => {
+const processTrigger = (key, show, hhmm, color, maxDays, nyHour, nyMinute, t0, o) => {
   if (!show) return;
   if (!ids[key]) ids[key] = [];
-  if (isExactBarTime(hhmm, _moment, t0)) {
+  if (isExactBarTime(hhmm, nyHour, nyMinute)) {
     const id = horizontalRay(t0, o, { linecolor: color, linewidth: 1, linestyle: 1, showLabel: true, textcolor: color }, key);
     ids[key].push(id);
     if (ids[key].length > maxDays) {
@@ -44,8 +43,11 @@ const processTrigger = (key, show, hhmm, color, maxDays, _moment, t0, o) => {
 onTick = (length, _moment, _, ta, inputs) => {
   const t0 = time(0);
   const o = openC(0);
+  const nyTime = _moment(t0).tz('America/New_York');
+  const nyHour = nyTime.hour();
+  const nyMinute = nyTime.minute();
 
-  processTrigger('h1', inputs.show_h1, inputs.time_h1, inputs.color_h1, inputs.maxDays, _moment, t0, o);
-  processTrigger('h2', inputs.show_h2, inputs.time_h2, inputs.color_h2, inputs.maxDays, _moment, t0, o);
-  processTrigger('h3', inputs.show_h3, inputs.time_h3, inputs.color_h3, inputs.maxDays, _moment, t0, o);
+  processTrigger('h1', inputs.show_h1, inputs.time_h1, inputs.color_h1, inputs.maxDays, nyHour, nyMinute, t0, o);
+  processTrigger('h2', inputs.show_h2, inputs.time_h2, inputs.color_h2, inputs.maxDays, nyHour, nyMinute, t0, o);
+  processTrigger('h3', inputs.show_h3, inputs.time_h3, inputs.color_h3, inputs.maxDays, nyHour, nyMinute, t0, o);
 };

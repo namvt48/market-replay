@@ -10,7 +10,9 @@ import (
 // maxPreferencePayload bounds one stored setting. Saved chart layouts are
 // the largest of them at a few KB; this leaves room to grow while keeping a
 // malformed or hostile client from writing an unbounded blob into SQLite.
-const maxPreferencePayload = 256 << 10
+// A var, not a const, so ApplyLimits (limits.go) can override it from
+// config.yaml's limits.preference_payload_bytes at startup.
+var maxPreferencePayload = 256 << 10
 
 // validPreferenceKey keeps keys to the namespaced form the client already
 // uses ("market-replay:chart-layout"). Validating at the boundary means the
@@ -55,7 +57,7 @@ func (s *Server) handlePutPreference(w http.ResponseWriter, r *http.Request) {
 		writeError(w, fmt.Errorf("%w: invalid preference key", errBadRequest))
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxPreferencePayload+1))
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxPreferencePayload)+1))
 	if err != nil {
 		writeError(w, fmt.Errorf("%w: could not read body: %v", errBadRequest, err))
 		return

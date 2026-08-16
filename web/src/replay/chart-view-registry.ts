@@ -3,6 +3,14 @@ import type { Bar1m } from '../fill-engine/types'
 import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, EconomicEventMarker, IndicatorRenderResult, OrderLine, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDirection } from './chart-adapter'
 import { ChartViewController } from './chart-view-controller'
 
+// Stable references (not fresh literals per call) so a pane showing a
+// different symbol — which always gets "no trading state" here — can also
+// benefit from ChartViewController's own reference-equality memo instead of
+// looking "changed" on every single call purely because `[]` is a new array.
+const EMPTY_ORDER_LINES: OrderLine[] = []
+const EMPTY_TRADE_MARKERS: TradeMarker[] = []
+const EMPTY_TRADE_CONNECTIONS: TradeConnection[] = []
+
 export class ChartViewRegistry {
   private views = new Map<string, ChartViewController>()
   private activeId: string | null = null
@@ -63,7 +71,7 @@ export class ChartViewRegistry {
   syncTrading(symbol: string, lines: OrderLine[], markers: TradeMarker[], connections: TradeConnection[]): void {
     this.views.forEach((view) => {
       if (view.symbol()?.symbol === symbol) view.syncTrading(lines, markers, connections)
-      else view.syncTrading([], [], [])
+      else view.syncTrading(EMPTY_ORDER_LINES, EMPTY_TRADE_MARKERS, EMPTY_TRADE_CONNECTIONS)
     })
   }
   syncEconomicEventMarkers(markers: EconomicEventMarker[]): void { this.views.forEach((view) => view.syncEconomicEventMarkers(markers)) }

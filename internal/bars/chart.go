@@ -135,6 +135,29 @@ func SessionDayStart(timestamp int64, meta model.SymbolMeta) (int64, error) {
 	return sessionOpen(sessionDate(timestamp, meta, location), meta, location), nil
 }
 
+// ChartBucketStart returns the start timestamp of the ETH display bucket
+// containing timestamp, for timeframeValue.
+//
+// Exported so a caller can align a request to a bucket edge without
+// re-deriving the futures 18:00 rollover, week/month anchoring and timezone
+// rules this package already owns. It mirrors AggregateChartWindow's own
+// bucketing exactly, which is what makes "the bucket this aggregation would
+// put timestamp in" a question the caller can ask before aggregating.
+func ChartBucketStart(meta model.SymbolMeta, timeframeValue string, timestamp int64) (int64, error) {
+	timeframe, err := parseChartTimeframe(timeframeValue)
+	if err != nil {
+		return 0, err
+	}
+	location := time.UTC
+	if meta.SessionTz != "" {
+		location, err = cachedLoadLocation(meta.SessionTz)
+		if err != nil {
+			return 0, fmt.Errorf("load session timezone %q: %w", meta.SessionTz, err)
+		}
+	}
+	return chartBucketStart(timestamp, timeframe, meta, location), nil
+}
+
 // AggregateChartWindow returns display buckets surrounding atTs. before is
 // the total number of buckets ending at the anchor; after is additional
 // buckets following it. maxTs is a hard replay spoiler boundary.

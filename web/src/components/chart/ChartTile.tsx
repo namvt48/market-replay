@@ -130,6 +130,7 @@ export function ChartTile({ pane, active, removable, maximized, onActivate, onTo
       onContextMenu={openContextMenu}
       className="relative h-full min-h-0 min-w-0 overflow-hidden bg-chart ring-1 ring-inset ring-line"
       data-active-chart={active}
+      data-chart-capture-root
       aria-label={`${pane.timeframe} market chart${active ? ', active' : ''}`}
     >
       <div

@@ -27,6 +27,12 @@ const PERSIST_INTERVAL_MS = 1000
 export interface EvalSessionState {
   phase: EvalPhase
   accountId: string | null
+  /**
+   * Backend session this eval account persists its trades into. Durable
+   * (saved with the account) so resuming an account reuses its session
+   * instead of minting a second one that would receive a duplicate journal.
+   */
+  sessionId: string | null
   config: EvalConfig | null // null when idle
   runtime: EvalRuntime | null // null when idle
   /** Legacy display value for accounts created before evaluations became market-wide. */
@@ -52,6 +58,8 @@ export interface EvalSessionState {
   tick(snapshot: { cursorTs: number; fill: EvalFillState | null }): void
   prepareFillRebase(): void
   restoreAccount(accountId: string): void
+  /** Records the backend session the replay engine created for this account. */
+  attachSession(sessionId: string): void
   exitEvaluation(): void // checkpoint as paused, then clear the current session
   retry(): void // same config, fresh ready account — for breach retry
   goVerification(): void // passed challenge → fresh verification account
@@ -66,7 +74,7 @@ export interface PayoutRequestResult {
   payout: PayoutRecord | null
 }
 
-type EvalSessionData = Omit<EvalSessionState, 'createEvaluation' | 'startEvaluation' | 'activateEvaluation' | 'tick' | 'prepareFillRebase' | 'restoreAccount' | 'exitEvaluation' | 'retry' | 'goVerification' | 'goFunded' | 'requestPayout' | 'abandon'>
+type EvalSessionData = Omit<EvalSessionState, 'createEvaluation' | 'startEvaluation' | 'activateEvaluation' | 'tick' | 'prepareFillRebase' | 'restoreAccount' | 'attachSession' | 'exitEvaluation' | 'retry' | 'goVerification' | 'goFunded' | 'requestPayout' | 'abandon'>
 
 function isValidTimezone(value: string): boolean {
   try {
@@ -124,6 +132,7 @@ const persistedSessionSchema = z.object({
   version: z.literal(EVAL_SESSION_VERSION),
   phase: z.enum(['ready', 'paused', 'running', 'passed', 'failed']).optional(),
   accountId: z.string().min(1).optional(),
+  sessionId: z.string().min(1).nullish(),
   config: evalConfigSchema,
   instrument: z.string().trim().min(1).nullable().optional().transform((instrument) => instrument ?? null),
   sessionTimezone: z.string().trim().min(1).refine(isValidTimezone),
@@ -192,6 +201,7 @@ function idleSession(): EvalSessionData {
   return {
     phase: 'idle',
     accountId: null,
+    sessionId: null,
     config: null,
     runtime: null,
     instrument: null,
@@ -304,6 +314,7 @@ function hydratedSession(): EvalSessionData | null {
   return {
     phase,
     accountId: normalizedAccountId(persisted),
+    sessionId: persisted.sessionId ?? null,
     config: persisted.config,
     runtime: persisted.runtime,
     instrument: persisted.instrument,
@@ -333,6 +344,7 @@ function persistedPayload(state: EvalSessionState): PersistedEvalAccount | null 
     version: EVAL_SESSION_VERSION,
     phase: state.phase,
     accountId: state.accountId,
+    sessionId: state.sessionId,
     config: state.config,
     instrument: state.instrument,
     sessionTimezone: state.sessionTimezone,
@@ -433,6 +445,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     set({
       phase: 'ready',
       accountId: createAccountId(instrument, startTs),
+      sessionId: null,
       config: parsed.data,
       runtime: newRuntime(parsed.data, startTs),
       instrument,
@@ -461,6 +474,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     set({
       phase: 'running',
       accountId: createAccountId(instrument, startTs),
+      sessionId: null,
       config: parsed.data,
       runtime: newRuntime(parsed.data, startTs),
       instrument,
@@ -598,6 +612,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     set({
       phase,
       accountId: account.accountId,
+      sessionId: account.sessionId ?? null,
       config: account.config,
       runtime: account.runtime,
       instrument: account.instrument,
@@ -615,6 +630,12 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
       trades: account.trades,
       payoutHistory: account.payoutHistory,
     })
+    persistImmediately(get())
+  },
+
+  attachSession: (sessionId) => {
+    if (get().phase === 'idle' || !sessionId) return
+    set({ sessionId })
     persistImmediately(get())
   },
 
@@ -640,6 +661,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     set({
       phase: 'ready',
       accountId: createAccountId(state.instrument ?? 'eval', startTs),
+      sessionId: null,
       runtime: newRuntime(config, startTs),
       startTs,
       attemptStartedAt: startTs,
@@ -669,6 +691,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     const startTs = state.runtime?.passedAt ?? state.lastCursorTs ?? state.startTs ?? 0
     set({
       accountId: createAccountId(state.instrument ?? 'verification', startTs),
+      sessionId: null,
       config: verification,
       runtime: newRuntime(verification, startTs),
       phase: 'ready',
@@ -696,6 +719,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     const startTs = state.runtime?.passedAt ?? state.lastCursorTs ?? state.startTs ?? 0
     set({
       accountId: createAccountId(state.instrument ?? 'funded', startTs),
+      sessionId: null,
       config: funded,
       runtime: newRuntime(funded, startTs),
       phase: 'ready',

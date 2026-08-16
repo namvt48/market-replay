@@ -76,6 +76,9 @@ export type ReplayStepTimeframe = (typeof STEP_TIMEFRAMES)[number]
 const HIGH_THROUGHPUT_BARS_PER_SECOND = 100
 const TIMEFRAME_SWITCH_SETTLE_MS = 48
 const MAX_REPLAY_CONTRACTS = 1_000
+// The fill engine's fixed paper bankroll ($10,000). Now also reported to the
+// server as a session's initialBalanceCents, so the two must not drift.
+const REPLAY_STARTING_EQUITY_CENTS = 1_000_000
 const TRANSIENT_ERROR_TIMEOUT_MS = 20_000
 const FRAME_SAMPLE_WINDOW = 120
 const MAX_FILL_SNAPSHOTS = MAX_VIEWPORT_RAW_BARS
@@ -202,6 +205,15 @@ export class ReplayEngine {
    * Snapshots are nearly free: the fill engine is fully immutable, so every
    * entry shares its orders/trades arrays with its neighbours until one of
    * them actually changes.
+   *
+   * Invariant pruneFillSnapshots relies on: every `.set()` call site either
+   * (a) writes at the *current* cursorIndex — updating an already-present
+   * key's value in place, which never moves it in iteration order — or
+   * (b) follows a `.clear()` that resets the map to that one entry, or
+   * (c) is advance()'s forward walk, which only ever increases cursorIndex
+   * one bar at a time. So the map's iteration order (insertion order, per
+   * the Map spec) is always ascending by key — the oldest surviving entry is
+   * always first.
    */
   private fillSnapshots = new Map<number, Map<string, FillEngineState>>()
   /** Last journal handed to the backend, by reference — the engine's immutability makes identity a valid "unchanged" test. */
@@ -211,10 +223,21 @@ export class ReplayEngine {
   private projectedOrders: FillEngineState['orders'] | null = null
   private projectedTrades: FillEngineState['trades'] | null = null
   private projectedRetainedTradeKey: string | null = null
+  private projectedTradeSymbol: string | null = null
   private projectedPositionQty: number | null = null
   private projectedPositionPrice: number | null = null
   private projectedUnrealizedCents: number | null = null
   private projectedOrderDraft: OrderTicketDraft | null = null
+  /**
+   * Cached markers/connections from the last trade-set rebuild, reused
+   * as-is whenever only unrealized P&L moved (see syncChartTradingState) —
+   * rebuilding these is O(closed trades), while a position's unrealized P&L
+   * changes on nearly every replay bar.
+   */
+  private projectedMarkers: TradeMarker[] = []
+  private projectedConnections: TradeConnection[] = []
+  /** Reused across calls: a NumberFormat for the same decimal count is the same formatter. */
+  private priceFormatterCache: { decimals: number; formatter: Intl.NumberFormat } | null = null
   private orderDraft: OrderTicketDraft | null = null
   private drawingClipboard: SerializedDrawing | null = null
   private pendingTimeframeSwitches = new Map<string, ReturnType<typeof setTimeout>>()
@@ -224,6 +247,8 @@ export class ReplayEngine {
   private syncFlags: ChartSyncFlags = { ...DEFAULT_CHART_SYNC_FLAGS }
   private economicEventMarkers: EconomicEventMarker[] = []
   private indicatorResults = new Map<string, Map<string, IndicatorRenderResult>>()
+  /** The (symbol, timeframe, cursor) each view's current indicatorResults entry was computed for — see indicatorResultsAreStale. */
+  private indicatorResultCursors = new Map<string, { cursorTs: number; symbol: string; timeframe: Timeframe }>()
   private indicatorControllers = new Map<string, AbortController>()
   private indicatorRefreshTimer: ReturnType<typeof setTimeout> | null = null
   private indicatorVisibilityBeforeHide = new Map<string, boolean>()
@@ -279,6 +304,7 @@ export class ReplayEngine {
     this.indicatorControllers.get(id)?.abort()
     this.indicatorControllers.delete(id)
     this.indicatorResults.delete(id)
+    this.indicatorResultCursors.delete(id)
     this.views.unregister(id, expectedAdapter)
     this.pruneInactiveSymbolCaches()
   }
@@ -389,6 +415,7 @@ export class ReplayEngine {
     this.indicatorControllers.forEach((controller) => controller.abort())
     this.indicatorControllers.clear()
     this.indicatorResults.clear()
+    this.indicatorResultCursors.clear()
     this.drawingDocuments.clear()
     this.indicatorVisibilityBeforeHide.clear()
     this.setSnapshot({ indicators: [], indicatorsHidden: false, indicatorLoading: false, indicatorError: null }, true)
@@ -399,6 +426,35 @@ export class ReplayEngine {
   refreshIndicator(id: string): void {
     if (!this.snapshot.indicators.some((indicator) => indicator.id === id && indicator.visible)) return
     void this.refreshIndicators()
+  }
+
+  /**
+   * Whether a view's on-screen indicator output has to come off the chart
+   * before the replacement is fetched.
+   *
+   * Indicator output belongs to one exact symbol/cursor snapshot, and the
+   * reason it was previously cleared on *every* refresh is spoiler safety: a
+   * rewind or backwards seek would otherwise leave drawings calculated from
+   * bars the replay has not reached again visible while the new request is in
+   * flight. That reasoning only applies to a cursor that moved backwards.
+   *
+   * Stepping forward — the overwhelmingly common case, and the one that fires
+   * on every press of the step button — cannot turn old output into a spoiler,
+   * because it was computed from strictly less data than the viewer is now
+   * allowed to see. Blanking there bought nothing and cost a visible flash of
+   * empty chart on every step.
+   */
+  private indicatorResultsAreStale(view: ChartViewController, symbolCode: string): boolean {
+    const previous = this.indicatorResultCursors.get(view.id)
+    if (!previous) return true
+    if (previous.symbol !== symbolCode || previous.timeframe !== view.timeframe) return true
+    return this.snapshot.cursorTs < previous.cursorTs
+  }
+
+  private clearIndicatorResults(view: ChartViewController): void {
+    this.indicatorResults.delete(view.id)
+    this.indicatorResultCursors.delete(view.id)
+    view.syncIndicators([])
   }
 
   private publishIndicatorResults(viewId: string): void {
@@ -423,21 +479,15 @@ export class ReplayEngine {
       for (const view of views) {
         this.indicatorControllers.get(view.id)?.abort()
         this.indicatorControllers.delete(view.id)
-        this.indicatorResults.delete(view.id)
-        view.syncIndicators([])
+        this.clearIndicatorResults(view)
       }
       return
     }
 
-    // Indicator output belongs to one exact symbol/timeframe/cursor snapshot.
-    // Clear it before starting the next run so a rewind or seek can never
-    // leave drawings calculated from future replay data visible while the
-    // replacement request is in flight.
     const controllers = new Map<ChartViewController, AbortController>()
     for (const view of views) {
       this.indicatorControllers.get(view.id)?.abort()
-      this.indicatorResults.delete(view.id)
-      view.syncIndicators([])
+      if (this.indicatorResultsAreStale(view, symbol.symbol)) this.clearIndicatorResults(view)
       const controller = new AbortController()
       controllers.set(view, controller)
       this.indicatorControllers.set(view.id, controller)
@@ -462,6 +512,7 @@ export class ReplayEngine {
       for (const [view, controller] of controllers) {
         if (controller.signal.aborted || this.indicatorControllers.get(view.id) !== controller) continue
         this.indicatorResults.set(view.id, new Map(results.map((result) => [result.indicatorId, result])))
+        this.indicatorResultCursors.set(view.id, { cursorTs: this.snapshot.cursorTs, symbol: symbol.symbol, timeframe: firstView.timeframe })
         this.publishIndicatorResults(view.id)
       }
       if (this.snapshot.indicatorError) this.setSnapshot({ indicatorError: null }, true)
@@ -525,6 +576,7 @@ export class ReplayEngine {
     this.indicatorControllers.forEach((controller) => controller.abort())
     this.indicatorControllers.clear()
     this.indicatorResults.clear()
+    this.indicatorResultCursors.clear()
     this.pendingTimeframeSwitches.forEach((timer) => clearTimeout(timer))
     this.pendingTimeframeSwitches.clear()
     this.timeframeControllers.forEach((controller) => controller.abort())
@@ -772,7 +824,10 @@ export class ReplayEngine {
     let sessionStatus: ReplaySession['status'] | null = null
     if (shouldCreateSession && !isEvalActive() && this.snapshot.symbol) {
       try {
-        sessionId = await createSession(this.snapshot.symbol.symbol, this.views.active()?.timeframe ?? this.snapshot.timeframe, replayStartTs)
+        sessionId = await createSession(this.snapshot.symbol.symbol, this.views.active()?.timeframe ?? this.snapshot.timeframe, replayStartTs, {
+          kind: 'replay',
+          initialBalanceCents: REPLAY_STARTING_EQUITY_CENTS,
+        })
         sessionStatus = 'active'
         this.persistedTrades = null
         if (this.snapshot.fill) {
@@ -1148,6 +1203,44 @@ export class ReplayEngine {
     this.views.focusTime(latestTradeTs ?? resolution.timestamp)
     this.resetAllChartViews()
     if (!resolution.calendarAvailable) this.setSnapshot({ error: 'The trading calendar is unavailable; the evaluation opened on the closest bar returned by history.' }, true)
+    await this.ensureEvaluationSession()
+  }
+
+  /**
+   * Points the snapshot at the backend session backing this evaluation
+   * account. The debounced persistence machinery keys purely off
+   * `snapshot.sessionId`, so this is what makes eval trades reach the
+   * server at all. The id is durable in the eval store, so resuming an
+   * account reuses its session rather than minting a second one that would
+   * receive a duplicate copy of the same journal.
+   */
+  private async ensureEvaluationSession(): Promise<void> {
+    const evaluation = getEvalState()
+    const symbol = this.snapshot.symbol
+    if (evaluation.phase !== 'running' || !evaluation.config || evaluation.startTs === null || !symbol) return
+    try {
+      let sessionId = evaluation.sessionId
+      if (!sessionId) {
+        sessionId = await createSession(symbol.symbol, this.views.active()?.timeframe ?? this.snapshot.timeframe, evaluation.startTs, {
+          kind: 'eval',
+          initialBalanceCents: Math.round(evaluation.config.accountSize * 100),
+        })
+        evaluation.attachSession(sessionId)
+      }
+      this.persistedTrades = null
+      this.setSnapshot({ sessionId, sessionStatus: 'active' }, true)
+      const fill = this.snapshot.fill
+      if (fill) {
+        await patchSession(sessionId, {
+          cursorTs: this.snapshot.cursorTs,
+          equityCents: fill.equityCents,
+          status: 'active',
+          config: serializeReplayRuntime(fill, this.snapshot.indicators),
+        })
+      }
+    } catch {
+      this.setSnapshot({ error: 'Evaluation could not be saved to the server. It will continue locally.' }, true)
+    }
   }
 
   private async resolveDataTimestamp(symbol: SymbolMeta, timestamp: number, direction: NearestDataDirection): Promise<DataTimestampResolution> {
@@ -1288,7 +1381,7 @@ export class ReplayEngine {
       commissionPerSideCents: Math.round(symbol.commissionPerSide * 100),
       slippageTicks: symbol.defaultSlippageTicks,
       maxContracts,
-      startingEquityCents: 1_000_000,
+      startingEquityCents: REPLAY_STARTING_EQUITY_CENTS,
     })
     return current ? stepFillEngine(fill, current) : fill
   }
@@ -1310,7 +1403,7 @@ export class ReplayEngine {
     const unrealizedCents = fills.reduce((total, fill) => total + fill.unrealizedCents, 0)
     return {
       realizedCents,
-      equityCents: 1_000_000 + realizedCents + unrealizedCents,
+      equityCents: REPLAY_STARTING_EQUITY_CENTS + realizedCents + unrealizedCents,
       trades: fills.flatMap((fill) => fill.trades),
     }
   }
@@ -1684,6 +1777,16 @@ export class ReplayEngine {
     this.mutateFill((state) => amendOrder(state, id, Math.round(price / symbol.tickSize)))
   }
 
+  private priceFormatterFor(decimals: number): Intl.NumberFormat {
+    if (this.priceFormatterCache?.decimals !== decimals) {
+      this.priceFormatterCache = {
+        decimals,
+        formatter: new Intl.NumberFormat('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }),
+      }
+    }
+    return this.priceFormatterCache.formatter
+  }
+
   private syncChartTradingState(force = false): void {
     const fill = this.snapshot.fill
     const symbol = this.tradingSymbol()
@@ -1699,17 +1802,66 @@ export class ReplayEngine {
     const retainedTradeKey = retainedTrades.map((trade) => `${trade.id}:${trade.exitTs}`).join('|')
     const positionQty = fill.position?.qty ?? null
     const positionPrice = fill.position?.avgPriceTicks ?? null
-    if (!force
-      && this.projectedOrders === fill.orders
-      && this.projectedTrades === fill.trades
-      && this.projectedRetainedTradeKey === retainedTradeKey
-      && this.projectedPositionQty === positionQty
-      && this.projectedPositionPrice === positionPrice
-      && this.projectedUnrealizedCents === fill.unrealizedCents
-      && this.projectedOrderDraft === this.orderDraft) return
+
+    // Markers/connections are O(closed trades) work — walking the journal,
+    // folding in eval visuals, sorting — and are independent of unrealized
+    // P&L, so they only need to be rebuilt when the trade set itself changed
+    // (a new close, a rewind restoring an older journal, or the symbol
+    // switching under this pane). unrealizedCents instead changes on nearly
+    // every replay bar while a position is open; folding it into one combined
+    // guard meant re-walking and re-sorting the whole trade history on every
+    // such bar for a P&L number that only the position line displays.
+    const tradesChanged = force
+      || this.projectedTrades !== fill.trades
+      || this.projectedRetainedTradeKey !== retainedTradeKey
+      || this.projectedTradeSymbol !== symbol.symbol
+    const linesChanged = tradesChanged
+      || this.projectedOrders !== fill.orders
+      || this.projectedPositionQty !== positionQty
+      || this.projectedPositionPrice !== positionPrice
+      || this.projectedUnrealizedCents !== fill.unrealizedCents
+      || this.projectedOrderDraft !== this.orderDraft
+    if (!linesChanged) return
+
+    if (tradesChanged) {
+      this.projectedTrades = fill.trades
+      this.projectedRetainedTradeKey = retainedTradeKey
+      this.projectedTradeSymbol = symbol.symbol
+      const markers: TradeMarker[] = []
+      const connections: TradeConnection[] = []
+      const priceFormatter = this.priceFormatterFor(symbol.priceDecimals)
+      for (const trade of [...fill.trades, ...retainedTrades]) {
+        const entryPrice = trade.entryPriceTicks * symbol.tickSize
+        const exitPrice = trade.exitPriceTicks * symbol.tickSize
+        const tradeColor = trade.side === 'long' ? '#089981' : '#f23645'
+        markers.push({ time: trade.entryTs, price: entryPrice, text: `${trade.side === 'long' ? '+' : '-'}${trade.qty} @ ${priceFormatter.format(entryPrice)}`, color: tradeColor, shape: trade.side === 'long' ? 'arrowUp' : 'arrowDown' })
+        markers.push({ time: trade.exitTs, price: exitPrice, text: `${trade.side === 'long' ? '-' : '+'}${trade.qty} @ ${priceFormatter.format(exitPrice)}`, color: tradeColor, shape: 'circle' })
+        connections.push({
+          entryTime: trade.entryTs,
+          entryPrice,
+          exitTime: trade.exitTs,
+          exitPrice,
+          priceDecimals: symbol.priceDecimals,
+          side: trade.side,
+          initialStop: trade.initialStopTicks === null ? null : trade.initialStopTicks * symbol.tickSize,
+          initialTakeProfit: trade.initialTakeProfitTicks === null ? null : trade.initialTakeProfitTicks * symbol.tickSize,
+          protectionAdjustments: trade.protectionAdjustments.map((adjustment) => ({
+            role: adjustment.role,
+            time: adjustment.ts,
+            price: adjustment.priceTicks * symbol.tickSize,
+          })),
+          exitReason: trade.exitReason,
+        })
+      }
+      const savedEvalVisuals = this.evalTradeVisuals(symbol, priceFormatter, fill.trades)
+      markers.push(...savedEvalVisuals.markers)
+      connections.push(...savedEvalVisuals.connections)
+      markers.sort((left, right) => left.time - right.time)
+      this.projectedMarkers = markers
+      this.projectedConnections = connections
+    }
+
     this.projectedOrders = fill.orders
-    this.projectedTrades = fill.trades
-    this.projectedRetainedTradeKey = retainedTradeKey
     this.projectedPositionQty = positionQty
     this.projectedPositionPrice = positionPrice
     this.projectedUnrealizedCents = fill.unrealizedCents
@@ -1767,40 +1919,7 @@ export class ReplayEngine {
         priceLabel: (fill.position.avgPriceTicks * symbol.tickSize).toFixed(symbol.priceDecimals),
       })
     }
-    const markers: TradeMarker[] = []
-    const connections: TradeConnection[] = []
-    const priceFormatter = new Intl.NumberFormat('en-US', {
-      minimumFractionDigits: symbol.priceDecimals,
-      maximumFractionDigits: symbol.priceDecimals,
-    })
-    for (const trade of [...fill.trades, ...retainedTrades]) {
-      const entryPrice = trade.entryPriceTicks * symbol.tickSize
-      const exitPrice = trade.exitPriceTicks * symbol.tickSize
-      const tradeColor = trade.side === 'long' ? '#089981' : '#f23645'
-      markers.push({ time: trade.entryTs, price: entryPrice, text: `${trade.side === 'long' ? '+' : '-'}${trade.qty} @ ${priceFormatter.format(entryPrice)}`, color: tradeColor, shape: trade.side === 'long' ? 'arrowUp' : 'arrowDown' })
-      markers.push({ time: trade.exitTs, price: exitPrice, text: `${trade.side === 'long' ? '-' : '+'}${trade.qty} @ ${priceFormatter.format(exitPrice)}`, color: tradeColor, shape: 'circle' })
-      connections.push({
-        entryTime: trade.entryTs,
-        entryPrice,
-        exitTime: trade.exitTs,
-        exitPrice,
-        priceDecimals: symbol.priceDecimals,
-        side: trade.side,
-        initialStop: trade.initialStopTicks === null ? null : trade.initialStopTicks * symbol.tickSize,
-        initialTakeProfit: trade.initialTakeProfitTicks === null ? null : trade.initialTakeProfitTicks * symbol.tickSize,
-        protectionAdjustments: trade.protectionAdjustments.map((adjustment) => ({
-          role: adjustment.role,
-          time: adjustment.ts,
-          price: adjustment.priceTicks * symbol.tickSize,
-        })),
-        exitReason: trade.exitReason,
-      })
-    }
-    const savedEvalVisuals = this.evalTradeVisuals(symbol, priceFormatter, fill.trades)
-    markers.push(...savedEvalVisuals.markers)
-    connections.push(...savedEvalVisuals.connections)
-    markers.sort((left, right) => left.time - right.time)
-    this.views.syncTrading(symbol.symbol, lines, markers, connections)
+    this.views.syncTrading(symbol.symbol, lines, this.projectedMarkers, this.projectedConnections)
   }
 
   // The fill engine restarts clean on every seek, so eval trades recorded
@@ -2051,12 +2170,23 @@ export class ReplayEngine {
       })
   }
 
-  /** Bounds the snapshot ring to the same window the raw bar cache keeps. */
+  /**
+   * Bounds the snapshot ring to the same window the raw bar cache keeps.
+   *
+   * Peels only the leading run of now-too-old entries instead of scanning
+   * every key: fillSnapshots' insertion order is always ascending (see the
+   * field's own doc comment for why), so the oldest survivor is always
+   * first, and the loop can stop the instant it sees one that's still in
+   * bounds. The previous version scanned the entire map on every call — up
+   * to ~6,000 keys, every single replay frame — to find and delete the one
+   * entry that had just aged out.
+   */
   private pruneFillSnapshots(): void {
     if (this.fillSnapshots.size <= MAX_FILL_SNAPSHOTS) return
     const floor = this.cursorIndex - MAX_FILL_SNAPSHOTS
     for (const index of this.fillSnapshots.keys()) {
-      if (index < floor) this.fillSnapshots.delete(index)
+      if (index >= floor) break
+      this.fillSnapshots.delete(index)
     }
   }
 

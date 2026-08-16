@@ -1,0 +1,102 @@
+# market-replay runtime configuration — single place to tune server
+# address/paths, HTTP layer limits, and ingest-pipeline defaults.
+#
+# server / limits: read by the Go binary at startup (internal/config).
+#   - HTTP_ADDR / DATA_DIR / DB_PATH env vars still override server: below,
+#     unchanged — docker-compose.yml and deploy/replay.service keep working
+#     as-is without editing this file.
+#   - Every key under limits: is optional; a key left out (or set to 0)
+#     keeps that setting's hardcoded default, so overriding one limit here
+#     never resets the others.
+#   - Changes here take effect on the next server restart (no live reload).
+#
+# pipeline: read directly by pipeline/*.py (stitch.py, export_econ_duckdb.py)
+#   when a run doesn't pass the equivalent CLI flag — not touched by the Go
+#   binary at all.
+
+server:
+  http_addr: ":8080"
+  data_dir: "data"
+  db_path: "data/app.db"
+
+limits:
+  # Response compression: bodies at or under this size (bytes) skip gzip
+  # entirely (internal/httpapi/compression.go).
+  gzip_min_bytes: 1024
+
+  # HTTP request-body caps (bytes) — reject anything larger instead of
+  # buffering an unbounded blob from a malformed or hostile client.
+  preference_payload_bytes: 262144          # 256 KiB (preferences.go)
+  indicator_run_payload_bytes: 65536        # 64 KiB (indicators.go)
+  drawing_template_payload_bytes: 65536     # 64 KiB (drawing_templates.go)
+  workspace_snapshot_payload_bytes: 4194304 # 4 MiB (workspace_snapshots.go)
+  simulation_payload_bytes: 65536           # 64 KiB (analytics_simulation_*.go)
+  econ_line_bytes: 65536                    # 64 KiB, one JSONL calendar record
+
+  # Trading journal and indicator engine.
+  max_journal_trades: 10000        # trades accepted per PUT .../trades write
+  indicator_cache_size: 64         # LRU-cached indicator run results
+  indicator_run_timeout_seconds: 5 # wall-clock budget per script run
+
+pipeline:
+  # Defaults for `make econ-import` / pipeline/export_econ_duckdb.py.
+  # Paths are resolved relative to the repo root, regardless of cwd.
+  econ_duckdb: "../data-engineering/economic-calendar/data/econ_calendar.duckdb"
+  econ_jsonl: "data/econ/economic_events.jsonl"
+
+  # Defaults for pipeline/stitch.py, keyed by --symbol. Explicit CLI flags
+  # (--tick-size, --point-value, ...) always win over these; add a new
+  # entry here before ingesting a symbol for the first time instead of
+  # retyping every flag by hand. Kept in sync with data/meta/symbols.json,
+  # which is what the server actually serves at runtime.
+  ingest:
+    jobs: 0 # worker processes for stitch.py; 0 = use CPU count
+    symbols:
+      ES:
+        kind: future
+        tf: 1m
+        tick_size: 0.25
+        point_value: 50.0
+        name: "E-mini S&P 500"
+        commission: 2.09
+        slippage_ticks: 1
+      GC:
+        kind: future
+        tf: 1m
+        tick_size: 0.1
+        point_value: 100.0
+        name: "Gold Futures"
+        commission: 2.09
+        slippage_ticks: 1
+      NQ:
+        kind: future
+        tf: 1m
+        tick_size: 0.25
+        point_value: 20.0
+        name: "E-mini Nasdaq-100"
+        commission: 2.09
+        slippage_ticks: 1
+      YM:
+        kind: future
+        tf: 1m
+        tick_size: 1.0
+        point_value: 5.0
+        name: "Dow Jones Industrial Average"
+        commission: 2.09
+        slippage_ticks: 1
+      QQQ:
+        kind: stock
+        tf: 1m
+        tick_size: 0.01
+        point_value: 1.0
+        name: "Invesco QQQ Trust"
+        commission: 0.0
+        slippage_ticks: 1
+      SPY:
+        kind: stock
+        tf: 1m
+        tick_size: 0.01
+        point_value: 1.0
+        name: "SPDR S&P 500 ETF Trust"
+        commission: 0.0
+        slippage_ticks: 1

@@ -1,4 +1,4 @@
-import { Activity, ArrowRight, Plus, RotateCcw, Trash2, Trophy } from 'lucide-react'
+import { Activity, ArrowRight, ClipboardCheck, Plus, RotateCcw, Trash2, Trophy } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { evalAccountName, evalStatus, payoutEligibility, shortEvalAccountHash } from '../../eval/rules'
 import type { EvalConfig, EvalRuntime, EvalStatus, EvalTradeRecord, PayoutEligibility, PayoutRecord } from '../../eval/rules'
@@ -7,6 +7,7 @@ import { useEvalSession } from '../../replay/use-eval-session'
 import { useReplaySelector } from '../../replay/use-replay'
 import { deleteEvalAccount, deriveEvalFinancials, loadEvalAccounts } from '../../store/eval-store'
 import type { EvalPhase } from '../../store/eval-store'
+import { useUiStore } from '../../store/ui-store'
 import { TradeHistoryTable } from '../trades/TradeHistoryTable'
 
 const currency = new Intl.NumberFormat('en-US', {
@@ -108,6 +109,7 @@ function TradeHistory({ trades }: { trades: EvalTradeRecord[] }) {
 }
 
 export function EvaluationPanel() {
+  const openReview = useUiStore((state) => state.openReview)
   const session = useEvalSession((state) => ({
     accountId: state.accountId,
     phase: state.phase,
@@ -270,24 +272,28 @@ export function EvaluationPanel() {
           <section aria-labelledby="eval-accounts-heading">
             <h3 id="eval-accounts-heading" className="border-b border-line px-3 py-2 text-ui-meta font-semibold tracking-[0.04em] text-muted">ACCOUNTS</h3>
             <ul className="divide-y divide-line">
-              {accounts.map((account) => (
-                <li key={account.id}>
-                  <button type="button" onClick={() => { setSelectedId(account.id); setConfirmingDelete(false) }} aria-pressed={selected?.id === account.id} className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left hover:bg-surface-2 aria-pressed:bg-surface-3">
-                    <span className={`size-2 shrink-0 rounded-full ${account.runtime.outcome === 'failed' ? 'bg-loss' : account.runtime.outcome === 'passed' ? 'bg-profit' : account.isCurrent && account.phase === 'running' ? 'bg-active' : 'bg-muted'}`} aria-hidden="true" />
-                    <span className="min-w-0 flex-1">
-                      <strong className="block truncate text-ui-body font-medium text-ink">{evalAccountName(account.config)}</strong>
-                      <span className="mt-0.5 flex items-center gap-1.5 font-mono text-ui-meta text-dim">
-                        <span>{account.instrument}</span>
-                        <span aria-hidden="true">·</span>
-                        <code className="text-muted" title={`Full account ID: ${account.id}`}>#{shortEvalAccountHash(account.id)}</code>
-                        <span aria-hidden="true">·</span>
-                        <span>{account.startDate}</span>
+              {accounts.map((account) => {
+                const live = account.isCurrent && account.phase === 'running'
+                const selectedAccount = selected?.id === account.id
+                return (
+                  <li key={account.id}>
+                    <button type="button" onClick={() => { setSelectedId(account.id); setConfirmingDelete(false) }} aria-pressed={selectedAccount} aria-current={live ? 'true' : undefined} className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors ${live ? 'bg-active/10 ring-1 ring-inset ring-active/35 hover:bg-active/15' : selectedAccount ? 'bg-surface-3 hover:bg-surface-3' : 'hover:bg-surface-2'}`}>
+                      <span className={`size-2 shrink-0 rounded-full ${account.runtime.outcome === 'failed' ? 'bg-loss' : account.runtime.outcome === 'passed' ? 'bg-profit' : live ? 'bg-active' : 'bg-muted'}`} aria-hidden="true" />
+                      <span className="min-w-0 flex-1">
+                        <strong className={`block truncate text-ui-body font-medium ${live ? 'text-active-bright' : 'text-ink'}`}>{evalAccountName(account.config)}</strong>
+                        <span className="mt-0.5 flex items-center gap-1.5 font-mono text-ui-meta text-dim">
+                          <span>{account.instrument}</span>
+                          <span aria-hidden="true">·</span>
+                          <code className="text-muted" title={`Full account ID: ${account.id}`}>#{shortEvalAccountHash(account.id)}</code>
+                          <span aria-hidden="true">·</span>
+                          <span>{account.startDate}</span>
+                        </span>
                       </span>
-                    </span>
-                    <span className={`text-ui-meta font-semibold ${statusTone(account)}`}>{statusLabel(account)}</span>
-                  </button>
-                </li>
-              ))}
+                      <span className={`text-ui-meta font-semibold ${statusTone(account)}`}>{statusLabel(account)}</span>
+                    </button>
+                  </li>
+                )
+              })}
             </ul>
           </section>
 
@@ -302,7 +308,12 @@ export function EvaluationPanel() {
                     Updated {accountTime.format(selected.lastCursorTs * 1000)}
                   </p>
                 </div>
-                <span className={`text-ui-meta font-semibold ${statusTone(selected)}`}>{statusLabel(selected)}</span>
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  <span className={`text-ui-meta font-semibold ${statusTone(selected)}`}>{statusLabel(selected)}</span>
+                  {selected.isCurrent && selected.phase === 'running' ? (
+                    <button type="button" onClick={() => openReview({ id: selected.id, type: 'evaluation', title: evalAccountName(selected.config) })} className="secondary-button min-h-8 px-2.5" aria-label="Review active evaluation"><ClipboardCheck size={13} />Review</button>
+                  ) : null}
+                </div>
               </div>
 
               {selected.phase === 'ready' ? (

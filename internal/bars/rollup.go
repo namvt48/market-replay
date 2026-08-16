@@ -98,9 +98,75 @@ func (f *BarFile) attachRTHRollups(meta model.SymbolMeta) error {
 	return nil
 }
 
+const (
+	// rthOpenMinute/rthCloseMinute bound the regular session in minutes past
+	// local midnight: 09:30 inclusive to 16:00 exclusive.
+	rthOpenMinute  = 9*60 + 30
+	rthCloseMinute = 16 * 60
+
+	daySeconds = 86400
+)
+
+// zoneWindow caches one contiguous stretch over which a location's UTC
+// offset is constant, so a full-file pass resolves the timezone once per DST
+// transition (twice a year) instead of once per bar.
+//
+// This exists because the per-bar alternative is not one lookup but roughly
+// seven: Weekday, Hour, Minute, Year, Month and Day each independently
+// re-derive the zone offset from the absolute time, and time.Date does it
+// once more. Over ~22M bars that measured as 50% of the entire server
+// startup — more than reading the 541 MB of bar data it was indexing.
+type zoneWindow struct {
+	location *time.Location
+	offset   int64
+	until    int64 // exclusive upper bound in epoch seconds
+}
+
+func newZoneWindow(location *time.Location) *zoneWindow {
+	// until = MinInt64 forces the first offsetAt call to resolve, including
+	// for a ts of 0 or below.
+	return &zoneWindow{location: location, until: math.MinInt64}
+}
+
+// offsetAt returns the location's UTC offset at ts, refreshing the cached
+// window only once ts leaves it. Callers must walk ts in ascending order —
+// every caller here iterates a ts-sorted BarFile.
+func (z *zoneWindow) offsetAt(ts int64) int64 {
+	if ts < z.until {
+		return z.offset
+	}
+	t := time.Unix(ts, 0).In(z.location)
+	_, offset := t.Zone()
+	z.offset = int64(offset)
+	if _, end := t.ZoneBounds(); end.IsZero() {
+		z.until = math.MaxInt64 // no further transition (UTC, or a fixed zone)
+	} else {
+		z.until = end.Unix()
+	}
+	return z.offset
+}
+
+// floorDivSeconds is integer division rounding towards negative infinity, so
+// a local timestamp that lands before the epoch still maps to the calendar
+// day containing it rather than the one after.
+func floorDivSeconds(value, divisor int64) int64 {
+	quotient := value / divisor
+	if value < 0 && value%divisor != 0 {
+		quotient--
+	}
+	return quotient
+}
+
 // buildRTHRollups filters and aggregates the raw file in one pass. RTH bars
 // for one hour/day occupy a contiguous raw range, so [from,to) remains safe
 // for recomputing the single entry clipped by a replay spoiler boundary.
+//
+// The calendar fields this needs (weekday, minute-of-day) are derived by
+// integer arithmetic from a cached zone offset rather than through time.Time
+// accessors — see zoneWindow. The one thing that stays on time.Date is the
+// session's 09:30 open, computed once per session: its offset can legitimately
+// differ from the offset at the bar being read when a transition lands between
+// them, and only a real tzdata lookup resolves that correctly.
 func buildRTHRollups(f *BarFile, location *time.Location) (hourly, daily []rollupBar) {
 	n := f.Count()
 	if n == 0 || n > math.MaxInt32 {
@@ -113,17 +179,28 @@ func buildRTHRollups(f *BarFile, location *time.Location) (hourly, daily []rollu
 	hourBar := rollupBar{from: -1}
 	dayBar := rollupBar{from: -1}
 
+	zone := newZoneWindow(location)
+	openDay := int64(math.MinInt64) // local day number `open` was derived from
+	open := int64(0)
+
 	for i := 0; i < n; i++ {
-		local := time.Unix(f.TsAt(i), 0).In(location)
-		if local.Weekday() == time.Saturday || local.Weekday() == time.Sunday {
+		ts := f.TsAt(i)
+		local := ts + zone.offsetAt(ts)
+		days := floorDivSeconds(local, daySeconds)
+		// 1970-01-01 was a Thursday and time.Weekday counts Sunday as 0.
+		if weekday := ((days+4)%7 + 7) % 7; weekday == 0 || weekday == 6 {
 			continue
 		}
-		minute := local.Hour()*60 + local.Minute()
-		if minute < 9*60+30 || minute >= 16*60 {
+		minute := int((local - days*daySeconds) / 60)
+		if minute < rthOpenMinute || minute >= rthCloseMinute {
 			continue
 		}
-		open := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, location).Unix()
-		hour := open + int64((minute-(9*60+30))/60)*hourSeconds
+		if days != openDay {
+			openDay = days
+			y, m, d := time.Unix(ts, 0).In(location).Date()
+			open = time.Date(y, m, d, 9, 30, 0, 0, location).Unix()
+		}
+		hour := open + int64((minute-rthOpenMinute)/60)*hourSeconds
 		if hour != currentHour {
 			if hourBar.from >= 0 {
 				hourly = append(hourly, hourBar)

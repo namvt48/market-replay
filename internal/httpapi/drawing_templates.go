@@ -14,8 +14,9 @@ import (
 // a few dozen colour/flag/number fields (docs: DrawingTemplateAppearance),
 // nowhere near this — it just keeps a malformed or hostile client from
 // writing an unbounded blob into SQLite, same reasoning as
-// maxPreferencePayload.
-const maxDrawingTemplatePayload = 64 << 10
+// maxPreferencePayload. A var, not a const, so ApplyLimits (limits.go) can
+// override it from config.yaml's limits.drawing_template_payload_bytes.
+var maxDrawingTemplatePayload = 64 << 10
 
 // handleListDrawingTemplates serves GET /api/v1/drawing-templates.
 func (s *Server) handleListDrawingTemplates(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +39,7 @@ func (s *Server) handlePutDrawingTemplate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxDrawingTemplatePayload+1))
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxDrawingTemplatePayload)+1))
 	if err != nil {
 		writeError(w, fmt.Errorf("%w: could not read body: %v", errBadRequest, err))
 		return

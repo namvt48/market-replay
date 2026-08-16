@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"path/filepath"
 
 	_ "modernc.org/sqlite"
 
@@ -32,11 +33,26 @@ var _ storage.Store = (*Store)(nil)
 // '#', '?' or non-ASCII bytes must remain part of the filesystem path rather
 // than being parsed as URI syntax.
 //
+// path is resolved to absolute before it reaches url.URL. A relative Path on
+// a "file" URL serializes as "file://data/app.db" (net/url always emits the
+// "//" authority marker there), which SQLite's own URI parser reads as
+// "data" being the URI *authority*, not the first path segment — the DSN for
+// the doc's own example config.yaml value ("data/app.db") fails to open with
+// "invalid uri authority: data" before this resolves it. An absolute path
+// serializes as "file:///abs/data/app.db" (empty authority, unambiguous)
+// instead. filepath.Abs is a no-op on a path that's already absolute (every
+// deployed config passes one via DATA_DIR/DB_PATH), so this only changes
+// behavior for the relative-path case that was broken outright.
+//
 // MaxOpenConns is still pinned to 1 because a single user's sessions/trades
 // writes do not need concurrent writers, and serialising them avoids
 // self-inflicted SQLITE_BUSY failures inside this process.
 func Open(path string) (*Store, error) {
-	dsn := url.URL{Scheme: "file", Path: path}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: resolve absolute path for %s: %w", path, err)
+	}
+	dsn := url.URL{Scheme: "file", Path: absPath}
 	query := url.Values{}
 	query.Add("_pragma", "foreign_keys(ON)")
 	query.Add("_pragma", "synchronous(NORMAL)")
@@ -61,6 +77,9 @@ func (s *Store) Init(ctx context.Context) error {
 		return fmt.Errorf("sqlite: init schema: %w", err)
 	}
 	if err := s.migrateTradeVisualColumns(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateSessionAnalyticsColumns(ctx); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, drawingsSchema); err != nil {
@@ -128,6 +147,53 @@ func (s *Store) migrateTradeVisualColumns(ctx context.Context) error {
 		}
 		if _, err := s.db.ExecContext(ctx, column.ddl); err != nil {
 			return fmt.Errorf("sqlite: add trades.%s: %w", column.name, err)
+		}
+	}
+	return nil
+}
+
+// migrateSessionAnalyticsColumns upgrades databases created before analytics
+// needed to tell replay and evaluation sessions apart. Same idempotent
+// PRAGMA-then-ALTER shape as migrateTradeVisualColumns, for the same reason:
+// CREATE TABLE IF NOT EXISTS cannot add a column to an existing sessions
+// table.
+func (s *Store) migrateSessionAnalyticsColumns(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(sessions)`)
+	if err != nil {
+		return fmt.Errorf("sqlite: inspect sessions schema: %w", err)
+	}
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlite: scan sessions schema: %w", err)
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("sqlite: iterate sessions schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("sqlite: close sessions schema rows: %w", err)
+	}
+
+	columns := []struct {
+		name string
+		ddl  string
+	}{
+		{name: "kind", ddl: `ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'replay'`},
+		{name: "initial_balance_cents", ddl: `ALTER TABLE sessions ADD COLUMN initial_balance_cents INTEGER`},
+	}
+	for _, column := range columns {
+		if existing[column.name] {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, column.ddl); err != nil {
+			return fmt.Errorf("sqlite: add sessions.%s: %w", column.name, err)
 		}
 	}
 	return nil

@@ -17,8 +17,18 @@ var ErrBadImportance = errors.New("econ: unknown importance")
 
 // maxLineBytes bounds one JSONL record. Calendar entries are a few hundred
 // bytes; the limit turns a corrupt or concatenated file into a clear parse
-// error instead of an unbounded allocation.
-const maxLineBytes = 64 << 10
+// error instead of an unbounded allocation. A var, not a const, so
+// ApplyLimits can override it from config.yaml's limits.econ_line_bytes.
+var maxLineBytes = 64 << 10
+
+// ApplyLimits overrides maxLineBytes from startup config (cmd/server, from
+// config.yaml's limits.econ_line_bytes). Call once before Open — Open and
+// Reload both read this package var each time they scan a shard.
+func ApplyLimits(maxLine int) {
+	if maxLine > 0 {
+		maxLineBytes = maxLine
+	}
+}
 
 // Store holds the whole economic calendar in memory, ordered by release time.
 // Its zero value is a valid, permanently empty calendar, which is what the

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClosedTrade, ReplaySession } from '../../api/types'
 import { shortReplaySessionHash } from '../../replay/session-state'
+import { useUiStore } from '../../store/ui-store'
 import { SessionsPanel } from './SessionsPanel'
 import { tradeHistoryCsv } from './trade-history-csv'
 
@@ -31,7 +32,7 @@ vi.mock('../../replay/replay-engine', () => ({ replayEngine: {
   pauseReplaySession: mocks.pauseReplaySession,
   stopReplaySession: mocks.stopReplaySession,
 } }))
-const sessionSnapshot = { sessionId: null, sessionStatus: null, fill: null }
+const sessionSnapshot: { sessionId: string | null; sessionStatus: 'active' | 'paused' | 'stopped' | null; fill: null } = { sessionId: null, sessionStatus: null, fill: null }
 vi.mock('../../replay/use-replay', () => ({
   useReplaySnapshot: () => sessionSnapshot,
   useReplaySelector: (select: (value: typeof sessionSnapshot) => unknown) => select(sessionSnapshot),
@@ -39,7 +40,7 @@ vi.mock('../../replay/use-replay', () => ({
 
 const saved: ReplaySession = {
   id: '018f08de-1111-7222-8333-abcdef123456', symbol: 'NQ', tf: '5m', startTs: 1_700_000_000,
-  cursorTs: 1_700_007_200, equityCents: 1_025_000, status: 'paused', config: {}, createdAt: 1_700_000_000, updatedAt: 1_700_007_200,
+  cursorTs: 1_700_007_200, equityCents: 1_025_000, status: 'paused', kind: 'replay', config: {}, createdAt: 1_700_000_000, updatedAt: 1_700_007_200,
 }
 const trade: ClosedTrade = {
   id: 'trade-1', sessionId: saved.id, symbol: 'NQ', side: 'long', qty: 1,
@@ -58,6 +59,10 @@ beforeEach(() => {
   mocks.resumeSession.mockResolvedValue(undefined)
   mocks.pauseReplaySession.mockResolvedValue(undefined)
   mocks.stopReplaySession.mockResolvedValue(undefined)
+  sessionSnapshot.sessionId = null
+  sessionSnapshot.sessionStatus = null
+  sessionSnapshot.fill = null
+  useUiStore.setState({ sidebarOpen: true, sidebarTab: 'sessions', reviewSource: null })
 })
 
 afterEach(cleanup)
@@ -93,6 +98,22 @@ describe('SessionsPanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Activate' }))
     expect(mocks.resumeSession).toHaveBeenCalledWith(saved)
+  })
+
+  it('offers Review only for the active replay session', async () => {
+    const user = userEvent.setup()
+    sessionSnapshot.sessionId = saved.id
+    sessionSnapshot.sessionStatus = 'active'
+    render(<SessionsPanel />)
+
+    const review = await screen.findByRole('button', { name: 'Review active session' })
+    const activeRow = screen.getByRole('button', { name: `Inspect NQ 5m session ${shortReplaySessionHash(saved.id)}` })
+    expect(activeRow).toHaveAttribute('aria-current', 'true')
+    expect(activeRow).toHaveClass('bg-active/10')
+    await user.click(review)
+
+    expect(useUiStore.getState().sidebarTab).toBe('review')
+    expect(useUiStore.getState().reviewSource).toMatchObject({ id: saved.id, type: 'session' })
   })
 
   it('opens deletion from the session row context menu and requires confirmation', async () => {

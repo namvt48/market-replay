@@ -12,7 +12,9 @@ import (
 // decompression, if any — see readLimitedBody). A full chart layout plus
 // per-symbol drawings, fills, and indicators is generous but bounded; this
 // just keeps a malformed or hostile client from writing an unbounded blob.
-const maxWorkspaceSnapshotPayload = 4 << 20
+// A var, not a const, so ApplyLimits (limits.go) can override it from
+// config.yaml's limits.workspace_snapshot_payload_bytes at startup.
+var maxWorkspaceSnapshotPayload = 4 << 20
 
 // localUserID is the fixed owner for every row this single-user product
 // writes. There is no auth anywhere in this codebase (PRODUCT.md: "This is

@@ -77,3 +77,30 @@ func TestOpenEscapesDatabasePath(t *testing.T) {
 		t.Fatalf("database was not created at the exact configured path %q: %v", path, err)
 	}
 }
+
+// TestOpenAcceptsRelativePath guards against a regression Open used to have:
+// a relative path serializes as "file://data/app.db" (net/url always emits
+// the "//" authority marker on a "file" URL), which SQLite's own URI parser
+// reads as "data" being the URI *authority* rather than the first path
+// segment — the exact DSN produced by this repo's checked-in config.yaml
+// (db_path: "data/app.db") and by running the server with no DB_PATH/DATA_DIR
+// override at all. It failed with "invalid uri authority: data" before Open
+// resolved the path to absolute internally.
+//
+// Not t.Parallel(): t.Chdir changes the process's actual working directory,
+// which parallel tests would race on.
+func TestOpenAcceptsRelativePath(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	store, err := Open("app.db")
+	if err != nil {
+		t.Fatalf("Open(relative path): %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if _, err := os.Stat("app.db"); err != nil {
+		t.Fatalf("database was not created at the relative path: %v", err)
+	}
+}

@@ -24,6 +24,10 @@ services:
       # Registry.NewRegistry fails fast at startup if meta/symbols.json is
       # missing, so this directory must be populated before first run.
       - ./data:/srv/replay/data
+      # Bind-mounts config.yaml read-only so limits: can be tuned with a
+      # container restart, no image rebuild needed. HTTP_ADDR/DATA_DIR/
+      # DB_PATH above still win over config.yaml's server: section.
+      - ./config.yaml:/srv/replay/config.yaml:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s

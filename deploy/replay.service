@@ -6,6 +6,10 @@ After=network.target
 Type=simple
 User=replay
 Group=replay
+# config.yaml (server:/limits: sections) is looked up relative to this
+# WorkingDirectory — deploy it to /srv/replay/config.yaml alongside the
+# binary. The three env vars below still override config.yaml's server:
+# section, unchanged from before config.yaml existed.
 WorkingDirectory=/srv/replay
 Environment=HTTP_ADDR=127.0.0.1:8080
 Environment=DATA_DIR=/srv/replay/data

@@ -224,7 +224,7 @@ describe('ReplayEngine multi-view invariant', () => {
     engine.destroy()
   })
 
-  it('clears stale indicator output before rendering the next replay cursor', async () => {
+  it('keeps showing the previous indicator output while stepping forward, instead of flashing empty', async () => {
     const engine = new ReplayEngine()
     const view = adapter()
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
@@ -242,17 +242,101 @@ describe('ReplayEngine multi-view invariant', () => {
     ]))
 
     let resolveRun: (result: IndicatorRunResult) => void = () => undefined
+    const runCallCount = engineMocks.runIndicator.mock.calls.length
     engineMocks.runIndicator.mockImplementationOnce(() => new Promise<IndicatorRunResult>((resolve) => { resolveRun = resolve }))
     view.setIndicators.mockClear()
 
+    // A forward step can never turn the already-visible output into a
+    // spoiler — it was computed from strictly less data than the cursor now
+    // allows — so the chart must keep it rather than blanking while the
+    // request for the new cursor is in flight.
     engine.stepForward()
-
-    await vi.waitFor(() => expect(view.setIndicators).toHaveBeenCalledWith([]))
-    expect(view.setIndicators).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(engineMocks.runIndicator.mock.calls.length).toBeGreaterThan(runCallCount))
+    expect(view.setIndicators).not.toHaveBeenCalled()
     resolveRun({ draws: [{ id: 2, kind: 'marker', label: 'new', t0: 180, y0: 101, style: {} }], plots: [] })
     await vi.waitFor(() => expect(view.setIndicators).toHaveBeenLastCalledWith([
       expect.objectContaining({ indicatorId: 'cursor-study', draws: [expect.objectContaining({ label: 'new' })] }),
     ]))
+    expect(view.setIndicators).not.toHaveBeenCalledWith([])
+    engine.destroy()
+  })
+
+  it('clears stale indicator output immediately on a rewind, before the replacement arrives', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.seek(180)
+    engineMocks.runIndicator.mockResolvedValueOnce({
+      draws: [{ id: 1, kind: 'ray', label: 'old', t0: 60, y0: 100, style: {} }],
+      plots: [],
+    })
+
+    engine.addIndicator({
+      id: 'cursor-study', name: 'Cursor Study', version: 1, meta: { onMainPanel: true }, inputs: [],
+    })
+    await vi.waitFor(() => expect(view.setIndicators).toHaveBeenLastCalledWith([
+      expect.objectContaining({ indicatorId: 'cursor-study', draws: [expect.objectContaining({ label: 'old' })] }),
+    ]))
+
+    let resolveRun: (result: IndicatorRunResult) => void = () => undefined
+    engineMocks.runIndicator.mockImplementationOnce(() => new Promise<IndicatorRunResult>((resolve) => { resolveRun = resolve }))
+    view.setIndicators.mockClear()
+
+    // A rewind moves the cursor backwards, so the currently displayed output
+    // was computed from bars the replay can no longer see — it must come off
+    // the chart before the replacement request even settles.
+    engine.stepBack()
+
+    await vi.waitFor(() => expect(view.setIndicators).toHaveBeenCalledWith([]))
+    resolveRun({ draws: [{ id: 2, kind: 'marker', label: 'new', t0: 60, y0: 101, style: {} }], plots: [] })
+    await vi.waitFor(() => expect(view.setIndicators).toHaveBeenLastCalledWith([
+      expect.objectContaining({ indicatorId: 'cursor-study', draws: [expect.objectContaining({ label: 'new' })] }),
+    ]))
+    engine.destroy()
+  })
+
+  it('does not rebuild trade markers/connections when only unrealized P&L changes across replay bars', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.beginReplaySelection()
+    view.fireReplayBarSelect(0)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    engine.placeMarket('buy')
+    view.fireOrderAction({ type: 'confirm' })
+    engine.stepForward() // a market order fills on the next processed bar, not synchronously on confirm
+    expect(engine.getSnapshot().fill?.position?.qty).toBe(1)
+
+    const markersCallsBefore = view.setTradeMarkers.mock.calls.length
+    const connectionsCallsBefore = view.setTradeConnections.mock.calls.length
+    view.setOrderLines.mockClear()
+
+    // Every remaining bar in the fixture moves the close price while the
+    // position stays open, so unrealizedCents changes on every one of these
+    // steps — the exact condition that used to force a full trade-history
+    // rebuild every replay bar.
+    engine.stepForward()
+    engine.stepForward()
+
+    // The position line has to keep refreshing to show the moving P&L...
+    expect(view.setOrderLines.mock.calls.length).toBeGreaterThanOrEqual(2)
+    // ...but fill.trades never changed (no trade closed), so the O(closed
+    // trades) rebuild — walking the journal, eval visuals, the sort — must
+    // not run at all across those steps.
+    expect(view.setTradeMarkers.mock.calls.length).toBe(markersCallsBefore)
+    expect(view.setTradeConnections.mock.calls.length).toBe(connectionsCallsBefore)
+
+    // Closing the position is the one thing that must still trigger a
+    // rebuild, proving the guard is actually watching `fill.trades` and not
+    // just permanently skipping this work. flatten() only places the exit
+    // order; like the entry, it fills on the next processed bar.
+    engine.flatten()
+    engine.stepForward()
+    expect(engine.getSnapshot().fill?.trades).toHaveLength(1)
+    expect(view.setTradeMarkers.mock.calls.length).toBeGreaterThan(markersCallsBefore)
+    expect(view.setTradeConnections.mock.calls.length).toBeGreaterThan(connectionsCallsBefore)
+
     engine.destroy()
   })
 
@@ -486,6 +570,7 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(view.resetView).toHaveBeenCalledOnce()
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 120, replayStartTs: 120, sessionId: 'session-1', sessionStatus: 'active' })
     expect(engineMocks.createSession).toHaveBeenCalledOnce()
+    expect(engineMocks.createSession).toHaveBeenCalledWith('NQ', '1m', 120, { kind: 'replay', initialBalanceCents: 1_000_000 })
     engine.placeMarket('buy')
     view.fireOrderAction({ type: 'confirm' })
     engine.stepForward()
@@ -573,7 +658,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     await resumedEngine.resumeSession({
       id: 'session-1', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
-      equityCents: 1_000_000, status: 'paused', config: null, createdAt: 60, updatedAt: 240,
+      equityCents: 1_000_000, status: 'paused', kind: 'replay', config: null, createdAt: 60, updatedAt: 240,
     })
 
     expect(resumedEngine.getSnapshot()).toMatchObject({ cursorTs: 180, replayMode: 'active' })
@@ -625,7 +710,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     await resumedEngine.resumeSession({
       id: 'session-1', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
-      equityCents: 1_000_000, status: 'paused', config: null, createdAt: 60, updatedAt: 240,
+      equityCents: 1_000_000, status: 'paused', kind: 'replay', config: null, createdAt: 60, updatedAt: 240,
     })
 
     expect(resumedEngine.getSnapshot().cursorTs).toBe(240)
@@ -658,7 +743,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     await resumedEngine.resumeSession({
       id: 'session-1', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
-      equityCents: 1_000_000, status: 'paused', config: null, createdAt: 60, updatedAt: 240,
+      equityCents: 1_000_000, status: 'paused', kind: 'replay', config: null, createdAt: 60, updatedAt: 240,
     })
 
     expect(resumedEngine.getSnapshot().cursorTs).toBe(180)
@@ -678,6 +763,8 @@ describe('ReplayEngine multi-view invariant', () => {
     const view = adapter()
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     await engine.syncEvaluationSession()
+    expect(engineMocks.createSession).toHaveBeenCalledOnce()
+    expect(engineMocks.createSession).toHaveBeenCalledWith('NQ', '1m', 60, { kind: 'eval', initialBalanceCents: 10_000_000 })
     engine.placeMarket('buy')
     view.fireOrderAction({ type: 'confirm' })
     engine.stepForward()
@@ -696,7 +783,10 @@ describe('ReplayEngine multi-view invariant', () => {
     await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     await resumedEngine.syncEvaluationSession()
 
-    expect(resumedEngine.getSnapshot()).toMatchObject({ cursorTs: 180, replayMode: 'active' })
+    // Resuming reuses the account's stored session instead of minting a
+    // second one that would receive a duplicate copy of the same journal.
+    expect(engineMocks.createSession).toHaveBeenCalledOnce()
+    expect(resumedEngine.getSnapshot()).toMatchObject({ cursorTs: 180, replayMode: 'active', sessionId: 'session-1', sessionStatus: 'active' })
     expect(resumedEngine.getSnapshot().fill?.trades).toEqual([expect.objectContaining({ exitTs: 180 })])
     expect(restoreLayout).toHaveBeenCalledWith(expect.objectContaining({ activePaneId: workspace.activePaneId }))
 
@@ -706,6 +796,9 @@ describe('ReplayEngine multi-view invariant', () => {
       reason: 'explicit-exit',
       cursorTs: 240,
     })
+    expect(engineMocks.putTrades).toHaveBeenCalledWith('session-1', [expect.objectContaining({
+      sessionId: 'session-1', symbol: 'NQ', side: 'long', exitTs: 180,
+    })])
     unregisterBridge()
     resumedEngine.destroy()
   })
@@ -813,7 +906,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     const session: ReplaySession = {
       id: 'saved-session', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
-      equityCents: 1_000_000, status: 'paused', config: {}, createdAt: 0, updatedAt: 240,
+      equityCents: 1_000_000, status: 'paused', kind: 'replay', config: {}, createdAt: 0, updatedAt: 240,
     }
     const trade: ClosedTrade = {
       id: 'trade-1', sessionId: session.id, symbol: 'NQ', side: 'long', qty: 1,
@@ -838,7 +931,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     const session: ReplaySession = {
       id: 'signed-marker-session', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
-      equityCents: 1_000_000, status: 'paused', config: {}, createdAt: 0, updatedAt: 240,
+      equityCents: 1_000_000, status: 'paused', kind: 'replay', config: {}, createdAt: 0, updatedAt: 240,
     }
     const trade: ClosedTrade = {
       id: 'trade-short', sessionId: session.id, symbol: 'NQ', side: 'short', qty: 5,
@@ -881,7 +974,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     const session: ReplaySession = {
       id: 'history-replay-session', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
-      equityCents: 1_000_000, status: 'paused', config: {}, createdAt: 0, updatedAt: 240,
+      equityCents: 1_000_000, status: 'paused', kind: 'replay', config: {}, createdAt: 0, updatedAt: 240,
     }
     const trade: ClosedTrade = {
       id: 'history-trade', sessionId: session.id, symbol: 'NQ', side: 'long', qty: 1,
@@ -928,7 +1021,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     const session: ReplaySession = {
       id: 'empty-session', symbol: 'NQ', tf: '1m', startTs: 150, cursorTs: 300,
-      equityCents: 1_000_000, status: 'paused', config: {}, createdAt: 150, updatedAt: 300,
+      equityCents: 1_000_000, status: 'paused', kind: 'replay', config: {}, createdAt: 150, updatedAt: 300,
     }
     engineMocks.fetchCalendar.mockResolvedValueOnce([
       { date: '1970-01-01', firstTs: 0, lastTs: 120, bars: 3 },
@@ -958,6 +1051,10 @@ describe('ReplayEngine multi-view invariant', () => {
 
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, replayMode: 'active', replayStartTs: 150 })
     expect(view.focusTime).toHaveBeenCalledWith(240)
+    expect(engineMocks.createSession).toHaveBeenCalledOnce()
+    expect(engineMocks.createSession).toHaveBeenCalledWith('NQ', '1m', 150, { kind: 'eval', initialBalanceCents: 10_000_000 })
+    expect(engine.getSnapshot()).toMatchObject({ sessionId: 'session-1', sessionStatus: 'active' })
+    expect(getEvalState().sessionId).toBe('session-1')
     engine.destroy()
   })
 
@@ -1145,7 +1242,7 @@ describe('ReplayEngine multi-view invariant', () => {
 
     await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 1_020, replayStartTs: 1_020 })
-    expect(engineMocks.createSession).toHaveBeenLastCalledWith('NQ', '1d', 1_020)
+    expect(engineMocks.createSession).toHaveBeenLastCalledWith('NQ', '1d', 1_020, { kind: 'replay', initialBalanceCents: 1_000_000 })
     engine.destroy()
   })
 

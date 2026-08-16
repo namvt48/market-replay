@@ -30,33 +30,40 @@ init = () => {
   input.color('NY PM Color', { r: 0, g: 0, b: 0, a: 0.15 }, 'color_nypm', 'Sessions', undefined);
 };
 
+// A session string is a constant input, so its parse result is cached rather
+// than recomputed. Without this, a 1500-tick run re-split and re-parseInt'd
+// the same five strings 7,500 times.
+const sessionCache = {};
+
 const parseSession = (s) => {
+  const cached = sessionCache[s];
+  if (cached !== undefined) return cached;
   const parts = s.split('-');
-  return {
-    startH: parseInt(parts[0].slice(0, 2), 10),
-    startM: parseInt(parts[0].slice(2, 4), 10),
-    endH: parseInt(parts[1].slice(0, 2), 10),
-    endM: parseInt(parts[1].slice(2, 4), 10),
+  const parsed = {
+    start: parseInt(parts[0].slice(0, 2), 10) * 60 + parseInt(parts[0].slice(2, 4), 10),
+    end: parseInt(parts[1].slice(0, 2), 10) * 60 + parseInt(parts[1].slice(2, 4), 10),
   };
+  sessionCache[s] = parsed;
+  return parsed;
 };
 
-const inSession = (sessionStr, _moment, t0) => {
+// Takes the already-resolved NY minute-of-day rather than the bar timestamp:
+// every session on a given tick shares one wall-clock reading, so building a
+// _moment and doing a tzdata lookup per session (five per tick) was four
+// fifths waste.
+const inSession = (sessionStr, nowMinute) => {
   const sess = parseSession(sessionStr);
-  const nyTime = _moment(t0).tz('America/New_York');
-  const now = nyTime.hour() * 60 + nyTime.minute();
-  const start = sess.startH * 60 + sess.startM;
-  const end = sess.endH * 60 + sess.endM;
-  if (end <= start) return now >= start || now < end;
-  return now >= start && now < end;
+  if (sess.end <= sess.start) return nowMinute >= sess.start || nowMinute < sess.end;
+  return nowMinute >= sess.start && nowMinute < sess.end;
 };
 
 let state = {};
 
-const processSession = (key, show, sessionStr, color, _moment, t0, h, l) => {
+const processSession = (key, show, sessionStr, color, nowMinute, t0, h, l) => {
   if (!show) return;
   if (!state[key]) state[key] = { prev: false, boxId: null, high: 0, low: 0, startT: 0 };
   const s = state[key];
-  const active = inSession(sessionStr, _moment, t0);
+  const active = inSession(sessionStr, nowMinute);
 
   if (active) {
     if (!s.prev) {
@@ -77,10 +84,12 @@ onTick = (length, _moment, _, ta, inputs) => {
   const t0 = time(0);
   const h = high(0);
   const l = low(0);
+  const nyTime = _moment(t0).tz('America/New_York');
+  const nowMinute = nyTime.hour() * 60 + nyTime.minute();
 
-  processSession('asia', inputs.show_asia, inputs.session_asia, inputs.color_asia, _moment, t0, h, l);
-  processSession('london', inputs.show_london, inputs.session_london, inputs.color_london, _moment, t0, h, l);
-  processSession('nyam', inputs.show_nyam, inputs.session_nyam, inputs.color_nyam, _moment, t0, h, l);
-  processSession('nylunch', inputs.show_nylunch, inputs.session_nylunch, inputs.color_nylunch, _moment, t0, h, l);
-  processSession('nypm', inputs.show_nypm, inputs.session_nypm, inputs.color_nypm, _moment, t0, h, l);
+  processSession('asia', inputs.show_asia, inputs.session_asia, inputs.color_asia, nowMinute, t0, h, l);
+  processSession('london', inputs.show_london, inputs.session_london, inputs.color_london, nowMinute, t0, h, l);
+  processSession('nyam', inputs.show_nyam, inputs.session_nyam, inputs.color_nyam, nowMinute, t0, h, l);
+  processSession('nylunch', inputs.show_nylunch, inputs.session_nylunch, inputs.color_nylunch, nowMinute, t0, h, l);
+  processSession('nypm', inputs.show_nypm, inputs.session_nypm, inputs.color_nypm, nowMinute, t0, h, l);
 };

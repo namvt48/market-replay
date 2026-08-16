@@ -349,29 +349,40 @@ const stdev = (arr) => {
   return Math.sqrt(ss / arr.length);
 };
 
+// A session string is a constant input, so its parse result is cached rather
+// than recomputed on every tick that reads it.
+const sessionCache = {};
+
 const parseSession = (s) => {
+  const cached = sessionCache[s];
+  if (cached !== undefined) return cached;
   const parts = s.split('-');
   const start = parts[0];
   const end = parts[1];
-  return {
+  const parsed = {
     startH: parseInt(start.slice(0, 2), 10),
     startM: parseInt(start.slice(2, 4), 10),
     endH: parseInt(end.slice(0, 2), 10),
     endM: parseInt(end.slice(2, 4), 10),
   };
+  sessionCache[s] = parsed;
+  return parsed;
 };
 
 // NY-local hour/minute via proper IANA timezone conversion instead of manual
 // UTC-offset math — handles EST/EDT transitions automatically, no more
 // remembering to flip the offset input twice a year.
+//
+// Called once per tick and threaded into the predicates below, rather than
+// once per predicate: onTick asks four separate wall-clock questions about
+// the same bar, and each _moment()/tz() pair is a real tzdata lookup.
 const getNyHourMinute = (_moment, t0) => {
   const nyTime = _moment(t0).tz('America/New_York');
   return { hour: nyTime.hour(), minute: nyTime.minute() };
 };
 
-const inSessionFromBar = (sessionStr, _moment, t0) => {
+const inSessionFromBar = (sessionStr, hm) => {
   const sess = parseSession(sessionStr);
-  const hm = getNyHourMinute(_moment, t0);
 
   const now = hm.hour * 60 + hm.minute;
   const start = sess.startH * 60 + sess.startM;
@@ -381,8 +392,7 @@ const inSessionFromBar = (sessionStr, _moment, t0) => {
   return now >= start && now < end;
 };
 
-const isExactBarTime = (hhmm, _moment, t0) => {
-  const hm = getNyHourMinute(_moment, t0);
+const isExactBarTime = (hhmm, hm) => {
   const hh = Math.floor(hhmm / 100);
   const mm = hhmm % 100;
   return hm.hour === hh && hm.minute === mm;
@@ -528,18 +538,19 @@ onTick = (length, _moment, _, ta, inputs) => {
   const v = volume(0);
   const price4 = (o + h + l + c) / 4.0;
 
-  const inNyOpenTrigger = inSessionFromBar(inputs.t_ny_open, _moment, t0);
-  const inBaseSession = inSessionFromBar(inputs.i_session1, _moment, t0);
+  const hm = getNyHourMinute(_moment, t0);
+  const inNyOpenTrigger = inSessionFromBar(inputs.t_ny_open, hm);
+  const inBaseSession = inSessionFromBar(inputs.i_session1, hm);
 
   const sessionChanged = inBaseSession && !prevInBaseSession;
   const sessionEnded = !inBaseSession && prevInBaseSession;
   prevInBaseSession = inBaseSession;
 
-  if (isExactBarTime(inputs.ny_equity_open, _moment, t0)) {
+  if (isExactBarTime(inputs.ny_equity_open, hm)) {
     nyMarketOpenPrice = o;
   }
 
-  if (isExactBarTime(0, _moment, t0)) {
+  if (isExactBarTime(0, hm)) {
     midnightOpenPrice = o;
   }
 

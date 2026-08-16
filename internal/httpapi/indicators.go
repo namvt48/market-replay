@@ -8,15 +8,50 @@ import (
 
 	"market-replay/internal/bars"
 	"market-replay/internal/indicators"
+	"market-replay/internal/model"
 )
 
 // maxIndicatorRunPayload bounds the run request body — input overrides are
 // scalars and small {r,g,b,a} color objects, never the size a saved chart
 // layout can reach, so this is far smaller than preferences.go's own limit.
-const maxIndicatorRunPayload = 64 << 10
+// A var, not a const, so ApplyLimits (limits.go) can override it from
+// config.yaml's limits.indicator_run_payload_bytes at startup.
+var maxIndicatorRunPayload = 64 << 10
 
 type runIndicatorRequest struct {
 	Inputs map[string]any `json:"inputs"`
+}
+
+// quantizeToClosedBucket pulls a display-timeframe run back to the last bar
+// that closed before the cursor, instead of the cursor itself.
+//
+// Two things follow from that, and both are the point. The output stops
+// repainting: a script's drawings are derived only from completed bars, which
+// is the same guarantee Pine gives by default and the one a trader reading a
+// replay actually wants. And the run becomes cacheable: every cursor inside
+// one display bucket produces an identical request, so a 15m chart computes
+// its indicators once per closed 15m bar rather than once per replayed
+// minute — the difference between a ~50 ms recompute on every step and an
+// LRU hit.
+//
+// 1m never reaches here (handleRunIndicator returns before the call): there
+// the display bar *is* the replay bar, so quantizing would drop the cursor's
+// own bar for nothing.
+func quantizeToClosedBucket(meta model.SymbolMeta, tf string, params indicators.RunParams) (indicators.RunParams, error) {
+	bucketStart, err := bars.ChartBucketStart(meta, tf, params.At)
+	if err != nil {
+		return params, err
+	}
+	// The bucket containing At is still forming, so the newest closed bar is
+	// whatever ends one second before it opened.
+	lastClosed := bucketStart - 1
+	if lastClosed < params.At {
+		params.At = lastClosed
+	}
+	if lastClosed < params.MaxTs {
+		params.MaxTs = lastClosed
+	}
+	return params, nil
 }
 
 // handleListIndicators serves GET /api/v1/indicators — every registered
@@ -74,7 +109,7 @@ func (s *Server) handleRunIndicator(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body runIndicatorRequest
-	raw, err := io.ReadAll(io.LimitReader(r.Body, maxIndicatorRunPayload+1))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, int64(maxIndicatorRunPayload)+1))
 	if err != nil {
 		writeError(w, fmt.Errorf("%w: could not read body: %v", errBadRequest, err))
 		return
@@ -106,7 +141,10 @@ func (s *Server) handleRunIndicator(w http.ResponseWriter, r *http.Request) {
 			result, runErr = s.Indicators.Run(r.Context(), scriptID, file, cal, meta, params)
 			return runErr
 		}
-		displayBars, err := bars.AggregateChartWindow(file, cal, meta, tf, at, before, after, maxTs)
+		if params, err = quantizeToClosedBucket(meta, tf, params); err != nil {
+			return err
+		}
+		displayBars, err := bars.AggregateChartWindow(file, cal, meta, tf, params.At, params.Before, params.After, params.MaxTs)
 		if err != nil {
 			return err
 		}

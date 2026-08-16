@@ -55,6 +55,8 @@ import numpy as np
 import pandas as pd
 from databento import read_dbn
 
+from _pipeline_config import load_pipeline_config
+
 ET = ZoneInfo("America/New_York")
 NS_PER_SEC = 1_000_000_000
 
@@ -286,22 +288,52 @@ def main() -> int:
     ap.add_argument("--symbol", default="NQ")
     ap.add_argument(
         "--kind",
-        default="future",
+        default=None,
         choices=["future", "stock"],
         help="instrument kind recorded in symbols.json; future rolls contracts "
-        "across quarterly expiries, stock keeps the single listed instrument",
+        "across quarterly expiries, stock keeps the single listed instrument "
+        "(default: config.yaml pipeline.ingest.symbols.<symbol>.kind, else future)",
     )
-    ap.add_argument("--tf", default="1m")
-    ap.add_argument("--tick-size", type=float, default=0.25)
-    ap.add_argument("--point-value", type=float, default=20.0)
-    ap.add_argument("--name", default="E-mini Nasdaq-100")
-    ap.add_argument("--commission", type=float, default=2.09)
-    ap.add_argument("--slippage-ticks", type=int, default=1)
+    ap.add_argument(
+        "--tf",
+        default=None,
+        help="default: config.yaml pipeline.ingest.symbols.<symbol>.tf, else 1m",
+    )
+    ap.add_argument(
+        "--tick-size",
+        type=float,
+        default=None,
+        help="default: config.yaml pipeline.ingest.symbols.<symbol>.tick_size, else 0.25",
+    )
+    ap.add_argument(
+        "--point-value",
+        type=float,
+        default=None,
+        help="default: config.yaml pipeline.ingest.symbols.<symbol>.point_value, else 20.0",
+    )
+    ap.add_argument(
+        "--name",
+        default=None,
+        help="default: config.yaml pipeline.ingest.symbols.<symbol>.name, else --symbol",
+    )
+    ap.add_argument(
+        "--commission",
+        type=float,
+        default=None,
+        help="default: config.yaml pipeline.ingest.symbols.<symbol>.commission, else 2.09",
+    )
+    ap.add_argument(
+        "--slippage-ticks",
+        type=int,
+        default=None,
+        help="default: config.yaml pipeline.ingest.symbols.<symbol>.slippage_ticks, else 1",
+    )
     ap.add_argument(
         "--jobs",
         type=int,
-        default=max(1, os.cpu_count() or 1),
-        help="worker processes for aggregation/filtering (default: cpu count)",
+        default=None,
+        help="worker processes for aggregation/filtering "
+        "(default: config.yaml pipeline.ingest.jobs, else cpu count)",
     )
     ap.add_argument(
         "--progress", action="store_true", help="print per-chunk progress lines"
@@ -313,6 +345,25 @@ def main() -> int:
         help="stop after N chunks (smoke test; 0=all)",
     )
     args = ap.parse_args()
+
+    ingest_cfg = load_pipeline_config().get("ingest", {}) or {}
+    symbol_defaults = (ingest_cfg.get("symbols", {}) or {}).get(args.symbol, {}) or {}
+    field_fallbacks = {
+        "kind": "future",
+        "tf": "1m",
+        "tick_size": 0.25,
+        "point_value": 20.0,
+        "name": args.symbol,
+        "commission": 2.09,
+        "slippage_ticks": 1,
+    }
+    for field, fallback in field_fallbacks.items():
+        if getattr(args, field) is None:
+            setattr(args, field, symbol_defaults.get(field, fallback))
+    if args.jobs is None:
+        args.jobs = ingest_cfg.get("jobs") or 0
+    if not args.jobs:
+        args.jobs = max(1, os.cpu_count() or 1)
 
     inputs: list[str] = []
     for pat in args.input:

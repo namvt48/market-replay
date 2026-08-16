@@ -21,17 +21,23 @@ import (
 // equity.
 func (s *Store) CreateSession(ctx context.Context, in model.Session) (model.Session, error) {
 	now := time.Now().Unix()
+	kind := in.Kind
+	if kind == "" {
+		kind = model.SessionKindReplay
+	}
 	sess := model.Session{
-		ID:          uuid.NewString(),
-		Symbol:      in.Symbol,
-		Tf:          in.Tf,
-		StartTs:     in.StartTs,
-		CursorTs:    in.StartTs,
-		EquityCents: 0,
-		Status:      model.SessionActive,
-		Config:      in.Config,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:                  uuid.NewString(),
+		Symbol:              in.Symbol,
+		Tf:                  in.Tf,
+		StartTs:             in.StartTs,
+		CursorTs:            in.StartTs,
+		EquityCents:         0,
+		Status:              model.SessionActive,
+		Kind:                kind,
+		InitialBalanceCents: in.InitialBalanceCents,
+		Config:              in.Config,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 	if len(sess.Config) == 0 {
 		sess.Config = json.RawMessage("{}")
@@ -45,9 +51,9 @@ func (s *Store) CreateSession(ctx context.Context, in model.Session) (model.Sess
 		return model.Session{}, fmt.Errorf("sqlite: create session: pause previous: %w", err)
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, symbol, tf, start_ts, cursor_ts, equity_cents, status, config_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, sess.ID, sess.Symbol, sess.Tf, sess.StartTs, sess.CursorTs, sess.EquityCents, sess.Status, string(sess.Config), sess.CreatedAt, sess.UpdatedAt)
+		INSERT INTO sessions (id, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, sess.ID, sess.Symbol, sess.Tf, sess.StartTs, sess.CursorTs, sess.EquityCents, sess.Status, sess.Kind, sess.InitialBalanceCents, string(sess.Config), sess.CreatedAt, sess.UpdatedAt)
 	if err != nil {
 		return model.Session{}, fmt.Errorf("sqlite: create session: %w", err)
 	}
@@ -74,7 +80,7 @@ func (s *Store) UpdateSession(ctx context.Context, id string, patch model.Sessio
 	defer tx.Rollback()
 
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, symbol, tf, start_ts, cursor_ts, equity_cents, status, config_json, created_at, updated_at
+		SELECT id, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
 		FROM sessions WHERE id = ?
 	`, id)
 	current, err := scanSession(row)
@@ -209,7 +215,7 @@ func (s *Store) DeleteEmptySessions(ctx context.Context) (int64, error) {
 
 func (s *Store) GetSession(ctx context.Context, id string) (model.Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, symbol, tf, start_ts, cursor_ts, equity_cents, status, config_json, created_at, updated_at
+		SELECT id, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
 		FROM sessions WHERE id = ?
 	`, id)
 	sess, err := scanSession(row)
@@ -224,7 +230,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (model.Session, error
 
 func (s *Store) ListSessions(ctx context.Context) ([]model.Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, symbol, tf, start_ts, cursor_ts, equity_cents, status, config_json, created_at, updated_at
+		SELECT id, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
 		FROM sessions ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -256,8 +262,13 @@ type rowScanner interface {
 func scanSession(row rowScanner) (model.Session, error) {
 	var sess model.Session
 	var configJSON string
-	if err := row.Scan(&sess.ID, &sess.Symbol, &sess.Tf, &sess.StartTs, &sess.CursorTs, &sess.EquityCents, &sess.Status, &configJSON, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
+	var initialBalanceCents sql.NullInt64
+	if err := row.Scan(&sess.ID, &sess.Symbol, &sess.Tf, &sess.StartTs, &sess.CursorTs, &sess.EquityCents, &sess.Status, &sess.Kind, &initialBalanceCents, &configJSON, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
 		return model.Session{}, err
+	}
+	if initialBalanceCents.Valid {
+		value := initialBalanceCents.Int64
+		sess.InitialBalanceCents = &value
 	}
 	sess.Config = json.RawMessage(configJSON)
 	return sess, nil

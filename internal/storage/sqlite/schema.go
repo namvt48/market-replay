@@ -16,6 +16,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 	cursor_ts INTEGER NOT NULL,
 	equity_cents INTEGER NOT NULL,
 	status TEXT NOT NULL,
+	-- kind distinguishes a hand-replayed session from a prop-firm-style
+	-- evaluation account; both share this same table and the trades table
+	-- below so analytics can treat them identically. initial_balance_cents
+	-- is nullable because it did not exist before analytics needed it — see
+	-- migrateSessionAnalyticsColumns's fallback for pre-existing rows.
+	kind TEXT NOT NULL DEFAULT 'replay',
+	initial_balance_cents INTEGER,
 	config_json TEXT NOT NULL,
 	created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL

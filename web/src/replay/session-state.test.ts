@@ -5,7 +5,7 @@ import { restoreReplayIndicators, restoreReplayRuntime, serializeReplayRuntime, 
 
 const session: ReplaySession = {
   id: '018f08de-1111-7222-8333-abcdef123456', symbol: 'NQ', tf: '1m', startTs: 100,
-  cursorTs: 200, equityCents: 1_025_000, status: 'paused', config: {}, createdAt: 100, updatedAt: 200,
+  cursorTs: 200, equityCents: 1_025_000, status: 'paused', kind: 'replay', config: {}, createdAt: 100, updatedAt: 200,
 }
 
 const trade: ClosedTrade = {

@@ -40,6 +40,16 @@ export class ChartViewController {
   private spacerTimes: number[] = []
   private economicEventMarkers: EconomicEventMarker[] = []
   private followsReplay = true
+  /**
+   * Last markers/connections array passed to syncTrading, by reference —
+   * replay-engine hands back its own cached array whenever the underlying
+   * trade set hasn't changed (holding a position re-derives only its P&L
+   * label, not the closed-trade journal), so an unchanged reference here
+   * means the adapter call below — a real LWC series/primitive redraw —
+   * would be pure repeated work.
+   */
+  private lastTradeMarkers: TradeMarker[] | null = null
+  private lastTradeConnections: TradeConnection[] | null = null
 
   constructor(options: ChartViewControllerOptions) {
     this.id = options.id
@@ -194,18 +204,24 @@ export class ChartViewController {
 
   syncTrading(lines: OrderLine[], markers: TradeMarker[], connections: TradeConnection[]): void {
     this.adapter.setOrderLines(lines)
-    this.adapter.setTradeMarkers(markers)
-    this.adapter.setTradeConnections(connections.map((connection) => ({
-      ...connection,
-      entryTime: this.projectTimestamp(connection.entryTime),
-      exitTime: this.projectTimestamp(connection.exitTime),
-      ...(connection.protectionAdjustments ? {
-        protectionAdjustments: connection.protectionAdjustments.map((adjustment) => ({
-          ...adjustment,
-          time: this.projectTimestamp(adjustment.time),
-        })),
-      } : {}),
-    })))
+    if (this.lastTradeMarkers !== markers) {
+      this.lastTradeMarkers = markers
+      this.adapter.setTradeMarkers(markers)
+    }
+    if (this.lastTradeConnections !== connections) {
+      this.lastTradeConnections = connections
+      this.adapter.setTradeConnections(connections.map((connection) => ({
+        ...connection,
+        entryTime: this.projectTimestamp(connection.entryTime),
+        exitTime: this.projectTimestamp(connection.exitTime),
+        ...(connection.protectionAdjustments ? {
+          protectionAdjustments: connection.protectionAdjustments.map((adjustment) => ({
+            ...adjustment,
+            time: this.projectTimestamp(adjustment.time),
+          })),
+        } : {}),
+      })))
+    }
   }
 
   syncEconomicEventMarkers(markers: EconomicEventMarker[]): void {

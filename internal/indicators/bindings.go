@@ -86,17 +86,43 @@ func (c *runContext) result() RunResult {
 	return RunResult{Draws: draws, Plots: plots}
 }
 
+// priceColumn selects which OHLC column priceAt reads.
+//
+// An enum rather than the `func(int) int32` accessor this used to take:
+// `ctx.file.OpenAt` is a bound method value on an interface, so every one of
+// the tens of thousands of openC()/high()/low()/closeC() calls a run makes
+// allocated a fresh closure just to name a column.
+type priceColumn uint8
+
+const (
+	columnOpen priceColumn = iota
+	columnHigh
+	columnLow
+	columnClose
+)
+
 // priceAt resolves bars-back offset n (Pine-style: 0 = current bar) against
-// the current cursor, converts through accessor, and scales to a real
+// the current cursor, reads the requested column, and scales to a real
 // price. Out-of-window (including negative absolute index) returns NaN —
 // the DSL's own `na` convention — rather than reading outside the
 // requested window or panicking.
-func (c *runContext) priceAt(n int, accessor func(int) int32) float64 {
+func (c *runContext) priceAt(n int, column priceColumn) float64 {
 	idx := c.cursor - n
 	if idx < c.window.From || idx >= c.window.To {
 		return math.NaN()
 	}
-	return float64(accessor(idx)) * c.tickSize
+	var ticks int32
+	switch column {
+	case columnOpen:
+		ticks = c.file.OpenAt(idx)
+	case columnHigh:
+		ticks = c.file.HighAt(idx)
+	case columnLow:
+		ticks = c.file.LowAt(idx)
+	default:
+		ticks = c.file.CloseAt(idx)
+	}
+	return float64(ticks) * c.tickSize
 }
 
 func (c *runContext) timeAt(n int) float64 {
@@ -396,48 +422,92 @@ func bindHost(rt *goja.Runtime, ctx *runContext) {
 	_ = colorObj.Set("black", rgbaMap(0, 0, 0, 1.0))
 	rt.Set("color", colorObj)
 
-	rt.Set("time", func(n int) float64 { return ctx.timeAt(n) })
-	rt.Set("openC", func(n int) float64 { return ctx.priceAt(n, ctx.file.OpenAt) })
-	rt.Set("high", func(n int) float64 { return ctx.priceAt(n, ctx.file.HighAt) })
-	rt.Set("low", func(n int) float64 { return ctx.priceAt(n, ctx.file.LowAt) })
-	rt.Set("closeC", func(n int) float64 { return ctx.priceAt(n, ctx.file.CloseAt) })
-	rt.Set("volume", func(n int) float64 { return ctx.volumeAt(n) })
-
-	rt.Set("horizontalRay", func(t, y float64, style map[string]any, label string) int64 {
-		return ctx.addDraw("ray", int64(t), y, 0, 0, label, style)
+	// Everything below is the per-tick surface, and it is bound with goja's
+	// native signature — func(goja.FunctionCall) goja.Value — rather than a
+	// plain Go func. A plain Go func makes goja wrap the call in
+	// wrapReflectFunc, which converts every argument through reflection on
+	// every invocation; across a 1500-tick run that measured at roughly a
+	// fifth of the run's total time. The declarative bindings above keep
+	// their ordinary Go signatures on purpose: they run once, inside init(),
+	// where readable multi-argument signatures are worth more than the call
+	// overhead.
+	bindPrice := func(name string, column priceColumn) {
+		rt.Set(name, func(call goja.FunctionCall) goja.Value {
+			return rt.ToValue(ctx.priceAt(argInt(call, 0), column))
+		})
+	}
+	rt.Set("time", func(call goja.FunctionCall) goja.Value {
+		return rt.ToValue(ctx.timeAt(argInt(call, 0)))
 	})
-	rt.Set("rectangle", func(t1, y1, t2, y2 float64, style map[string]any) int64 {
-		return ctx.addDraw("rectangle", int64(t1), y1, int64(t2), y2, "", style)
+	bindPrice("openC", columnOpen)
+	bindPrice("high", columnHigh)
+	bindPrice("low", columnLow)
+	bindPrice("closeC", columnClose)
+	rt.Set("volume", func(call goja.FunctionCall) goja.Value {
+		return rt.ToValue(ctx.volumeAt(argInt(call, 0)))
+	})
+
+	rt.Set("horizontalRay", func(call goja.FunctionCall) goja.Value {
+		return rt.ToValue(ctx.addDraw("ray", int64(argFloat(call, 0)), argFloat(call, 1), 0, 0, argString(call, 3), argStyle(call, 2)))
+	})
+	rt.Set("rectangle", func(call goja.FunctionCall) goja.Value {
+		return rt.ToValue(ctx.addDraw("rectangle", int64(argFloat(call, 0)), argFloat(call, 1), int64(argFloat(call, 2)), argFloat(call, 3), "", argStyle(call, 4)))
 	})
 	// verticalLine has no meaningful Y — it spans the full visible price
 	// range, a rendering convention the frontend applies for kind:"vline"
 	// rather than something this engine has (or needs) an opinion about.
-	rt.Set("verticalLine", func(t float64, style map[string]any) int64 {
-		return ctx.addDraw("vline", int64(t), 0, 0, 0, "", style)
+	rt.Set("verticalLine", func(call goja.FunctionCall) goja.Value {
+		return rt.ToValue(ctx.addDraw("vline", int64(argFloat(call, 0)), 0, 0, 0, "", argStyle(call, 1)))
 	})
 	// marker is a labeled point (a fractal swing, say) — same shape as a
 	// ray's anchor, just never extended into a line.
-	rt.Set("marker", func(t, y float64, label string, style map[string]any) int64 {
-		return ctx.addDraw("marker", int64(t), y, 0, 0, label, style)
+	rt.Set("marker", func(call goja.FunctionCall) goja.Value {
+		return rt.ToValue(ctx.addDraw("marker", int64(argFloat(call, 0)), argFloat(call, 1), 0, 0, argString(call, 2), argStyle(call, 3)))
 	})
-	rt.Set("deleteDrawingById", func(id goja.Value) {
-		if id == nil || goja.IsUndefined(id) || goja.IsNull(id) {
-			return
+	rt.Set("deleteDrawingById", func(call goja.FunctionCall) goja.Value {
+		id := call.Argument(0)
+		if goja.IsUndefined(id) || goja.IsNull(id) {
+			return goja.Undefined()
 		}
 		ctx.deleteDraw(id.ToInteger())
+		return goja.Undefined()
 	})
-	rt.Set("plot", func(key string, value float64) {
-		ctx.plots = append(ctx.plots, PlotPoint{Key: key, Time: ctx.currentTime(), Value: value})
+	rt.Set("plot", func(call goja.FunctionCall) goja.Value {
+		ctx.plots = append(ctx.plots, PlotPoint{Key: argString(call, 0), Time: ctx.currentTime(), Value: argFloat(call, 1)})
+		return goja.Undefined()
 	})
 
-	rt.Set("dailyRange", func(n int) (goja.Value, error) {
-		result, err := ctx.dailyRange(n)
+	rt.Set("dailyRange", func(call goja.FunctionCall) goja.Value {
+		result, err := ctx.dailyRange(argInt(call, 0))
 		if err != nil {
-			return nil, err
+			panic(rt.NewGoError(err))
 		}
 		if result == nil {
-			return goja.Undefined(), nil
+			return goja.Undefined()
 		}
-		return rt.ToValue(result), nil
+		return rt.ToValue(result)
 	})
+}
+
+func argInt(call goja.FunctionCall, index int) int {
+	return int(call.Argument(index).ToInteger())
+}
+
+func argFloat(call goja.FunctionCall, index int) float64 {
+	return call.Argument(index).ToFloat()
+}
+
+// argString mirrors optionalString: an absent or null label is the empty
+// string, not the literal "undefined" that Value.String() would produce.
+func argString(call goja.FunctionCall, index int) string {
+	return optionalString(call.Argument(index))
+}
+
+// argStyle exports a style object to the map[string]any the DrawIntent
+// carries. Export produces exactly what goja's reflect-based conversion used
+// to hand these bindings, nested color objects included; anything that is not
+// an object (an omitted argument, say) becomes nil, same as before.
+func argStyle(call goja.FunctionCall, index int) map[string]any {
+	style, _ := call.Argument(index).Export().(map[string]any)
+	return style
 }

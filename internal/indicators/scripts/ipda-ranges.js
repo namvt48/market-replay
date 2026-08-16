@@ -17,7 +17,19 @@ init = () => {
 
 let state = {};
 
-const processIpda = (key, n, show, premiumColor, discountColor, eqColor, t0) => {
+// All three ranges share the same three colors, and inputs are fixed for the
+// whole run — so the style objects are built once instead of nine times per
+// tick. Every one of those literals was a fresh object the host then had to
+// walk and convert.
+let styles = null;
+
+const buildStyles = (inputs) => ({
+  premium: { color: inputs.premiumColor, backgroundColor: inputs.premiumColor, linewidth: 0 },
+  discount: { color: inputs.discountColor, backgroundColor: inputs.discountColor, linewidth: 0 },
+  eq: { linecolor: inputs.eqColor, linewidth: 1, linestyle: 0, showLabel: true, textcolor: inputs.eqColor },
+});
+
+const processIpda = (key, n, show, t0) => {
   if (!show) return;
   const r = dailyRange(n);
   if (!r) return;
@@ -29,14 +41,15 @@ const processIpda = (key, n, show, premiumColor, discountColor, eqColor, t0) => 
   if (s.discountId !== null) deleteDrawingById(s.discountId);
   if (s.eqId !== null) deleteDrawingById(s.eqId);
 
-  s.premiumId = rectangle(r.time, r.high, t0, eq, { color: premiumColor, backgroundColor: premiumColor, linewidth: 0 });
-  s.discountId = rectangle(r.time, eq, t0, r.low, { color: discountColor, backgroundColor: discountColor, linewidth: 0 });
-  s.eqId = horizontalRay(r.time, eq, { linecolor: eqColor, linewidth: 1, linestyle: 0, showLabel: true, textcolor: eqColor }, 'IPDA' + n + ' EQ');
+  s.premiumId = rectangle(r.time, r.high, t0, eq, styles.premium);
+  s.discountId = rectangle(r.time, eq, t0, r.low, styles.discount);
+  s.eqId = horizontalRay(r.time, eq, styles.eq, 'IPDA' + n + ' EQ');
 };
 
 onTick = (length, _moment, _, ta, inputs) => {
   const t0 = time(0);
-  processIpda('20', 20, inputs.show20, inputs.premiumColor, inputs.discountColor, inputs.eqColor, t0);
-  processIpda('40', 40, inputs.show40, inputs.premiumColor, inputs.discountColor, inputs.eqColor, t0);
-  processIpda('60', 60, inputs.show60, inputs.premiumColor, inputs.discountColor, inputs.eqColor, t0);
+  if (styles === null) styles = buildStyles(inputs);
+  processIpda('20', 20, inputs.show20, t0);
+  processIpda('40', 40, inputs.show40, t0);
+  processIpda('60', 60, inputs.show60, t0);
 };

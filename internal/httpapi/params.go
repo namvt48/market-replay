@@ -61,3 +61,17 @@ func parseIntClamped(query url.Values, name string, def, lo, hi int) (int, error
 	}
 	return v, nil
 }
+
+// parseFloat64 parses query param name as a float64, returning def if the
+// param is absent. Returns errBadRequest if present but unparseable.
+func parseFloat64(query url.Values, name string, def float64) (float64, error) {
+	raw := query.Get(name)
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s=%q is not a number", errBadRequest, name, raw)
+	}
+	return v, nil
+}
