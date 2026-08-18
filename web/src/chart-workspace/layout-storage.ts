@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { timeframeSchema } from '../replay/timeframe'
 import { chartPaneSettingsSchema } from '../replay/chart-settings-store'
 import { DEFAULT_MARKET_SESSION, marketSessionSchema } from '../replay/market-session'
+import { chartTimezoneSchema, DEFAULT_CHART_TIMEZONE, type ChartTimezone } from '../replay/chart-timezone'
 import { createLayoutPreset, paneIds } from './layout-presets'
 import { DEFAULT_CHART_SYNC_FLAGS, LAYOUT_PRESET_IDS, type ChartWorkspaceState, type LayoutNode } from './types'
 import { preferenceStorage } from '../store/preference-sync'
@@ -28,10 +29,11 @@ const chartSyncFlagsV3Schema = z.object({
 export const chartSyncFlagsSchema = chartSyncFlagsV3Schema.extend({ lockZoom: z.boolean() })
 const chartWorkspaceStateV3Schema = chartWorkspaceStateV2Schema.extend({ syncFlags: chartSyncFlagsV3Schema })
 const chartWorkspaceStateV4Schema = chartWorkspaceStateV2Schema.extend({ syncFlags: chartSyncFlagsSchema })
-export const chartWorkspaceStateSchema = chartWorkspaceStateV4Schema.extend({
+const chartWorkspaceStateV5Schema = chartWorkspaceStateV4Schema.extend({
   panes: z.record(z.string(), paneStateSchema),
   preset: z.union([z.enum(LAYOUT_PRESET_IDS), z.literal('custom')]),
 })
+export const chartWorkspaceStateSchema = chartWorkspaceStateV5Schema.extend({ timezone: chartTimezoneSchema })
 
 const legacyPaneSettingsSchema = chartPaneSettingsSchema.extend({
   marketSession: marketSessionSchema.default(DEFAULT_MARKET_SESSION),
@@ -46,17 +48,46 @@ const persistedV1Schema = legacyChartWorkspaceStateSchema.extend({ version: z.li
 const persistedV2Schema = chartWorkspaceStateV2Schema.extend({ version: z.literal(2) })
 const persistedV3Schema = chartWorkspaceStateV3Schema.extend({ version: z.literal(3) })
 const persistedV4Schema = chartWorkspaceStateV4Schema.extend({ version: z.literal(4) })
-const persistedV5Schema = chartWorkspaceStateSchema.extend({ version: z.literal(5) })
-export const persistedChartWorkspaceStateSchema = z.discriminatedUnion('version', [persistedV1Schema, persistedV2Schema, persistedV3Schema, persistedV4Schema, persistedV5Schema])
+const persistedV5Schema = chartWorkspaceStateV5Schema.extend({ version: z.literal(5) })
+const persistedV6Schema = chartWorkspaceStateSchema.extend({ version: z.literal(6) })
+export const persistedChartWorkspaceStateSchema = z.discriminatedUnion('version', [persistedV1Schema, persistedV2Schema, persistedV3Schema, persistedV4Schema, persistedV5Schema, persistedV6Schema])
 
 type LegacyChartWorkspaceState = z.infer<typeof legacyChartWorkspaceStateSchema>
 type ChartWorkspaceStateV2 = z.infer<typeof chartWorkspaceStateV2Schema>
 type ChartWorkspaceStateV3 = z.infer<typeof chartWorkspaceStateV3Schema>
 type ChartWorkspaceStateV4 = z.infer<typeof chartWorkspaceStateV4Schema>
 
+function activePaneTimezone(state: { panes: Record<string, { settings: { timezone: ChartTimezone } }>; activePaneId: string }): ChartTimezone {
+  return state.panes[state.activePaneId]?.settings.timezone ?? DEFAULT_CHART_TIMEZONE
+}
+
+interface WorkspaceStateWithoutTimezone {
+  preset: ChartWorkspaceState['preset']
+  root: ChartWorkspaceState['root']
+  panes: Record<string, {
+    id: string
+    timeframe: ChartWorkspaceState['panes'][string]['timeframe']
+    settings: ChartWorkspaceState['panes'][string]['settings']
+    symbol?: string | null
+  }>
+  activePaneId: string
+  marketSession: ChartWorkspaceState['marketSession']
+  syncFlags: ChartWorkspaceState['syncFlags']
+}
+
+function withWorkspaceTimezone(state: WorkspaceStateWithoutTimezone): ChartWorkspaceState {
+  const timezone = activePaneTimezone(state)
+  const panes: ChartWorkspaceState['panes'] = Object.fromEntries(Object.entries(state.panes).map(([id, pane]) => [id, {
+    ...pane,
+    symbol: pane.symbol ?? null,
+    settings: { ...pane.settings, timezone: { ...timezone } },
+  }]))
+  return { preset: state.preset, root: state.root, panes, activePaneId: state.activePaneId, timezone, marketSession: state.marketSession, syncFlags: state.syncFlags }
+}
+
 function withPaneSymbols<T extends ChartWorkspaceStateV4>(state: T): ChartWorkspaceState {
   const panes: ChartWorkspaceState['panes'] = Object.fromEntries(Object.entries(state.panes).map(([id, pane]) => [id, { ...pane, symbol: null }]))
-  return { preset: state.preset, root: state.root, panes, activePaneId: state.activePaneId, marketSession: state.marketSession, syncFlags: state.syncFlags }
+  return withWorkspaceTimezone({ ...state, panes })
 }
 
 function migrateLegacyChartWorkspaceState(legacy: LegacyChartWorkspaceState): ChartWorkspaceState {
@@ -67,7 +98,7 @@ function migrateLegacyChartWorkspaceState(legacy: LegacyChartWorkspaceState): Ch
     timeframe: pane.timeframe,
     settings: { appearance: pane.settings.appearance, timezone: pane.settings.timezone },
   }]))
-  return { preset: legacy.preset, root: legacy.root, panes, activePaneId: legacy.activePaneId, marketSession, syncFlags: { ...DEFAULT_CHART_SYNC_FLAGS } }
+  return withWorkspaceTimezone({ preset: legacy.preset, root: legacy.root, panes, activePaneId: legacy.activePaneId, marketSession, syncFlags: { ...DEFAULT_CHART_SYNC_FLAGS } })
 }
 
 function migrateChartWorkspaceStateV2(state: ChartWorkspaceStateV2): ChartWorkspaceState {
@@ -80,7 +111,12 @@ function migrateChartWorkspaceStateV3(state: ChartWorkspaceStateV3): ChartWorksp
 
 export function parseChartWorkspaceState(value: unknown): ChartWorkspaceState {
   const current = chartWorkspaceStateSchema.safeParse(value)
-  if (current.success) return current.data
+  if (current.success) {
+    const panes = Object.fromEntries(Object.entries(current.data.panes).map(([id, pane]) => [id, { ...pane, settings: { ...pane.settings, timezone: { ...current.data.timezone } } }]))
+    return { ...current.data, panes }
+  }
+  const v5 = chartWorkspaceStateV5Schema.safeParse(value)
+  if (v5.success) return withWorkspaceTimezone(v5.data)
   const v4 = chartWorkspaceStateV4Schema.safeParse(value)
   if (v4.success) return withPaneSymbols(v4.data)
   const v3 = chartWorkspaceStateV3Schema.safeParse(value)
@@ -102,16 +138,18 @@ export function loadChartLayout(storage: Pick<Storage, 'getItem'> = preferenceSt
           ? migrateChartWorkspaceStateV3(persisted)
           : persisted.version === 4
             ? withPaneSymbols(persisted)
-            : persisted
+            : persisted.version === 5
+              ? withWorkspaceTimezone(persisted)
+              : parseChartWorkspaceState(persisted)
     const ids = paneIds(parsed.root)
     if (!ids.every((id) => parsed.panes[id]) || !parsed.panes[parsed.activePaneId]) return createLayoutPreset('single')
     const panes: ChartWorkspaceState['panes'] = Object.fromEntries(Object.entries(parsed.panes).map(([id, pane]) => [id, { ...pane, timeframe: '1m' as const }]))
-    return { preset: parsed.preset, root: parsed.root, panes, activePaneId: parsed.activePaneId, marketSession: parsed.marketSession, syncFlags: parsed.syncFlags }
+    return { preset: parsed.preset, root: parsed.root, panes, activePaneId: parsed.activePaneId, timezone: parsed.timezone, marketSession: parsed.marketSession, syncFlags: parsed.syncFlags }
   } catch {
     return createLayoutPreset('single')
   }
 }
 
 export function persistChartLayout(state: ChartWorkspaceState, storage: Pick<Storage, 'setItem'> = preferenceStorage): void {
-  storage.setItem(STORAGE_KEY, JSON.stringify({ version: 5, ...state }))
+  storage.setItem(STORAGE_KEY, JSON.stringify({ version: 6, ...state }))
 }

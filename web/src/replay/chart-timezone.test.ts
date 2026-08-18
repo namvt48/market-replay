@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatChartTime, parseChartTimezone, timezoneLabel, type ChartTimezone } from './chart-timezone'
+import { chartTimezoneDateValue, chartTimezoneDisplayTimestamp, chartTimezoneIntlContext, chartTimezoneQueryValue, formatChartTime, parseChartTimezone, timezoneLabel, type ChartTimezone } from './chart-timezone'
 
 const epoch = (iso: string): number => Date.parse(iso) / 1000
 const preset = (id: 'ET' | 'CT' | 'MT' | 'PT' | 'UTC'): ChartTimezone => ({ kind: 'preset', id })
@@ -33,6 +33,20 @@ describe('chart timezone formatting', () => {
     const timezone: ChartTimezone = { kind: 'offset', minutes }
     expect(timezoneLabel(timezone)).toBe(label)
     expect(formatChartTime(epoch('2024-01-01T23:30:00Z'), timezone)).not.toContain(label)
+  })
+
+  it('provides matching calendar query and Intl contexts for chart timezones', () => {
+    expect(chartTimezoneQueryValue(preset('ET'))).toBe('America/New_York')
+    const fixed: ChartTimezone = { kind: 'offset', minutes: 450 }
+    expect(chartTimezoneQueryValue(fixed)).toBe('UTC+07:30')
+    expect(chartTimezoneIntlContext(fixed)).toEqual({ timeZone: 'UTC', offsetSeconds: 27_000 })
+    expect(chartTimezoneDisplayTimestamp(epoch('2026-08-07T12:00:00Z'), fixed)).toBe(epoch('2026-08-07T19:30:00Z'))
+  })
+
+  it('derives date input values in the workspace timezone', () => {
+    const timestamp = epoch('2026-08-07T22:30:00Z')
+    expect(chartTimezoneDateValue(timestamp, preset('UTC'))).toBe('2026-08-07')
+    expect(chartTimezoneDateValue(timestamp, { kind: 'offset', minutes: 420 })).toBe('2026-08-08')
   })
 
   it('recovers invalid persisted timezones', () => {

@@ -1,5 +1,6 @@
 import type { ChartPaneSettings } from '../replay/chart-settings-store'
 import type { MarketSession } from '../replay/market-session'
+import type { ChartTimezone } from '../replay/chart-timezone'
 import { buildGridLayout, createLayoutPreset, paneIds } from './layout-presets'
 import { CHART_SPLIT_SEPARATOR_SIZE_PX, type ChartPaneState, type ChartSyncFlags, type ChartWorkspaceState, type LayoutNode, type LayoutPreset } from './types'
 
@@ -13,6 +14,7 @@ export type LayoutAction =
   | { type: 'set-pane-symbol'; paneId: string; symbol: string }
   | { type: 'set-pane-timeframe'; paneId: string; timeframe: ChartWorkspaceState['panes'][string]['timeframe'] }
   | { type: 'set-pane-settings'; paneId: string; settings: ChartPaneSettings }
+  | { type: 'set-timezone'; timezone: ChartTimezone }
   | { type: 'set-market-session'; marketSession: MarketSession }
   | { type: 'set-sync-flags'; syncFlags: Partial<ChartSyncFlags> }
 
@@ -94,15 +96,25 @@ function resizeNode(node: LayoutNode, splitId: string, ratio: number, totalSize:
 }
 
 export function layoutReducer(state: ChartWorkspaceState, action: LayoutAction): ChartWorkspaceState {
-  if (action.type === 'replace') return action.state
+  if (action.type === 'replace') {
+    const panes = Object.fromEntries(Object.entries(action.state.panes).map(([paneId, pane]) => [paneId, {
+      ...pane,
+      settings: { ...pane.settings, timezone: { ...action.state.timezone } },
+    }]))
+    return { ...action.state, panes }
+  }
   if (action.type === 'set-preset') {
     const active = state.panes[state.activePaneId]
     const next = createLayoutPreset(action.preset, active?.timeframe ?? '1m', action.inherited ?? active?.settings, active?.symbol ?? null)
-    const panes = Object.fromEntries(Object.entries(next.panes).map(([paneId, pane]) => [paneId, state.panes[paneId] ?? pane]))
+    const panes = Object.fromEntries(Object.entries(next.panes).map(([paneId, pane]) => {
+      const retained = state.panes[paneId] ?? pane
+      return [paneId, { ...retained, settings: { ...retained.settings, timezone: { ...state.timezone } } }]
+    }))
     return {
       ...next,
       panes,
       activePaneId: panes[state.activePaneId] ? state.activePaneId : next.activePaneId,
+      timezone: state.timezone,
       marketSession: state.marketSession,
       syncFlags: state.syncFlags,
     }
@@ -110,7 +122,8 @@ export function layoutReducer(state: ChartWorkspaceState, action: LayoutAction):
   if (action.type === 'add-pane') {
     if (state.panes[action.pane.id]) return state
     const root = buildGridLayout([...paneIds(state.root), action.pane.id])
-    return { ...state, preset: 'custom', root, panes: { ...state.panes, [action.pane.id]: action.pane }, activePaneId: action.pane.id }
+    const pane = { ...action.pane, settings: { ...action.pane.settings, timezone: { ...state.timezone } } }
+    return { ...state, preset: 'custom', root, panes: { ...state.panes, [pane.id]: pane }, activePaneId: pane.id }
   }
   if (action.type === 'activate') return state.panes[action.paneId] ? { ...state, activePaneId: action.paneId } : state
   if (action.type === 'resize') return { ...state, root: resizeNode(state.root, action.splitId, action.ratio, action.totalSize, action.minSize ?? 240) }
@@ -126,7 +139,16 @@ export function layoutReducer(state: ChartWorkspaceState, action: LayoutAction):
   }
   if (action.type === 'set-pane-settings') {
     const current = state.panes[action.paneId]
-    return current ? { ...state, panes: { ...state.panes, [action.paneId]: { ...current, settings: action.settings } } } : state
+    const settings = { ...action.settings, timezone: { ...state.timezone } }
+    return current ? { ...state, panes: { ...state.panes, [action.paneId]: { ...current, settings } } } : state
+  }
+  if (action.type === 'set-timezone') {
+    const timezone = { ...action.timezone }
+    const panes = Object.fromEntries(Object.entries(state.panes).map(([paneId, pane]) => [paneId, {
+      ...pane,
+      settings: { ...pane.settings, timezone: { ...timezone } },
+    }]))
+    return { ...state, timezone, panes }
   }
   if (action.type === 'set-market-session') {
     return action.marketSession === state.marketSession ? state : { ...state, marketSession: action.marketSession }

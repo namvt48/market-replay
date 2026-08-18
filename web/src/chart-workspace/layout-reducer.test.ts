@@ -167,6 +167,16 @@ describe('chart layout', () => {
     expect(Object.values(next.panes).every((pane) => !('marketSession' in pane.settings))).toBe(true)
   })
 
+  it('stores timezone once at workspace level and mirrors it to every chart adapter', () => {
+    const state = createLayoutPreset('4')
+    state.panes['pane-2'].settings.timezone = { kind: 'preset', id: 'PT' }
+
+    const next = layoutReducer(state, { type: 'set-timezone', timezone: { kind: 'offset', minutes: 450 } })
+
+    expect(next.timezone).toEqual({ kind: 'offset', minutes: 450 })
+    expect(Object.values(next.panes).every((pane) => pane.settings.timezone.kind === 'offset' && pane.settings.timezone.minutes === 450)).toBe(true)
+  })
+
   it('defaults both sync flags on and updates either flag independently', () => {
     const state = createLayoutPreset('4')
     expect(state.syncFlags).toEqual({ crosshair: true, dateRange: true, lockZoom: false })
@@ -182,11 +192,12 @@ describe('chart layout', () => {
     const resized = layoutReducer(createLayoutPreset('4', '5m'), { type: 'resize', splitId: 'split-root', ratio: 0.62, totalSize: 1000 })
     const state = layoutReducer(resized, { type: 'set-sync-flags', syncFlags: { lockZoom: true } })
     persistChartLayout(state, target)
-    expect(target.getItem('market-replay:chart-layout')).toContain('"version":5')
+    expect(target.getItem('market-replay:chart-layout')).toContain('"version":6')
     const restored = loadChartLayout(target)
     expect(restored.root).toEqual(state.root)
     expect(restored.preset).toBe('4')
     expect(restored.syncFlags.lockZoom).toBe(true)
+    expect(restored.timezone).toEqual(state.timezone)
     expect(Object.values(restored.panes).every((pane) => pane.timeframe === '1m')).toBe(true)
     target.setItem('x', '{bad')
     expect(loadChartLayout(target).preset).toBe('single')
@@ -248,5 +259,20 @@ describe('chart layout', () => {
     target.setItem('market-replay:chart-layout', JSON.stringify({ version: 4, ...current, panes }))
 
     expect(Object.values(loadChartLayout(target).panes).every((pane) => pane.symbol === null)).toBe(true)
+  })
+
+  it('migrates v5 pane timezone from the active chart into one workspace timezone', () => {
+    const target = storage()
+    const current = createLayoutPreset('2v')
+    const { timezone: _timezone, ...v5 } = current
+    v5.activePaneId = 'pane-2'
+    v5.panes['pane-1'].settings.timezone = { kind: 'preset', id: 'ET' }
+    v5.panes['pane-2'].settings.timezone = { kind: 'offset', minutes: 420 }
+    target.setItem('market-replay:chart-layout', JSON.stringify({ version: 5, ...v5 }))
+
+    const restored = loadChartLayout(target)
+
+    expect(restored.timezone).toEqual({ kind: 'offset', minutes: 420 })
+    expect(Object.values(restored.panes).every((pane) => pane.settings.timezone.kind === 'offset' && pane.settings.timezone.minutes === 420)).toBe(true)
   })
 })

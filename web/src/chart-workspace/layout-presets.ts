@@ -98,7 +98,15 @@ export function createLayoutPreset(preset: LayoutPreset, timeframe: Timeframe = 
     return [id, createPane(id, timeframe, inherited, symbol)]
   }))
   const root = materialize(template.root)
-  return { preset, root, panes, activePaneId: 'pane-1', marketSession: DEFAULT_MARKET_SESSION, syncFlags: { ...DEFAULT_CHART_SYNC_FLAGS } }
+  return {
+    preset,
+    root,
+    panes,
+    activePaneId: 'pane-1',
+    timezone: { ...inherited.timezone },
+    marketSession: DEFAULT_MARKET_SESSION,
+    syncFlags: { ...DEFAULT_CHART_SYNC_FLAGS },
+  }
 }
 
 export function paneIds(node: LayoutNode): string[] {

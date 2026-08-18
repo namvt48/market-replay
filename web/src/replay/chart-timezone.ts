@@ -18,6 +18,11 @@ const IANA_ZONES: Record<ChartTimezonePreset, string> = {
   UTC: 'UTC',
 }
 
+export interface ChartTimezoneIntlContext {
+  timeZone: string
+  offsetSeconds: number
+}
+
 export function parseChartTimezone(input: unknown): ChartTimezone {
   const parsed = chartTimezoneSchema.safeParse(input)
   return parsed.success ? parsed.data : DEFAULT_CHART_TIMEZONE
@@ -30,15 +35,43 @@ export function timezoneLabel(timezone: ChartTimezone): string {
   return `UTC${sign}${String(Math.floor(absolute / 60)).padStart(2, '0')}:${String(absolute % 60).padStart(2, '0')}`
 }
 
-export function formatChartTime(timestamp: number, timezone: ChartTimezone, includeDate = true): string {
-  const date = new Date(timestamp * 1000)
+/** Value accepted by the calendar API, including fixed UTC offsets. */
+export function chartTimezoneQueryValue(timezone: ChartTimezone): string {
+  if (timezone.kind === 'preset') return IANA_ZONES[timezone.id]
+  const sign = timezone.minutes >= 0 ? '+' : '-'
+  const absolute = Math.abs(timezone.minutes)
+  return `UTC${sign}${String(Math.floor(absolute / 60)).padStart(2, '0')}:${String(absolute % 60).padStart(2, '0')}`
+}
+
+/**
+ * Intl does not accept arbitrary UTC offsets as timeZone identifiers. Fixed
+ * offsets are therefore shifted once and formatted in UTC; named presets
+ * retain their IANA zone so daylight-saving transitions stay correct.
+ */
+export function chartTimezoneIntlContext(timezone: ChartTimezone): ChartTimezoneIntlContext {
+  return timezone.kind === 'preset'
+    ? { timeZone: IANA_ZONES[timezone.id], offsetSeconds: 0 }
+    : { timeZone: 'UTC', offsetSeconds: timezone.minutes * 60 }
+}
+
+export function chartTimezoneDisplayTimestamp(timestamp: number, timezone: ChartTimezone): number {
+  return timestamp + chartTimezoneIntlContext(timezone).offsetSeconds
+}
+
+export function formatChartTime(timestamp: number, timezone: ChartTimezone, includeDate = true, includeSeconds = false): string {
+  const context = chartTimezoneIntlContext(timezone)
+  const date = new Date((timestamp + context.offsetSeconds) * 1000)
   const options: Intl.DateTimeFormatOptions = includeDate
-    ? { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }
-    : { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }
-  if (timezone.kind === 'preset') {
-    return new Intl.DateTimeFormat('en-US', { ...options, timeZone: IANA_ZONES[timezone.id] }).format(date)
-  }
-  const shifted = new Date(date.getTime() + timezone.minutes * 60_000)
-  const rendered = new Intl.DateTimeFormat('en-US', { ...options, timeZone: 'UTC', timeZoneName: undefined }).format(shifted)
-  return rendered
+    ? { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: includeSeconds ? '2-digit' : undefined, hourCycle: 'h23' }
+    : { hour: '2-digit', minute: '2-digit', second: includeSeconds ? '2-digit' : undefined, hourCycle: 'h23' }
+  return new Intl.DateTimeFormat('en-US', { ...options, timeZone: context.timeZone }).format(date)
+}
+
+export function chartTimezoneDateValue(timestamp: number, timezone: ChartTimezone): string {
+  const context = chartTimezoneIntlContext(timezone)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    year: 'numeric', month: '2-digit', day: '2-digit', timeZone: context.timeZone,
+  }).formatToParts(new Date((timestamp + context.offsetSeconds) * 1000))
+  const value = (type: Intl.DateTimeFormatPartTypes): string => parts.find((part) => part.type === type)?.value ?? ''
+  return `${value('year')}-${value('month')}-${value('day')}`
 }

@@ -1,6 +1,7 @@
 import type { Timeframe } from '../api/types'
 import type { ChartPaneSettings } from '../replay/chart-settings-store'
 import type { MarketSession } from '../replay/market-session'
+import type { ChartTimezone } from '../replay/chart-timezone'
 
 export const LAYOUT_PRESET_IDS = [
   'single',
@@ -47,6 +48,7 @@ export interface ChartWorkspaceState {
   root: LayoutNode
   panes: Record<string, ChartPaneState>
   activePaneId: string
+  timezone: ChartTimezone
   marketSession: MarketSession
   syncFlags: ChartSyncFlags
 }
