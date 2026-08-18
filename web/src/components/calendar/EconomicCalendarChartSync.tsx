@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchEconWeek } from '../../api/client'
 import type { EconEventView } from '../../api/types'
+import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
 import type { EconomicEventMarker } from '../../replay/chart-adapter'
+import { DEFAULT_CHART_TIMEZONE, chartTimezoneDisplayTimestamp, chartTimezoneIntlContext, chartTimezoneQueryValue } from '../../replay/chart-timezone'
 import { replayEngine } from '../../replay/replay-engine'
 import { useReplaySelector } from '../../replay/use-replay'
 import { useUiStore } from '../../store/ui-store'
@@ -38,15 +40,19 @@ function toMarkers(
  * into a request loop.
  */
 export function EconomicCalendarChartSync(): React.ReactNode {
-  const replay = useReplaySelector((snapshot) => ({
-    cursorTs: snapshot.cursorTs,
-    timeZone: snapshot.symbol?.sessionTz || 'UTC',
-  }))
+  const replay = useReplaySelector((snapshot) => ({ cursorTs: snapshot.cursorTs }))
+  const { state: chartWorkspace } = useChartWorkspace()
+  const chartTimezone = chartWorkspace.timezone ?? DEFAULT_CHART_TIMEZONE
+  const calendarTimeZone = chartTimezoneQueryValue(chartTimezone)
+  const intlContext = chartTimezoneIntlContext(chartTimezone)
   const importance = useUiStore((state) => state.calendarImportance)
   const country = useUiStore((state) => state.calendarCountry)
   const cursorRef = useRef(replay.cursorTs)
   cursorRef.current = replay.cursorTs
-  const weekKey = economicCalendarWeekKey(replay.cursorTs, replay.timeZone)
+  const weekKey = economicCalendarWeekKey(
+    chartTimezoneDisplayTimestamp(replay.cursorTs, chartTimezone),
+    intlContext.timeZone,
+  )
   const [events, setEvents] = useState<EconEventView[]>([])
   const [error, setError] = useState<string | null>(null)
 
@@ -67,7 +73,7 @@ export function EconomicCalendarChartSync(): React.ReactNode {
     void fetchEconWeek({
       at: requestCursor,
       cursorTs: requestCursor,
-      timeZone: replay.timeZone,
+      timeZone: calendarTimeZone,
       ...queryFilters,
     }, controller.signal)
       .then(async (week) => {
@@ -76,7 +82,7 @@ export function EconomicCalendarChartSync(): React.ReactNode {
         const followingWeek = await fetchEconWeek({
           at: week.weekEnd,
           cursorTs: requestCursor,
-          timeZone: replay.timeZone,
+          timeZone: calendarTimeZone,
           ...queryFilters,
         }, controller.signal)
         if (controller.signal.aborted) return
@@ -89,7 +95,7 @@ export function EconomicCalendarChartSync(): React.ReactNode {
         setError(reason instanceof Error && reason.message ? reason.message : 'Economic-event markers could not be loaded.')
       })
     return () => controller.abort()
-  }, [country, importance, replay.timeZone, weekKey])
+  }, [calendarTimeZone, country, importance, weekKey])
 
   const markers = useMemo(
     () => toMarkers(events, replay.cursorTs, importance, country),

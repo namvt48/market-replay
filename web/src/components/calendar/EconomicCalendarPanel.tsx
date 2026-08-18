@@ -2,6 +2,8 @@ import { AlertTriangle, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchEconWeek } from '../../api/client'
 import type { EconEventView, EconImportance, EconMeta, EconWeek } from '../../api/types'
+import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
+import { DEFAULT_CHART_TIMEZONE, chartTimezoneDisplayTimestamp, chartTimezoneIntlContext, chartTimezoneQueryValue } from '../../replay/chart-timezone'
 import { useReplaySelector } from '../../replay/use-replay'
 import { useUiStore } from '../../store/ui-store'
 
@@ -37,14 +39,6 @@ const WEEK_LABEL_OPTIONS: Intl.DateTimeFormatOptions = { month: 'short', day: 'n
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
-}
-
-function timeZoneShortName(timeZone: string): string {
-  if (timeZone === 'America/New_York') return 'ET'
-  if (timeZone === 'America/Chicago') return 'CT'
-  if (timeZone === 'America/Denver') return 'MT'
-  if (timeZone === 'America/Los_Angeles') return 'PT'
-  return timeZone === 'UTC' ? 'UTC' : timeZone
 }
 
 function importanceLabel(importance: EconImportance): string {
@@ -94,10 +88,11 @@ export function CalendarErrorPanel({ onRetry }: CalendarErrorPanelProps) {
 }
 
 export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
-  const replay = useReplaySelector((snapshot) => ({
-    cursorTs: snapshot.cursorTs,
-    timeZone: snapshot.symbol?.sessionTz || 'UTC',
-  }))
+  const replay = useReplaySelector((snapshot) => ({ cursorTs: snapshot.cursorTs }))
+  const { state: chartWorkspace } = useChartWorkspace()
+  const chartTimezone = chartWorkspace.timezone ?? DEFAULT_CHART_TIMEZONE
+  const calendarTimeZone = chartTimezoneQueryValue(chartTimezone)
+  const intlContext = chartTimezoneIntlContext(chartTimezone)
   const [requestCursorTs, setRequestCursorTs] = useState(() => replay.cursorTs)
   const [browsingAt, setBrowsingAt] = useState<number | null>(null)
   const importance = useUiStore((state) => state.calendarImportance)
@@ -131,7 +126,7 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
     void fetchEconWeek({
       at: queryAt,
       cursorTs: requestCursorTs,
-      timeZone: replay.timeZone,
+      timeZone: calendarTimeZone,
       minImportance: importance || undefined,
       countries: country ? [country] : undefined,
     }, controller.signal)
@@ -144,33 +139,37 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
         }))
       })
     return () => controller.abort()
-  }, [country, importance, queryAt, replay.timeZone, requestCursorTs, retryVersion])
+  }, [calendarTimeZone, country, importance, queryAt, requestCursorTs, retryVersion])
 
   const formatters = useMemo(() => ({
-    dayKey: new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: replay.timeZone }),
-    day: new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: replay.timeZone }),
-    time: new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: replay.timeZone }),
-    week: new Intl.DateTimeFormat('en-US', { ...WEEK_LABEL_OPTIONS, timeZone: replay.timeZone }),
-  }), [replay.timeZone])
+    dayKey: new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: intlContext.timeZone }),
+    day: new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: intlContext.timeZone }),
+    time: new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: intlContext.timeZone }),
+    week: new Intl.DateTimeFormat('en-US', { ...WEEK_LABEL_OPTIONS, timeZone: intlContext.timeZone }),
+  }), [intlContext.timeZone])
 
   const days = useMemo<DayGroup[]>(() => {
     if (!week) return []
     const groups = new Map<string, DayGroup>()
     for (const event of week.events) {
-      const key = dateKey(formatters.dayKey, event.ts)
+      const displayTs = chartTimezoneDisplayTimestamp(event.ts, chartTimezone)
+      const key = dateKey(formatters.dayKey, displayTs)
       const existing = groups.get(key)
       if (existing) existing.events.push(event)
-      else groups.set(key, { key, label: formatters.day.format(event.ts * 1000), events: [event] })
+      else groups.set(key, { key, label: formatters.day.format(displayTs * 1000), events: [event] })
     }
     return [...groups.values()]
-  }, [formatters.day, formatters.dayKey, week])
+  }, [chartTimezone, formatters.day, formatters.dayKey, week])
 
   const nextEventTs = useMemo(
     () => week?.events.find((event) => event.ts > replay.cursorTs)?.ts ?? null,
     [replay.cursorTs, week],
   )
   const weekLabel = week
-    ? formatters.week.formatRange(new Date(week.weekStart * 1000), new Date(week.weekEnd * 1000 - 1))
+    ? formatters.week.formatRange(
+      new Date(chartTimezoneDisplayTimestamp(week.weekStart, chartTimezone) * 1000),
+      new Date(chartTimezoneDisplayTimestamp(week.weekEnd, chartTimezone) * 1000 - 1),
+    )
     : 'Replay week'
   useEffect(() => {
     nextEventRef.current?.scrollIntoView?.({ block: 'nearest' })
@@ -188,15 +187,7 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
     <div className="flex h-full min-h-0 flex-col" aria-busy={weekState.status === 'loading'}>
       <header className="shrink-0 border-b border-line bg-surface-1">
         <div className="flex min-h-14 items-center gap-2 px-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 text-ui-meta text-dim">
-              <CalendarDays size={13} strokeWidth={1.7} aria-hidden="true" />
-              <span>{meta.count} events loaded</span>
-              <span aria-hidden="true">·</span>
-              <span title={replay.timeZone}>{timeZoneShortName(replay.timeZone)}</span>
-            </div>
-            <h2 className="mt-0.5 truncate text-ui-title font-semibold text-ink">{weekLabel}</h2>
-          </div>
+          <h2 className="min-w-0 flex-1 truncate text-ui-title font-semibold text-ink">{weekLabel}</h2>
           <div className="flex shrink-0 items-center gap-0.5">
             <button type="button" disabled={!week} onClick={() => { if (week) showWeek(week.weekStart - 1) }} className="tool-button" aria-label="Previous calendar week"><ChevronLeft size={16} /></button>
             <button type="button" disabled={!week} onClick={() => { if (week) showWeek(week.weekEnd) }} className="tool-button" aria-label="Next calendar week"><ChevronRight size={16} /></button>
@@ -217,14 +208,12 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
           </select>
         </div>
 
-        <div className="flex min-h-8 items-center justify-between border-t border-line px-3 text-ui-meta">
-          {browsingAt === null ? (
-            <span className="flex items-center gap-1.5 text-active-bright"><span className="size-1.5 rounded-full bg-active" aria-hidden="true" />Following replay</span>
-          ) : (
+        {browsingAt !== null || weekState.status === 'loading' ? <div className="flex min-h-8 items-center justify-between border-t border-line px-3 text-ui-meta">
+          {browsingAt !== null ? (
             <button type="button" onClick={returnToReplay} className="flex min-h-8 items-center gap-1.5 font-medium text-active-bright hover:text-ink"><LocateFixed size={13} />Return to replay week</button>
-          )}
+          ) : <span />}
           {weekState.status === 'loading' ? <span role="status" className="text-dim">Updating…</span> : null}
-        </div>
+        </div> : null}
       </header>
 
       {weekState.status === 'error' ? (
@@ -253,7 +242,7 @@ export function EconomicCalendarPanel({ meta }: EconomicCalendarPanelProps) {
                   return (
                     <li ref={next ? nextEventRef : undefined} key={event.id} aria-current={next ? 'true' : undefined} className={`grid scroll-mt-8 grid-cols-[3.25rem_minmax(0,1fr)] gap-2 border-l px-3 py-2.5 [content-visibility:auto] ${next ? 'border-l-active bg-active/15 outline outline-1 -outline-offset-1 outline-active/40' : 'border-l-transparent'}`}>
                       <div className="pt-0.5">
-                        <time className="block font-mono text-ui-body text-ink" dateTime={new Date(event.ts * 1000).toISOString()}>{formatters.time.format(event.ts * 1000)}</time>
+                        <time className="block font-mono text-ui-body text-ink" dateTime={new Date(event.ts * 1000).toISOString()}>{formatters.time.format(chartTimezoneDisplayTimestamp(event.ts, chartTimezone) * 1000)}</time>
                         <span className={`mt-1 inline-flex min-w-5 items-center justify-center rounded-[3px] border px-1 font-mono text-ui-meta font-semibold ${importanceTone(event.importance)}`} aria-label={`${event.importance} importance`}>{importanceLabel(event.importance)}</span>
                       </div>
                       <div className="min-w-0">

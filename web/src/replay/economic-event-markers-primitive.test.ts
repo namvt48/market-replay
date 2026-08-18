@@ -30,8 +30,18 @@ describe('EconomicEventMarkersPrimitive', () => {
     expect(layout.every((item) => item.y < 120)).toBe(true)
   })
 
-  it('progressively separates a dense release cluster as the chart zooms in', () => {
+  it('keeps simultaneous releases behind one icon at every zoom level', () => {
     const releases = [marker('cpi', 100), marker('claims', 100), marker('pmi', 100), marker('jobs', 100)]
+    const coordinate = (timestamp: number): number => timestamp
+
+    expect(layoutEconomicEventMarkers(releases, coordinate, 300, 140, 220)).toHaveLength(1)
+    expect(layoutEconomicEventMarkers(releases, coordinate, 300, 140, 100)).toHaveLength(1)
+    expect(layoutEconomicEventMarkers(releases, coordinate, 300, 140, 50)).toHaveLength(1)
+    expect(layoutEconomicEventMarkers(releases, coordinate, 300, 140, 50)[0]).toMatchObject({ count: 4 })
+  })
+
+  it('still separates releases at different times as the chart zooms in', () => {
+    const releases = [marker('cpi', 100), marker('claims', 106), marker('pmi', 112), marker('jobs', 118)]
     const coordinate = (timestamp: number): number => timestamp
 
     expect(layoutEconomicEventMarkers(releases, coordinate, 300, 140, 220)).toHaveLength(1)

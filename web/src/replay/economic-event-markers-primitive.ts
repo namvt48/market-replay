@@ -27,6 +27,11 @@ interface PositionedMarker {
   x: number
 }
 
+interface SimultaneousMarkerGroup {
+  items: PositionedMarker[]
+  x: number
+}
+
 function markerCode(marker: EconomicEventMarker): string {
   const source = marker.country.trim() || marker.currency?.trim() || '•'
   return source.slice(0, 2).toUpperCase()
@@ -85,29 +90,40 @@ export function layoutEconomicEventMarkers(
       item.x !== null && Number.isFinite(item.x) && item.x >= -MARKER_RADIUS && item.x <= width + MARKER_RADIUS
     ))
     .sort((left, right) => left.x - right.x || left.marker.time - right.marker.time)
-  const clusterCapacity = logicalSpan <= 60 ? 1 : logicalSpan <= 120 ? 2 : logicalSpan <= 180 ? 3 : Number.POSITIVE_INFINITY
-  const clusters: PositionedMarker[][] = []
+  // Releases sharing an epoch are one market moment. Keep them as one
+  // visual unit at every zoom level; zoom may separate nearby moments, but
+  // must never fan simultaneous releases into overlapping flag icons.
+  const simultaneousGroups: SimultaneousMarkerGroup[] = []
   for (const item of positioned) {
+    const group = simultaneousGroups.at(-1)
+    if (group && group.items[0]?.marker.time === item.marker.time) group.items.push(item)
+    else simultaneousGroups.push({ items: [item], x: item.x })
+  }
+
+  const clusterCapacity = logicalSpan <= 60 ? 1 : logicalSpan <= 120 ? 2 : logicalSpan <= 180 ? 3 : Number.POSITIVE_INFINITY
+  const clusters: SimultaneousMarkerGroup[][] = []
+  for (const group of simultaneousGroups) {
     const cluster = clusters.at(-1)
     const previous = cluster?.at(-1)
-    if (cluster && previous && item.x - previous.x < CLUSTER_DISTANCE && cluster.length < clusterCapacity) cluster.push(item)
-    else clusters.push([item])
+    if (cluster && previous && group.x - previous.x < CLUSTER_DISTANCE && cluster.length < clusterCapacity) cluster.push(group)
+    else clusters.push([group])
   }
   const lastXByLane = Array.from({ length: MARKER_LANES }, () => Number.NEGATIVE_INFINITY)
 
   return clusters.map((cluster, index) => {
-    const representative = cluster.reduce((best, item) => (
+    const items = cluster.flatMap((group) => group.items)
+    const representative = items.reduce((best, item) => (
       IMPORTANCE_RANK[item.marker.importance] > IMPORTANCE_RANK[best.marker.importance] ? item : best
     ))
-    const x = cluster.reduce((sum, item) => sum + item.x, 0) / cluster.length
-    const state: EconomicEventMarker['state'] = cluster.some((item) => item.marker.state === 'next')
+    const x = cluster.reduce((sum, group) => sum + group.x, 0) / cluster.length
+    const state: EconomicEventMarker['state'] = items.some((item) => item.marker.state === 'next')
       ? 'next'
-      : cluster.some((item) => item.marker.state === 'scheduled') ? 'scheduled' : 'past'
+      : items.some((item) => item.marker.state === 'scheduled') ? 'scheduled' : 'past'
     const marker: EconomicEventMarker = { ...representative.marker, state }
     const freeLane = lastXByLane.findIndex((lastX) => x - lastX >= MARKER_RADIUS * 2 + MARKER_GAP)
     const lane = freeLane >= 0 ? freeLane : index % MARKER_LANES
     lastXByLane[lane] = x
-    return { marker, count: cluster.length, x, lane, y: height - MARKER_RADIUS - 5 - lane * (MARKER_RADIUS * 2 + 3) }
+    return { marker, count: items.length, x, lane, y: height - MARKER_RADIUS - 5 - lane * (MARKER_RADIUS * 2 + 3) }
   })
 }
 

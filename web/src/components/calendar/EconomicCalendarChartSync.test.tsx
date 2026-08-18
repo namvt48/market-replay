@@ -8,12 +8,20 @@ import { economicCalendarWeekKey } from './calendar-week'
 const apiMocks = vi.hoisted(() => ({ fetchEconWeek: vi.fn() }))
 const engineMocks = vi.hoisted(() => ({ setEconomicEventMarkers: vi.fn() }))
 const replaySnapshot = { cursorTs: Date.parse('2026-08-11T13:00:00Z') / 1000, symbol: { sessionTz: 'America/New_York' } }
+const workspaceMock = {
+  state: {
+    activePaneId: 'pane-1',
+    timezone: { kind: 'preset' as const, id: 'ET' as 'ET' | 'UTC' },
+    panes: { 'pane-1': { settings: { timezone: { kind: 'preset' as const, id: 'ET' as 'ET' | 'UTC' } } } },
+  },
+}
 
 vi.mock('../../api/client', () => ({ fetchEconWeek: apiMocks.fetchEconWeek }))
 vi.mock('../../replay/replay-engine', () => ({ replayEngine: engineMocks }))
 vi.mock('../../replay/use-replay', () => ({
   useReplaySelector: (selector: (snapshot: typeof replaySnapshot) => unknown) => selector(replaySnapshot),
 }))
+vi.mock('../../chart-workspace/use-chart-workspace', () => ({ useChartWorkspace: () => workspaceMock }))
 
 const week: EconWeek = {
   weekStart: Date.parse('2026-08-10T04:00:00Z') / 1000,
@@ -40,6 +48,7 @@ const nextWeek: EconWeek = {
 beforeEach(() => {
   vi.clearAllMocks()
   replaySnapshot.cursorTs = Date.parse('2026-08-11T13:00:00Z') / 1000
+  workspaceMock.state.timezone = { kind: 'preset', id: 'ET' }
   useUiStore.setState({ calendarImportance: 'high', calendarCountry: 'US' })
   apiMocks.fetchEconWeek.mockImplementation(async (query: { at: number }) => query.at >= week.weekEnd ? nextWeek : week)
 })
@@ -47,6 +56,14 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('EconomicCalendarChartSync', () => {
+  it('uses the global workspace timezone for marker week requests', async () => {
+    workspaceMock.state.timezone = { kind: 'preset', id: 'UTC' }
+    workspaceMock.state.panes['pane-1'].settings.timezone = { kind: 'preset', id: 'ET' }
+    render(<EconomicCalendarChartSync />)
+
+    await waitFor(() => expect(apiMocks.fetchEconWeek).toHaveBeenNthCalledWith(1, expect.objectContaining({ timeZone: 'UTC' }), expect.any(AbortSignal)))
+  })
+
   it('fetches the replay and following week, then advances the highlighted marker locally', async () => {
     const view = render(<EconomicCalendarChartSync />)
     await waitFor(() => expect(engineMocks.setEconomicEventMarkers).toHaveBeenLastCalledWith([

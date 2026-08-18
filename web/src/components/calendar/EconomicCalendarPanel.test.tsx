@@ -10,6 +10,13 @@ const replaySnapshot = {
   cursorTs: 1_786_377_600,
   symbol: { sessionTz: 'America/New_York' },
 }
+const workspaceMock = {
+  state: {
+    activePaneId: 'pane-1',
+    timezone: { kind: 'preset' as const, id: 'ET' as 'ET' | 'UTC' },
+    panes: { 'pane-1': { settings: { timezone: { kind: 'preset' as const, id: 'ET' as 'ET' | 'UTC' } } } },
+  },
+}
 
 vi.mock('../../api/client', () => ({
   fetchEconMeta: apiMocks.fetchEconMeta,
@@ -18,6 +25,7 @@ vi.mock('../../api/client', () => ({
 vi.mock('../../replay/use-replay', () => ({
   useReplaySelector: (selector: (snapshot: typeof replaySnapshot) => unknown) => selector(replaySnapshot),
 }))
+vi.mock('../../chart-workspace/use-chart-workspace', () => ({ useChartWorkspace: () => workspaceMock }))
 
 const meta: EconMeta = {
   available: true,
@@ -47,6 +55,7 @@ const week: EconWeek = {
 beforeEach(() => {
   vi.clearAllMocks()
   replaySnapshot.cursorTs = week.cursorTs
+  workspaceMock.state.timezone = { kind: 'preset', id: 'ET' }
   useUiStore.setState({ calendarImportance: 'high', calendarCountry: 'US' })
   apiMocks.fetchEconWeek.mockResolvedValue(week)
 })
@@ -54,6 +63,18 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('EconomicCalendarPanel', () => {
+  it('formats and requests events in the workspace timezone', async () => {
+    workspaceMock.state.timezone = { kind: 'preset', id: 'UTC' }
+    workspaceMock.state.panes['pane-1'].settings.timezone = { kind: 'preset', id: 'ET' }
+    render(<EconomicCalendarPanel meta={meta} />)
+
+    expect(await screen.findByText('JOLTS Job Openings')).toBeVisible()
+    expect(screen.getByText('17:00')).toBeVisible()
+    expect(apiMocks.fetchEconWeek).toHaveBeenCalledWith(expect.objectContaining({ timeZone: 'UTC' }), expect.any(AbortSignal))
+    expect(screen.queryByText(/events loaded/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Following replay')).not.toBeInTheDocument()
+  })
+
   it('renders the replay week without revealing an unreleased actual', async () => {
     render(<EconomicCalendarPanel meta={meta} />)
 
