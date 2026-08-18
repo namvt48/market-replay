@@ -79,6 +79,7 @@ export function resolveHotkey(event: KeyboardShortcutEvent): HotkeyCommand | nul
   const primary = event.ctrlKey || event.metaKey
 
   if (!primary && !event.altKey && (key === '?' || (key === '/' && event.shiftKey))) return 'open-shortcut-help'
+  if (!primary && !event.altKey && !event.shiftKey && key === '/') return 'open-symbol-search'
   if (primary && !event.altKey && key === 'k') return 'open-symbol-search'
   if (!primary && !event.altKey && !event.shiftKey && key === ',') return 'open-interval-search'
   if (!primary && !event.altKey && !event.shiftKey && key === '.') return 'open-layouts'

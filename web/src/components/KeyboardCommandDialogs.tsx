@@ -1,15 +1,18 @@
 import { CalendarDays, Check, CircleSlash2, Search, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { HotkeyDialogState, ShortcutCategory } from '../hooks/tradingview-shortcuts'
 import { TRADINGVIEW_SHORTCUTS } from '../hooks/tradingview-shortcuts'
 import { replayEngine } from '../replay/replay-engine'
-import { sessionDateValue, sessionOpenTimestamp } from '../replay/session-date'
+import { sessionOpenTimestamp } from '../replay/session-date'
 import { normalizeTimeframe } from '../replay/timeframe'
 import { BUILT_IN_TIMEFRAMES, timeframePreferenceStore } from '../replay/timeframe-preferences'
 import { useReplaySelector } from '../replay/use-replay'
 import { useEvalStore } from '../store/eval-store'
 import { useUiStore } from '../store/ui-store'
+import { SymbolBrowserDialog } from './symbols/SymbolBrowserDialog'
+import { useChartWorkspace } from '../chart-workspace/use-chart-workspace'
+import { chartTimezoneDateValue, timezoneLabel } from '../replay/chart-timezone'
 
 interface KeyboardCommandDialogsProps {
   state: HotkeyDialogState | null
@@ -103,24 +106,7 @@ function ShortcutHelp({ onClose }: { onClose: () => void }) {
 function SymbolSearch({ initialQuery, onClose }: { initialQuery: string; onClose: () => void }) {
   const replay = useReplaySelector((snapshot) => ({ symbols: snapshot.symbols, symbol: snapshot.symbol?.symbol ?? '' }))
   const evalLocked = useEvalStore((store) => store.phase === 'running')
-  const [query, setQuery] = useState(initialQuery)
-  const matches = useMemo(() => {
-    const normalized = query.trim().toLowerCase()
-    return replay.symbols.filter((symbol) => !normalized || `${symbol.symbol} ${symbol.name}`.toLowerCase().includes(normalized)).slice(0, 20)
-  }, [query, replay.symbols])
-  const choose = (symbol: string): void => { if (!evalLocked) void replayEngine.selectSymbol(symbol); onClose() }
-  return (
-    <DialogFrame title="Quick symbol search" description="TradingView: Ctrl/⌘+K or start typing a ticker" onClose={onClose}>
-      <form onSubmit={(event) => { event.preventDefault(); const first = matches[0]; if (first) choose(first.symbol) }}>
-        <label className="relative block border-b border-line p-3"><Search className="pointer-events-none absolute left-6 top-1/2 -translate-y-1/2 text-dim" size={15} /><span className="sr-only">Symbol</span><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="NQ, ES…" className="field-input h-10 w-full pl-9 font-mono" /></label>
-        {evalLocked ? <p role="status" className="border-b border-loss/20 bg-loss/8 px-4 py-2 text-ui-meta text-loss-bright">Symbol is locked during an evaluation.</p> : null}
-        <ul className="max-h-80 overflow-y-auto p-2">
-          {matches.map((symbol, index) => <li key={symbol.symbol}><button type="button" disabled={evalLocked} onClick={() => choose(symbol.symbol)} className="flex h-10 w-full items-center justify-between rounded-control px-3 text-left hover:bg-surface-2 focus-visible:bg-surface-2 disabled:opacity-40"><span><strong className="font-mono text-ui-body text-ink">{symbol.symbol}</strong><span className="ml-2 text-ui-meta text-dim">{symbol.name}</span></span>{symbol.symbol === replay.symbol ? <span className="text-ui-meta text-active-bright">Current</span> : index === 0 ? <kbd className="font-mono text-ui-meta text-dim">Enter</kbd> : null}</button></li>)}
-          {matches.length === 0 ? <li className="px-3 py-8 text-center text-ui-body text-dim">No matching replay symbol</li> : null}
-        </ul>
-      </form>
-    </DialogFrame>
-  )
+  return <SymbolBrowserDialog symbols={replay.symbols} activeSymbol={replay.symbol} initialQuery={initialQuery} onClose={onClose} onSelect={(symbol) => { if (!evalLocked) void replayEngine.selectSymbol(symbol.symbol); onClose() }} />
 }
 
 function IntervalSearch({ initialQuery, onClose }: { initialQuery: string; onClose: () => void }) {
@@ -151,7 +137,8 @@ function IntervalSearch({ initialQuery, onClose }: { initialQuery: string; onClo
 
 function GoToDate({ onClose }: { onClose: () => void }) {
   const replay = useReplaySelector((snapshot) => ({ sessionTz: snapshot.symbol?.sessionTz ?? 'UTC', cursorTs: snapshot.cursorTs }))
-  const [date, setDate] = useState(replay.cursorTs ? sessionDateValue(replay.cursorTs, replay.sessionTz) : '')
+  const { state: chartWorkspace } = useChartWorkspace()
+  const [date, setDate] = useState(replay.cursorTs ? chartTimezoneDateValue(replay.cursorTs, chartWorkspace.timezone) : '')
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
     const timestamp = sessionOpenTimestamp(date, replay.sessionTz)
@@ -160,7 +147,7 @@ function GoToDate({ onClose }: { onClose: () => void }) {
     onClose()
   }
   return (
-    <DialogFrame title="Go to date" description={`Session timezone: ${replay.sessionTz}`} onClose={onClose}>
+    <DialogFrame title="Go to date" description={`Workspace timezone: ${timezoneLabel(chartWorkspace.timezone)}`} onClose={onClose}>
       <form onSubmit={submit} className="p-4">
         <label className="text-ui-meta font-medium text-muted"><span className="flex items-center gap-1.5"><CalendarDays size={13} />Date</span><input autoFocus type="date" value={date} onChange={(event) => setDate(event.target.value)} className="field-input mt-1.5 h-10 w-full" /></label>
         <div className="mt-4 flex justify-end"><button type="submit" disabled={!date} className="primary-button">Go to date</button></div>

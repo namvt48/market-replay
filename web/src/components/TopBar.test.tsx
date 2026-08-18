@@ -10,13 +10,17 @@ const workspaceMocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
   state: {
     activePaneId: 'pane-1',
+    timezone: { kind: 'preset' as const, id: 'ET' as const },
     panes: { 'pane-1': { id: 'pane-1' }, 'pane-2': { id: 'pane-2' } },
     root: { kind: 'split', id: 'root', orientation: 'horizontal', ratio: 0.5, first: { kind: 'pane', paneId: 'pane-1' }, second: { kind: 'pane', paneId: 'pane-2' } },
   },
 }))
 const snapshot = {
   status: 'ready',
-  symbols: [{ symbol: 'NQ' }, { symbol: 'ES' }],
+  symbols: [
+    { symbol: 'NQ', name: 'E-mini Nasdaq-100 Futures', kind: 'future', currency: 'USD', ranges: {} },
+    { symbol: 'ES', name: 'E-mini S&P 500 Futures', kind: 'future', currency: 'USD', ranges: {} },
+  ],
   symbol: { symbol: 'NQ' },
   eagerState: 'ready',
   viewportCachedBars: 0,
@@ -74,6 +78,16 @@ describe('TopBar timeframe visibility', () => {
     expect(replayMocks.beginReplaySelection).toHaveBeenCalledOnce()
   })
 
+  it('changes one timezone for the whole chart workspace', async () => {
+    const user = userEvent.setup()
+    render(<TopBar />)
+
+    await user.click(screen.getByRole('button', { name: 'Workspace timezone: ET' }))
+    await user.click(screen.getByRole('menuitemradio', { name: 'PT' }))
+
+    expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-timezone', timezone: { kind: 'preset', id: 'PT' } })
+  })
+
   it('hides the Replay command while an evaluation is running', () => {
     useEvalStore.setState({ phase: 'running' })
     render(<TopBar />)
@@ -87,9 +101,10 @@ describe('TopBar timeframe visibility', () => {
     useEvalStore.setState({ phase: 'running' })
     render(<TopBar />)
 
-    const symbol = screen.getByRole('combobox', { name: 'Symbol' })
+    const symbol = screen.getByRole('button', { name: 'Change symbol, current NQ' })
     expect(symbol).toBeEnabled()
-    await user.selectOptions(symbol, 'ES')
+    await user.click(symbol)
+    await user.click(screen.getByRole('button', { name: /Select ES, E-mini S&P 500 Futures/i }))
     expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-pane-symbol', paneId: 'pane-1', symbol: 'ES' })
     expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-1', 'ES')
   })
@@ -99,7 +114,8 @@ describe('TopBar timeframe visibility', () => {
     workspaceMocks.state.activePaneId = 'pane-2'
     render(<TopBar />)
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Symbol' }), 'ES')
+    await user.click(screen.getByRole('button', { name: 'Change symbol, current NQ' }))
+    await user.click(screen.getByRole('button', { name: /Select ES, E-mini S&P 500 Futures/i }))
 
     expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-pane-symbol', paneId: 'pane-2', symbol: 'ES' })
     await waitFor(() => expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-2', 'ES'))
@@ -110,7 +126,8 @@ describe('TopBar timeframe visibility', () => {
     workspaceMocks.state.activePaneId = 'missing-pane'
     render(<TopBar />)
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Symbol' }), 'ES')
+    await user.click(screen.getByRole('button', { name: 'Change symbol, current NQ' }))
+    await user.click(screen.getByRole('button', { name: /Select ES, E-mini S&P 500 Futures/i }))
 
     expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-pane-symbol', paneId: 'pane-1', symbol: 'ES' })
     await waitFor(() => expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-1', 'ES'))

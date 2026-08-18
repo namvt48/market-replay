@@ -1,7 +1,8 @@
-import { ChevronDown, Keyboard, PanelRightClose, PanelRightOpen, Rewind, Search } from 'lucide-react'
+import { Activity, Keyboard, PanelRightClose, PanelRightOpen, Rewind } from 'lucide-react'
+import { useState, type ReactElement } from 'react'
 import type { Timeframe } from '../api/types'
 import { replayEngine } from '../replay/replay-engine'
-import { sortTimeframes } from '../replay/timeframe'
+import { parseTimeframe, sortTimeframes } from '../replay/timeframe'
 import { useReplaySelector } from '../replay/use-replay'
 import { useUiStore } from '../store/ui-store'
 import { useEvalStore } from '../store/eval-store'
@@ -13,13 +14,15 @@ import { useChartWorkspace } from '../chart-workspace/use-chart-workspace'
 import { IndicatorMenu } from './indicators/IndicatorMenu'
 import { paneIds } from '../chart-workspace/layout-presets'
 import { ReplayBrandMark } from './ReplayBrandMark'
+import { WorkspaceTimezoneMenu } from './chart/WorkspaceTimezoneMenu'
+import { SymbolBrowserDialog } from './symbols/SymbolBrowserDialog'
 
 interface TopBarProps {
   layoutMenuRequest?: number
   onOpenShortcuts?: () => void
 }
 
-export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefined }: TopBarProps) {
+export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefined }: TopBarProps): ReactElement {
   // Scoped so the header ignores cursor/fill/stats churn while replay plays.
   const replay = useReplaySelector((snapshot) => ({
     symbol: (snapshot.activeSymbol ?? snapshot.symbol)?.symbol ?? '',
@@ -34,7 +37,12 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen)
   const setActiveTf = useUiStore((state) => state.setActiveTf)
   const preferences = useTimeframePreferences()
-  const visibleTimeframes = sortTimeframes([...new Set([...preferences.starredTimeframes, activeTf])])
+  const [symbolBrowserOpen, setSymbolBrowserOpen] = useState(false)
+  const hasSecondsData = !!replay.symbols.find((symbol) => symbol.symbol === replay.symbol)?.ranges?.['5s']
+  const pinnedTimeframes = hasSecondsData
+    ? [...preferences.starredTimeframes, activeTf]
+    : [...preferences.starredTimeframes, activeTf].filter((timeframe) => parseTimeframe(timeframe)?.unit !== 's')
+  const visibleTimeframes = sortTimeframes([...new Set(pinnedTimeframes)])
   const targetPaneId = chartWorkspace.panes[chartWorkspace.activePaneId]
     ? chartWorkspace.activePaneId
     : paneIds(chartWorkspace.root)[0]
@@ -47,24 +55,11 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
           <span className="hidden sm:inline">MARKET REPLAY</span>
         </a>
 
-        <div className="relative shrink-0">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" size={14} />
-          <select
-            aria-label="Symbol"
-            value={replay.symbol}
-            onChange={(event) => {
-              const symbol = event.target.value
-              if (!targetPaneId) return
-              dispatchChartWorkspace({ type: 'set-pane-symbol', paneId: targetPaneId, symbol })
-              if (evalLocked) replayEngine.requestChartViewSymbol(targetPaneId, symbol)
-              else void replayEngine.selectSymbol(symbol).then(() => replayEngine.requestChartViewSymbol(targetPaneId, symbol))
-            }}
-            className="h-8 appearance-none rounded-control border border-line bg-surface-2 pl-8 pr-8 text-ui-title font-semibold text-ink outline-none transition-colors hover:border-line-strong focus-visible:border-active"
-          >
-            {replay.symbols.map((symbol) => <option key={symbol.symbol} value={symbol.symbol}>{symbol.symbol}</option>)}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted" size={13} />
-        </div>
+        <button type="button" onClick={() => setSymbolBrowserOpen(true)} aria-label={`Change symbol, current ${replay.symbol}`} aria-haspopup="dialog" className="flex h-8 min-w-28 shrink-0 items-center gap-2 rounded-control bg-surface-2 px-2.5 text-left text-ink transition-colors hover:bg-surface-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-active sm:min-w-36">
+          <Activity size={15} strokeWidth={1.8} className="shrink-0 text-ink" aria-hidden="true" />
+          <strong className="min-w-0 flex-1 truncate text-ui-title font-semibold">{replay.symbol || '—'}</strong>
+          <kbd className="rounded-[3px] bg-surface-3 px-1.5 py-0.5 font-mono text-ui-meta font-normal text-dim">/</kbd>
+        </button>
 
         <ChartWorkspaceControls />
 
@@ -81,7 +76,7 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
             </button>
           ))}
         </nav>
-        <TimeframeMenu active={activeTf} onSelect={(timeframe: Timeframe) => setActiveTf(timeframe)} />
+        <TimeframeMenu active={activeTf} onSelect={(timeframe: Timeframe) => setActiveTf(timeframe)} hasSecondsData={hasSecondsData} />
 
         {evalLocked ? null : (
           <>
@@ -101,6 +96,7 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
       </div>
 
       <div className="flex shrink-0 items-center gap-1 border-l border-line bg-[#101114] px-2 text-ui-body text-muted md:gap-2 md:px-3">
+        <WorkspaceTimezoneMenu />
         <IndicatorMenu />
         <LayoutMenu openRequest={layoutMenuRequest} />
         <button type="button" onClick={onOpenShortcuts} className="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts · ?"><Keyboard size={16} strokeWidth={1.7} /></button>
@@ -113,6 +109,13 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
           {sidebarOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
         </button>
       </div>
+      {symbolBrowserOpen ? <SymbolBrowserDialog symbols={replay.symbols} activeSymbol={replay.symbol} onClose={() => setSymbolBrowserOpen(false)} onSelect={(meta) => {
+        if (!targetPaneId) return
+        dispatchChartWorkspace({ type: 'set-pane-symbol', paneId: targetPaneId, symbol: meta.symbol })
+        setSymbolBrowserOpen(false)
+        if (evalLocked) replayEngine.requestChartViewSymbol(targetPaneId, meta.symbol)
+        else void replayEngine.selectSymbol(meta.symbol).then(() => replayEngine.requestChartViewSymbol(targetPaneId, meta.symbol))
+      }} /> : null}
     </header>
   )
 }

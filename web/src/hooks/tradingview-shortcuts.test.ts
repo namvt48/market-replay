@@ -28,6 +28,7 @@ interface ResolverCase {
 const RESOLVER_CASES: readonly ResolverCase[] = [
   { label: 'question mark opens shortcut help', input: { key: '?', shiftKey: true }, command: 'open-shortcut-help' },
   { label: 'Shift+slash opens shortcut help', input: { key: '/', shiftKey: true }, command: 'open-shortcut-help' },
+  { label: 'slash opens symbol search', input: { key: '/' }, command: 'open-symbol-search' },
   { label: 'Ctrl+K opens symbol search', input: { key: 'k', ctrlKey: true }, command: 'open-symbol-search' },
   { label: 'comma opens interval search', input: { key: ',' }, command: 'open-interval-search' },
   { label: 'period opens layouts', input: { key: '.' }, command: 'open-layouts' },
