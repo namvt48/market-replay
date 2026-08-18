@@ -3,6 +3,8 @@ package analytics
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -10,6 +12,28 @@ import (
 // ErrUnknownTimeZone is returned for a timezone name the runtime cannot
 // resolve.
 var ErrUnknownTimeZone = errors.New("analytics: unknown timezone")
+
+var fixedOffsetPattern = regexp.MustCompile(`^UTC([+-])(\d{2}):(\d{2})$`)
+
+func fixedOffsetLocation(name string) (*time.Location, bool) {
+	match := fixedOffsetPattern.FindStringSubmatch(name)
+	if match == nil {
+		return nil, false
+	}
+	hours, hoursErr := strconv.Atoi(match[2])
+	minutes, minutesErr := strconv.Atoi(match[3])
+	if hoursErr != nil || minutesErr != nil || minutes != 0 && minutes != 30 {
+		return nil, false
+	}
+	totalMinutes := hours*60 + minutes
+	if match[1] == "-" {
+		totalMinutes = -totalMinutes
+	}
+	if totalMinutes < -12*60 || totalMinutes > 14*60 {
+		return nil, false
+	}
+	return time.FixedZone(name, totalMinutes*60), true
+}
 
 // validTimeZoneName is a coarse pre-filter before touching time.LoadLocation,
 // which resolves a name against tzdata — an unchecked name is user input
@@ -37,6 +61,9 @@ func validTimeZoneName(name string) bool {
 func LoadLocation(name string) (*time.Location, error) {
 	if name == "" {
 		return time.UTC, nil
+	}
+	if loc, ok := fixedOffsetLocation(name); ok {
+		return loc, nil
 	}
 	if !validTimeZoneName(name) {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownTimeZone, name)

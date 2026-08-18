@@ -393,6 +393,20 @@ func TestWeek_RejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestWeek_AcceptsChartFixedOffsetTimezone(t *testing.T) {
+	store := &Store{}
+	week, err := store.Week(WeekRequest{At: 1_786_377_600, TimeZone: "UTC+07:30"})
+	if err != nil {
+		t.Fatalf("fixed-offset week: %v", err)
+	}
+	if week.TimeZone != "UTC+07:30" {
+		t.Fatalf("timeZone = %q, want UTC+07:30", week.TimeZone)
+	}
+	if _, err := store.Week(WeekRequest{At: 1_786_377_600, TimeZone: "UTC+15:00"}); err == nil {
+		t.Fatal("accepted fixed offset beyond the chart timezone range")
+	}
+}
+
 func TestReload_KeepsPreviousCalendarOnBadData(t *testing.T) {
 	dir := t.TempDir()
 	writeShard(t, dir, "2026.jsonl", event("good", 1_000, ImportanceHigh, "US", ""))

@@ -3,6 +3,8 @@ package econ
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,27 @@ var ErrUnknownTimeZone = errors.New("econ: unknown timezone")
 // zone names. Duplicated rather than shared because a ten-line leaf cache is
 // not worth coupling the calendar to the bar reader over.
 var locationCache sync.Map // string -> *time.Location
+var fixedOffsetPattern = regexp.MustCompile(`^UTC([+-])(\d{2}):(\d{2})$`)
+
+func fixedOffsetLocation(name string) (*time.Location, bool) {
+	match := fixedOffsetPattern.FindStringSubmatch(name)
+	if match == nil {
+		return nil, false
+	}
+	hours, hoursErr := strconv.Atoi(match[2])
+	minutes, minutesErr := strconv.Atoi(match[3])
+	if hoursErr != nil || minutesErr != nil || minutes != 0 && minutes != 30 {
+		return nil, false
+	}
+	totalMinutes := hours*60 + minutes
+	if match[1] == "-" {
+		totalMinutes = -totalMinutes
+	}
+	if totalMinutes < -12*60 || totalMinutes > 14*60 {
+		return nil, false
+	}
+	return time.FixedZone(name, totalMinutes*60), true
+}
 
 func loadLocation(name string) (*time.Location, error) {
 	if name == "" {
@@ -24,6 +47,10 @@ func loadLocation(name string) (*time.Location, error) {
 	}
 	if cached, ok := locationCache.Load(name); ok {
 		return cached.(*time.Location), nil
+	}
+	if loc, ok := fixedOffsetLocation(name); ok {
+		actual, _ := locationCache.LoadOrStore(name, loc)
+		return actual.(*time.Location), nil
 	}
 	// Validate before touching the loader: LoadLocation resolves a name
 	// against tzdata, and an unchecked name is user input reaching a lookup.
