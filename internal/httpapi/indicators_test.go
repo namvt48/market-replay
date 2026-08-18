@@ -87,6 +87,22 @@ func TestHandleRunIndicator_AggregatesDisplayTimeframeFromOneMinute(t *testing.T
 	}
 }
 
+// TestHandleRunIndicator_SecondsTimeframeUnknownDatasetReturns404 covers a
+// symbol with no 5s data (the newTestServer NQ fixture only has 1m): an
+// indicator run at a seconds-unit tf must fail via bars.ErrUnknownSymbolTF
+// rather than silently running against 1m data mismatched with the tf, or
+// 500ing.
+func TestHandleRunIndicator_SecondsTimeframeUnknownDatasetReturns404(t *testing.T) {
+	s := newTestServer(t)
+	at := int64(testFixtureStart) + int64(testFixtureN-1)*60
+	req := httptest.NewRequest(http.MethodPost, testRunURL("NQ", "fractals", at, "&tf=15s"), nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleRunIndicator_SupportsEveryBuiltInUITimeframe(t *testing.T) {
 	s := newTestServer(t)
 	at := int64(testFixtureStart) + int64(testFixtureN-1)*60

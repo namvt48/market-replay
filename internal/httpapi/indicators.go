@@ -34,9 +34,10 @@ type runIndicatorRequest struct {
 // minute — the difference between a ~50 ms recompute on every step and an
 // LRU hit.
 //
-// 1m never reaches here (handleRunIndicator returns before the call): there
-// the display bar *is* the replay bar, so quantizing would drop the cursor's
-// own bar for nothing.
+// A run at its own base timeframe (1m, or 5s for a symbol with second data)
+// never reaches here — handleRunIndicator returns before the call: there the
+// display bar *is* the underlying raw bar, so quantizing would drop the
+// cursor's own bar for nothing.
 func quantizeToClosedBucket(meta model.SymbolMeta, tf string, params indicators.RunParams) (indicators.RunParams, error) {
 	bucketStart, err := bars.ChartBucketStart(meta, tf, params.At)
 	if err != nil {
@@ -131,13 +132,14 @@ func (s *Server) handleRunIndicator(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	baseTf := bars.BaseTimeframe(tf)
 	var result indicators.RunResult
-	err = s.Registry.WithDataset(symbol, "1m", func(file *bars.BarFile, cal *bars.Calendar, _ string) error {
+	err = s.Registry.WithDataset(symbol, baseTf, func(file *bars.BarFile, cal *bars.Calendar, _ string) error {
 		var runErr error
 		params := indicators.RunParams{
 			At: at, Before: before, After: after, MaxTs: maxTs, Overrides: body.Inputs,
 		}
-		if tf == "1m" {
+		if tf == baseTf {
 			result, runErr = s.Indicators.Run(r.Context(), scriptID, file, cal, meta, params)
 			return runErr
 		}

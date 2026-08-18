@@ -164,8 +164,10 @@ func (s *Server) handleBarsAt(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleChartBarsAt serves a bounded number of display-timeframe candles
-// aggregated directly from the canonical 1m dataset. Large TFs therefore
-// never require the browser to download or retain their entire raw history.
+// aggregated directly from the canonical base dataset for tf's unit
+// (bars.BaseTimeframe: "5s" for a seconds-unit tf, "1m" for everything
+// else). Large TFs therefore never require the browser to download or
+// retain their entire raw history.
 func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	symbol, err := requiredParam(query, "symbol")
@@ -216,7 +218,7 @@ func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var output []bars.ChartBar
-	err = s.Registry.WithDataset(symbol, "1m", func(file *bars.BarFile, calendar *bars.Calendar, _ string) error {
+	err = s.Registry.WithDataset(symbol, bars.BaseTimeframe(tf), func(file *bars.BarFile, calendar *bars.Calendar, _ string) error {
 		var aggregateErr error
 		output, aggregateErr = bars.AggregateChartWindowForSession(file, calendar, meta, tf, at, before, after, maxTs, marketSession)
 		return aggregateErr

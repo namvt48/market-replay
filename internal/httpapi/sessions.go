@@ -10,7 +10,7 @@ import (
 	"market-replay/internal/model"
 )
 
-var timeframePattern = regexp.MustCompile(`^(\d+)(m|h|d|w|M)$`)
+var timeframePattern = regexp.MustCompile(`^(\d+)(s|m|h|d|w|M)$`)
 
 func validTimeframe(value string) bool {
 	match := timeframePattern.FindStringSubmatch(value)
@@ -22,6 +22,8 @@ func validTimeframe(value string) bool {
 		return false
 	}
 	switch match[2] {
+	case "s":
+		return multiplier%5 == 0 && multiplier <= 55
 	case "m":
 		return multiplier <= 1440
 	case "h":
@@ -64,7 +66,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validTimeframe(req.Tf) {
-		writeError(w, fmt.Errorf("%w: tf must be 1-1440m, 1-12h, 1d, 1-52w, or 1-12M", errBadRequest))
+		writeError(w, fmt.Errorf("%w: tf must be 5-55s (multiple of 5), 1-1440m, 1-12h, 1d, 1-52w, or 1-12M", errBadRequest))
 		return
 	}
 	if req.Kind != "" && !model.ValidSessionKind(req.Kind) {

@@ -50,6 +50,52 @@ func TestParseChartTimeframeWeekAndMonth(t *testing.T) {
 	}
 }
 
+func TestParseChartTimeframeSeconds(t *testing.T) {
+	for _, value := range []string{"5s", "15s", "30s", "55s"} {
+		if _, err := parseChartTimeframe(value); err != nil {
+			t.Fatalf("parse %s: %v", value, err)
+		}
+	}
+	for _, value := range []string{"0s", "7s", "60s", "-5s"} {
+		if _, err := parseChartTimeframe(value); err == nil {
+			t.Fatalf("parse %s succeeded, want error", value)
+		}
+	}
+}
+
+func TestChartBucketStartSecondsAligned(t *testing.T) {
+	meta := model.SymbolMeta{Kind: "future"}
+	// 12:00:07 UTC: a 5s bucket starts at :05, a 15s bucket at :00, a 30s
+	// bucket at :00 of the minute before.
+	ts := time.Date(2026, time.July, 28, 12, 0, 7, 0, time.UTC).Unix()
+	cases := []struct {
+		timeframe chartTimeframe
+		want      time.Time
+	}{
+		{chartTimeframe{multiplier: 5, unit: 's'}, time.Date(2026, time.July, 28, 12, 0, 5, 0, time.UTC)},
+		{chartTimeframe{multiplier: 15, unit: 's'}, time.Date(2026, time.July, 28, 12, 0, 0, 0, time.UTC)},
+		{chartTimeframe{multiplier: 30, unit: 's'}, time.Date(2026, time.July, 28, 12, 0, 0, 0, time.UTC)},
+	}
+	for _, tc := range cases {
+		if got, want := chartBucketStart(ts, tc.timeframe, meta, time.UTC), tc.want.Unix(); got != want {
+			t.Fatalf("%d%c bucket = %d, want %d", tc.timeframe.multiplier, tc.timeframe.unit, got, want)
+		}
+	}
+}
+
+func TestBaseTimeframe(t *testing.T) {
+	cases := map[string]string{
+		"5s": "5s", "15s": "5s", "30s": "5s",
+		"1m": "1m", "5m": "1m", "1h": "1m", "1d": "1m", "1w": "1m", "1M": "1m",
+		"garbage": "1m",
+	}
+	for tf, want := range cases {
+		if got := BaseTimeframe(tf); got != want {
+			t.Fatalf("BaseTimeframe(%q) = %q, want %q", tf, got, want)
+		}
+	}
+}
+
 func TestAggregateChartWindowForSessionReturnsDeepRTHHistory(t *testing.T) {
 	location, err := time.LoadLocation("America/New_York")
 	if err != nil {

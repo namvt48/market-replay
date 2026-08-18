@@ -60,11 +60,25 @@ func parseChartTimeframe(value string) (chartTimeframe, error) {
 		return chartTimeframe{}, fmt.Errorf("invalid timeframe %q", value)
 	}
 	unit := value[len(value)-1]
-	valid := unit == 'm' && multiplier <= 1440 || unit == 'h' && multiplier <= 12 || unit == 'd' && multiplier == 1 || unit == 'w' && multiplier <= 52 || unit == 'M' && multiplier <= 12
+	valid := unit == 's' && multiplier%5 == 0 && multiplier >= 5 && multiplier <= 55 ||
+		unit == 'm' && multiplier <= 1440 || unit == 'h' && multiplier <= 12 || unit == 'd' && multiplier == 1 || unit == 'w' && multiplier <= 52 || unit == 'M' && multiplier <= 12
 	if !valid {
 		return chartTimeframe{}, fmt.Errorf("invalid timeframe %q", value)
 	}
 	return chartTimeframe{multiplier: multiplier, unit: unit}, nil
+}
+
+// BaseTimeframe returns the raw dataset a display timeframe aggregates
+// from: "5s" for a seconds-unit timeframe, "1m" for everything else
+// (m/h/d/w/M all build from the 1m dataset, unchanged). value is assumed
+// already validated by validTimeframe — an invalid value degrades to "1m"
+// rather than erroring, since the caller's own validation is what's
+// responsible for rejecting garbage input.
+func BaseTimeframe(value string) string {
+	if tf, err := parseChartTimeframe(value); err == nil && tf.unit == 's' {
+		return "5s"
+	}
+	return "1m"
 }
 
 func floorDiv(value, divisor int) int {
@@ -93,10 +107,13 @@ func sessionOpen(date time.Time, meta model.SymbolMeta, location *time.Location)
 }
 
 func chartBucketStart(timestamp int64, timeframe chartTimeframe, meta model.SymbolMeta, location *time.Location) int64 {
-	if timeframe.unit == 'm' || timeframe.unit == 'h' {
-		seconds := int64(timeframe.multiplier * 60)
-		if timeframe.unit == 'h' {
+	if timeframe.unit == 's' || timeframe.unit == 'm' || timeframe.unit == 'h' {
+		seconds := int64(timeframe.multiplier)
+		if timeframe.unit == 'm' {
 			seconds *= 60
+		}
+		if timeframe.unit == 'h' {
+			seconds *= 3600
 		}
 		return timestamp / seconds * seconds
 	}
@@ -292,10 +309,13 @@ func regularTradingHours(timestamp int64, location *time.Location) bool {
 func rthBucketStart(timestamp int64, timeframe chartTimeframe, location *time.Location) int64 {
 	local := time.Unix(timestamp, 0).In(location)
 	open := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, location)
-	if timeframe.unit == 'm' || timeframe.unit == 'h' {
-		seconds := int64(timeframe.multiplier * 60)
-		if timeframe.unit == 'h' {
+	if timeframe.unit == 's' || timeframe.unit == 'm' || timeframe.unit == 'h' {
+		seconds := int64(timeframe.multiplier)
+		if timeframe.unit == 'm' {
 			seconds *= 60
+		}
+		if timeframe.unit == 'h' {
+			seconds *= 3600
 		}
 		return open.Unix() + (timestamp-open.Unix())/seconds*seconds
 	}

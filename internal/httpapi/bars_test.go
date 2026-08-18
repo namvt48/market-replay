@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"market-replay/internal/bars"
+	"market-replay/internal/model"
 )
 
 type chartBarResponse struct {
@@ -54,6 +57,70 @@ func TestHandleChartBarsAt_AggregatesRequestedDisplayTimeframe(t *testing.T) {
 	}
 	if got[len(got)-1].CloseTicks != int32(101+testFixtureN-1) {
 		t.Fatalf("last close = %d, want %d", got[len(got)-1].CloseTicks, 101+testFixtureN-1)
+	}
+}
+
+// TestHandleChartBarsAt_SecondsTimeframeReadsFromSecondsDataset registers an
+// NQ/1m fixture and a separate NQ/5s fixture starting far outside the 1m
+// fixture's range, then asserts a "5s" chart-bars request at that far
+// timestamp resolves to the 5s file's own first bar (bars.BaseTimeframe's
+// routing) rather than clamping to the 1m file's last bar — which is what
+// would happen if the handler still read "1m" regardless of tf.
+func TestHandleChartBarsAt_SecondsTimeframeReadsFromSecondsDataset(t *testing.T) {
+	dataDir := t.TempDir()
+	writeBinFixture(t, dataDir, "NQ", "1m", testFixtureN, testFixtureStart)
+	secondsFixtureStart := testFixtureStart + 10_000_000 // well past the 1m fixture's ~20-minute range
+	writeBinFixture(t, dataDir, "NQ", "5s", testFixtureN, secondsFixtureStart)
+
+	metaDir := filepath.Join(dataDir, "meta")
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symbols := []model.SymbolMeta{{Symbol: "NQ", Name: "E-mini Nasdaq-100", TickSize: 0.25, PointValue: 20}}
+	b, err := json.Marshal(symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(metaDir, "symbols.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := bars.NewRegistry(dataDir)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	s := &Server{Registry: reg}
+
+	at := int64(secondsFixtureStart)
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/chart-bars/at?symbol=NQ&tf=5s&at=%d&before=1&after=0&to=%d", at, at), nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got []chartBarResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("bars = %d, want 1", len(got))
+	}
+	if got[0].Time != at {
+		t.Fatalf("time = %d, want %d (the 5s file's own first bar; a %d value would mean it read the 1m file instead)", got[0].Time, at, int64(testFixtureStart)+int64(testFixtureN-1)*60)
+	}
+}
+
+// TestHandleChartBarsAt_SecondsTimeframeUnknownDatasetReturns404 covers a
+// symbol with no 5s data at all (the newTestServer NQ fixture only has 1m):
+// the request must fail cleanly via bars.ErrUnknownSymbolTF, not silently
+// synthesize sub-minute bars from 1m or 500.
+func TestHandleChartBarsAt_SecondsTimeframeUnknownDatasetReturns404(t *testing.T) {
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/chart-bars/at?symbol=NQ&tf=5s&at=%d", testFixtureStart), nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

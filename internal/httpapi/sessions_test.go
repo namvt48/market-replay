@@ -43,7 +43,7 @@ func TestHandleCreateSession_MissingFields(t *testing.T) {
 }
 
 func TestHandleCreateSession_CustomTimeframe(t *testing.T) {
-	for _, timeframe := range []string{"45m", "1w", "2w", "1M", "3M"} {
+	for _, timeframe := range []string{"5s", "15s", "30s", "45m", "1w", "2w", "1M", "3M"} {
 		t.Run(timeframe, func(t *testing.T) {
 			s := newTestServer(t)
 			body := bytes.NewBufferString(`{"symbol":"NQ","tf":"` + timeframe + `","startTs":1,"config":{}}`)
@@ -58,7 +58,7 @@ func TestHandleCreateSession_CustomTimeframe(t *testing.T) {
 }
 
 func TestHandleCreateSession_InvalidTimeframe(t *testing.T) {
-	for _, timeframe := range []string{"0m", "1441m", "13h", "2d", "0w", "53w", "0M", "13M", "60M"} {
+	for _, timeframe := range []string{"0s", "7s", "60s", "0m", "1441m", "13h", "2d", "0w", "53w", "0M", "13M", "60M"} {
 		t.Run(timeframe, func(t *testing.T) {
 			s := newTestServer(t)
 			body := bytes.NewBufferString(`{"symbol":"NQ","tf":"` + timeframe + `","startTs":1,"config":{}}`)
