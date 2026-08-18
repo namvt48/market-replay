@@ -1,24 +1,15 @@
 import { CalendarDays, Check, ChevronDown, MousePointer2, Pause, Play, SkipBack, SkipForward } from 'lucide-react'
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import type { Timeframe } from '../../api/types'
 import { useDismissableLayer } from '../../hooks/use-dismissable-layer'
-import { replayEngine, SPEEDS, STEP_TIMEFRAMES, type ReplayStepTimeframe } from '../../replay/replay-engine'
-import { sessionDateValue, sessionOpenTimestamp } from '../../replay/session-date'
+import { replayEngine, SPEEDS } from '../../replay/replay-engine'
+import { availableReplayStepTimeframes, type ReplayStepTimeframe } from '../../replay/timeframe'
+import { sessionOpenTimestamp } from '../../replay/session-date'
 import { useReplaySelector } from '../../replay/use-replay'
 import { useEvalStore } from '../../store/eval-store'
-
-// Intl.DateTimeFormat construction is expensive and this bar re-renders
-// on every cursor tick, so formatters are built once per session
-// timezone rather than once per render.
-const cursorFormatters = new Map<string, Intl.DateTimeFormat>()
-function cursorFormatter(timeZone: string): Intl.DateTimeFormat {
-  const cached = cursorFormatters.get(timeZone)
-  if (cached) return cached
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone, month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-  })
-  cursorFormatters.set(timeZone, formatter)
-  return formatter
-}
+import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
+import { chartTimezoneDateValue, formatChartTime } from '../../replay/chart-timezone'
+import { parseTimeframe } from '../../replay/timeframe'
 interface TransportButtonProps {
   label: string
   shortcut: string
@@ -76,9 +67,10 @@ function ReplayDatePicker({ date, min, disabled, onSelect }: ReplayDatePickerPro
 interface ReplayIntervalMenuProps {
   disabled: boolean
   value: ReplayStepTimeframe
+  options: readonly ReplayStepTimeframe[]
 }
 
-function ReplayIntervalMenu({ disabled, value }: ReplayIntervalMenuProps) {
+function ReplayIntervalMenu({ disabled, value, options }: ReplayIntervalMenuProps) {
   const [open, setOpen] = useState(false)
   const layerRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -146,7 +138,7 @@ function ReplayIntervalMenu({ disabled, value }: ReplayIntervalMenuProps) {
           onKeyDown={moveFocus}
           className="absolute bottom-[calc(100%+0.375rem)] right-0 z-50 grid w-36 grid-cols-2 gap-1 rounded-panel border border-line-strong bg-[#111214] p-1.5 shadow-overlay"
         >
-          {STEP_TIMEFRAMES.map((timeframe) => {
+          {options.map((timeframe) => {
             const selected = timeframe === value
             return (
               <button
@@ -168,7 +160,11 @@ function ReplayIntervalMenu({ disabled, value }: ReplayIntervalMenuProps) {
   )
 }
 
-export function ReplayBar() {
+interface ReplayBarProps {
+  minimumTimeframe?: Timeframe
+}
+
+export function ReplayBar({ minimumTimeframe = '1m' }: ReplayBarProps) {
   // cursorTs genuinely ticks with replay; everything else here is
   // transport state, so selecting keeps unrelated snapshot churn out.
   const replay = useReplaySelector((snapshot) => ({
@@ -182,11 +178,17 @@ export function ReplayBar() {
     error: snapshot.error,
   }))
   const evalLocked = useEvalStore((state) => state.phase === 'running')
+  const { state: chartWorkspace } = useChartWorkspace()
+  const replayIntervals = useMemo(() => availableReplayStepTimeframes(minimumTimeframe), [minimumTimeframe])
+  useEffect(() => {
+    const minimum = replayIntervals[0]
+    if (minimum && replay.stepTimeframe && !replayIntervals.includes(replay.stepTimeframe)) replayEngine.setStepTimeframe(minimum)
+  }, [replay.stepTimeframe, replayIntervals])
   if (replay.replayMode === 'inactive') return null
 
   const selecting = replay.replayMode === 'selecting'
-  const formatter = replay.sessionTz ? cursorFormatter(replay.sessionTz) : null
-  const date = replay.cursorTs ? sessionDateValue(replay.cursorTs, replay.sessionTz || 'UTC') : ''
+  const date = replay.cursorTs ? chartTimezoneDateValue(replay.cursorTs, chartWorkspace.timezone) : ''
+  const showSeconds = parseTimeframe(minimumTimeframe)?.unit === 's'
 
   return (
     <footer id="replay-controls" className="relative z-40 shrink-0 border-t border-line bg-[#101114]" aria-label="Replay controls">
@@ -202,7 +204,7 @@ export function ReplayBar() {
               <span className={`flex shrink-0 items-center gap-1.5 text-ui-body font-medium ${replay.playing ? 'text-profit-bright' : 'text-muted'}`}>
                 <span className={`size-1.5 rounded-full ${replay.playing ? 'animate-replay-pulse bg-profit' : 'bg-dim'}`} />{replay.playing ? 'Playing' : 'Paused'}
               </span>
-              <time className="truncate font-mono text-ui-meta text-dim" dateTime={replay.cursorTs ? new Date(replay.cursorTs * 1000).toISOString() : undefined}>{formatter && replay.cursorTs ? formatter.format(new Date(replay.cursorTs * 1000)) : 'No replay time'}</time>
+              <time className="truncate font-mono text-ui-meta text-dim" dateTime={replay.cursorTs ? new Date(replay.cursorTs * 1000).toISOString() : undefined}>{replay.cursorTs ? formatChartTime(replay.cursorTs, chartWorkspace.timezone, true, showSeconds) : 'No replay time'}</time>
             </>
           )}
         </div>
@@ -245,7 +247,7 @@ export function ReplayBar() {
           >
             {replay.playing ? <Pause size={16} fill="currentColor" /> : <Play className="translate-x-px" size={16} fill="currentColor" />}
           </button>
-          <ReplayIntervalMenu disabled={selecting} value={replay.stepTimeframe} />
+          <ReplayIntervalMenu disabled={selecting || replayIntervals.length === 0} value={replay.stepTimeframe} options={replayIntervals} />
           <TransportButton label="Next replay interval" shortcut="Shift+→" disabled={selecting} onClick={() => replayEngine.stepForward()}><SkipForward size={16} /></TransportButton>
         </div>
 

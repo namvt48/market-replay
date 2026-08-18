@@ -94,6 +94,34 @@ describe('TimeframeMenu', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('1h already exists')
   })
 
+  it('omits the SECONDS group and custom-interval Seconds option when the symbol has no 5s data', async () => {
+    const user = userEvent.setup()
+    render(<TimeframeMenu active="1m" onSelect={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Timeframe menu' }))
+    expect(screen.queryByText('SECONDS')).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '5 seconds' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('menuitem', { name: 'Add custom interval…' }))
+    expect(screen.queryByRole('option', { name: 'Seconds' })).not.toBeInTheDocument()
+  })
+
+  it('shows a SECONDS group and lets a custom seconds interval be added when the symbol has 5s data', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    render(<TimeframeMenu active="1m" onSelect={onSelect} hasSecondsData />)
+    await user.click(screen.getByRole('button', { name: 'Timeframe menu' }))
+    expect(screen.getByText('SECONDS')).toBeInTheDocument()
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent).slice(0, 4)).toEqual([
+      'Add custom interval…', '5 seconds', '15 seconds', '30 seconds',
+    ])
+
+    await user.click(screen.getByRole('menuitem', { name: 'Add custom interval…' }))
+    await user.selectOptions(screen.getByLabelText('Type'), 's')
+    await user.type(screen.getByLabelText('Interval'), '10')
+    await user.click(screen.getByRole('button', { name: 'Add' }))
+    expect(onSelect).toHaveBeenCalledWith('10s')
+  })
+
   it('stars and unstars an interval and supports arrow-key menu navigation', async () => {
     const user = userEvent.setup()
     render(<TimeframeMenu active="1m" onSelect={vi.fn()} />)

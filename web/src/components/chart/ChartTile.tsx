@@ -1,4 +1,4 @@
-import { AlertTriangle, ChartCandlestick, ChevronDown, ExternalLink, LoaderCircle, Maximize2, Minimize2, MousePointer2, RotateCcw, Settings, X } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ExternalLink, LoaderCircle, Maximize2, Minimize2, MousePointer2, RotateCcw, Settings, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import type { Timeframe } from '../../api/types'
@@ -8,8 +8,7 @@ import type { ChartAdapter } from '../../replay/chart-adapter'
 import type { ChartPaneSettings } from '../../replay/chart-settings-store'
 import { HoverBarStore } from '../../replay/hover-bar-store'
 import { replayEngine } from '../../replay/replay-engine'
-import { BUILT_IN_TIMEFRAMES } from '../../replay/timeframe-preferences'
-import { sortTimeframes } from '../../replay/timeframe'
+import { parseTimeframe, sortTimeframes } from '../../replay/timeframe'
 import { useReplaySelector } from '../../replay/use-replay'
 import { useTimeframePreferences } from '../timeframe/use-timeframe-preferences'
 import { ChartSettingsDialog } from './ChartSettingsDialog'
@@ -114,7 +113,9 @@ export function ChartTile({ pane, active, removable, maximized, onActivate, onTo
       top: Math.max(8, Math.min(event.clientY, window.innerHeight - 52)),
     })
   }
-  const timeframes = sortTimeframes([...new Set([...BUILT_IN_TIMEFRAMES, ...timeframePreferences.customTimeframes, pane.timeframe])])
+  const hasSecondsData = Boolean(paneSymbolMeta?.ranges?.['5s'])
+  const timeframes = sortTimeframes([...new Set([...timeframePreferences.starredTimeframes, pane.timeframe])])
+    .filter((timeframe) => hasSecondsData || parseTimeframe(timeframe)?.unit !== 's')
   return (
     <section
       onPointerDownCapture={activate}
@@ -149,21 +150,22 @@ export function ChartTile({ pane, active, removable, maximized, onActivate, onTo
       <div className="pointer-events-none absolute left-1.5 right-32 top-1.5 z-20 flex min-w-0 flex-col items-start gap-0.5">
         <div className="flex w-full min-w-0 items-start gap-2">
           <div ref={identityMenuRef} className="pointer-events-auto relative shrink-0">
-            <button type="button" onClick={() => setIdentityOpen((open) => !open)} aria-label={`${paneSymbol || 'No symbol'} ${pane.timeframe} chart symbol and timeframe`} aria-expanded={identityOpen} aria-haspopup="dialog" className="flex h-7 items-center gap-1.5 rounded-control bg-surface-1/90 px-1.5 text-ui-meta font-semibold text-ink transition-colors hover:bg-surface-3 focus-visible:bg-surface-3">
-              <ChartCandlestick size={16} strokeWidth={1.75} className="text-active-bright" />
-              <span>{paneSymbol || '—'} · {pane.timeframe}</span>
+            <button type="button" onClick={() => setIdentityOpen((open) => !open)} aria-label={`${paneSymbol || 'No symbol'} ${pane.timeframe} chart symbol and timeframe`} aria-expanded={identityOpen} aria-haspopup="dialog" className="flex h-7 items-center gap-1.5 rounded-control bg-surface-1/90 px-2 text-ui-meta text-ink transition-colors hover:bg-surface-3 focus-visible:bg-surface-3">
+              <strong className="font-semibold">{paneSymbol || '—'}</strong>
+              <span aria-hidden="true" className="h-3 w-px bg-line-strong" />
+              <span className="font-medium text-muted">{pane.timeframe}</span>
               <ChevronDown size={12} className="text-muted" />
             </button>
             {identityOpen ? (
-              <div role="dialog" aria-label="Chart symbol and timeframe" className="absolute left-0 top-8 z-50 w-56 rounded-panel border border-line-strong bg-[#111214] p-3 shadow-overlay">
-                <label className="mb-3 block text-ui-meta font-medium text-muted">
-                  <span className="mb-1 block">Symbol</span>
+              <div role="dialog" aria-label="Chart symbol and timeframe" className="absolute left-0 top-8 z-50 w-60 rounded-control border border-line-strong bg-[#111214] p-2 shadow-overlay">
+                <label className="grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-2 text-ui-meta font-medium text-muted">
+                  <span>Symbol</span>
                   <select aria-label="Chart symbol" disabled={replay.symbols.length === 0} value={paneSymbol} onChange={(event) => { const symbol = event.target.value; onSymbolChange(symbol); replayEngine.requestChartViewSymbol(pane.id, symbol) }} className="field-input h-9 w-full font-semibold">
                     {replay.symbols.map((symbol) => <option key={symbol.symbol} value={symbol.symbol}>{symbol.symbol} — {symbol.name}</option>)}
                   </select>
                 </label>
-                <label className="block text-ui-meta font-medium text-muted">
-                  <span className="mb-1 block">Interval</span>
+                <label className="mt-1.5 grid grid-cols-[4rem_minmax(0,1fr)] items-center gap-2 text-ui-meta font-medium text-muted">
+                  <span>Interval</span>
                   <select aria-label="Chart timeframe" value={pane.timeframe} onChange={(event) => { onTimeframeChange(event.target.value as Timeframe); setIdentityOpen(false) }} className="field-input h-9 w-full font-semibold">
                     {timeframes.map((timeframe) => <option key={timeframe} value={timeframe}>{timeframe}</option>)}
                   </select>

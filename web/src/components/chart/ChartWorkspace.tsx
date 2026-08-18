@@ -4,6 +4,7 @@ import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
 import type { ChartPaneState } from '../../chart-workspace/types'
 import { paneIds, pruneDetachedPanes } from '../../chart-workspace/layout-presets'
 import { useReplaySelector } from '../../replay/use-replay'
+import { sortTimeframes } from '../../replay/timeframe'
 import { useUiStore } from '../../store/ui-store'
 import { ChartPopoutWindow } from './ChartPopoutWindow'
 import { openChartPopout, type ChartPopoutTarget } from './chart-popout'
@@ -65,6 +66,7 @@ export function ChartWorkspace(): ReactElement {
   const tabbed = useTabbedLayout(visibleIds.length)
   const activeMainPaneId = visibleIds.includes(state.activePaneId) ? state.activePaneId : visibleIds[0] ?? state.activePaneId
   const visibleMaximizedPaneId = maximizedPaneId && visibleIds.includes(maximizedPaneId) ? maximizedPaneId : null
+  const minimumTimeframe = sortTimeframes(Object.values(state.panes).map((pane) => pane.timeframe))[0] ?? '1m'
 
   const returnPane = useCallback((paneId: string): void => {
     const current = popoutsRef.current
@@ -142,7 +144,7 @@ export function ChartWorkspace(): ReactElement {
             </div>
           ) : <div className="min-h-0 flex-1">{visibleRoot ? <ResizableChartLayout node={visibleRoot} renderPane={renderPane} onResize={(splitId, ratio, totalSize) => dispatch({ type: 'resize', splitId, ratio, totalSize })} /> : renderPane(state.activePaneId)}</div>}
         </div>
-        <ReplayBar />
+        <ReplayBar minimumTimeframe={minimumTimeframe} />
       </div>
       {Object.entries(popouts).map(([paneId, target]) => {
         const pane = state.panes[paneId]
@@ -158,7 +160,7 @@ export function ChartWorkspace(): ReactElement {
                 <DrawingToolbar disabled={replay.replayMode === 'selecting' || (replay.status !== 'ready' && replay.status !== 'buffering')} />
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                   <div className="min-h-0 flex-1">{renderChartTile(paneId, true)}</div>
-                  <ReplayBar />
+                  <ReplayBar minimumTimeframe={minimumTimeframe} />
                 </div>
               </div>
             </div>

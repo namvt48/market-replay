@@ -6,14 +6,17 @@ import { DEFAULT_CHART_PANE_SETTINGS } from '../../replay/chart-settings-store'
 import { ChartTile } from './ChartTile'
 
 const lwcAdapterMocks = vi.hoisted(() => ({ syncContainerSize: vi.fn() }))
+const timeframeMocks = vi.hoisted(() => ({
+  snapshot: { starredTimeframes: ['5s', '1m', '5m', '1h'], customTimeframes: ['7m'] },
+}))
 
 const replayMocks = vi.hoisted(() => ({
   snapshot: {
     status: 'loading',
-    symbol: { symbol: 'NQ', name: 'Nasdaq', priceDecimals: 2 },
+    symbol: { symbol: 'NQ', name: 'Nasdaq', priceDecimals: 2, ranges: { '5s': { from: 1, to: 2 } } },
     symbols: [
-      { symbol: 'NQ', name: 'Nasdaq', priceDecimals: 2 },
-      { symbol: 'ES', name: 'E-mini S&P', priceDecimals: 2 },
+      { symbol: 'NQ', name: 'Nasdaq', priceDecimals: 2, ranges: { '5s': { from: 1, to: 2 } } },
+      { symbol: 'ES', name: 'E-mini S&P', priceDecimals: 2, ranges: {} },
     ],
     error: null,
   },
@@ -33,6 +36,7 @@ vi.mock('../../replay/use-replay', () => ({
 vi.mock('../../replay/replay-engine', () => ({ replayEngine: replayMocks }))
 vi.mock('../../replay/lwc-adapter', () => ({ LwcAdapter: class { syncContainerSize = lwcAdapterMocks.syncContainerSize } }))
 vi.mock('./OhlcLegend', () => ({ OhlcLegend: () => null }))
+vi.mock('../timeframe/use-timeframe-preferences', () => ({ useTimeframePreferences: () => timeframeMocks.snapshot }))
 
 const pane: ChartPaneState = {
   id: 'pane-1',
@@ -97,6 +101,8 @@ describe('ChartTile chart shell', () => {
     render(<ChartTile pane={pane} active removable={false} maximized={false} onActivate={() => undefined} onToggleMaximize={() => undefined} onRemove={() => undefined} onSymbolChange={onSymbolChange} onTimeframeChange={onTimeframeChange} onSettingsChange={() => undefined} />)
 
     await user.click(screen.getByRole('button', { name: 'NQ 1m chart symbol and timeframe' }))
+    expect(screen.getByRole('combobox', { name: 'Chart timeframe' }).querySelectorAll('option')).toHaveLength(4)
+    expect([...screen.getByRole('combobox', { name: 'Chart timeframe' }).querySelectorAll('option')].map((option) => option.value)).toEqual(['5s', '1m', '5m', '1h'])
     await user.selectOptions(screen.getByRole('combobox', { name: 'Chart symbol' }), 'ES')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Chart timeframe' }), '5m')
 
@@ -120,7 +126,8 @@ describe('ChartTile chart shell', () => {
     render(<ChartTile pane={pane} active removable maximized={false} onActivate={() => undefined} onToggleMaximize={() => undefined} onRemove={() => undefined} onSymbolChange={() => undefined} onTimeframeChange={() => undefined} onSettingsChange={() => undefined} onPopOut={() => undefined} />)
 
     const identity = screen.getByRole('button', { name: 'NQ 1m chart symbol and timeframe' })
-    expect(identity.querySelector('svg')).toHaveAttribute('width', '16')
+    expect(identity.querySelectorAll('svg')).toHaveLength(1)
+    expect(identity.querySelector('svg')).toHaveAttribute('width', '12')
 
     const actions = [
       screen.getByRole('button', { name: 'Open 1m chart in new window' }),

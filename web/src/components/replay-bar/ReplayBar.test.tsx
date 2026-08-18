@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useEvalStore } from '../../store/eval-store'
 import { ReplayBar } from './ReplayBar'
 
+vi.mock('../../chart-workspace/use-chart-workspace', () => ({ useChartWorkspace: () => ({ state: { timezone: { kind: 'preset', id: 'ET' } } }) }))
+
 const replayMocks = vi.hoisted(() => ({
   togglePlay: vi.fn(),
   stepBack: vi.fn(),
@@ -34,7 +36,11 @@ vi.mock('../../replay/use-replay', () => ({
 vi.mock('../../replay/replay-engine', () => ({
   replayEngine: replayMocks,
   SPEEDS: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-  STEP_TIMEFRAMES: ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '4h'],
+  STEP_TIMEFRAMES: ['5s', '15s', '30s', '1m', '3m', '5m', '10m', '15m', '30m', '1h', '4h'],
+  availableReplayStepTimeframes: (minimum: string) => {
+    const seconds: Record<string, number> = { '5s': 5, '15s': 15, '30s': 30, '1m': 60, '3m': 180, '5m': 300, '10m': 600, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400 }
+    return ['5s', '15s', '30s', '1m', '3m', '5m', '10m', '15m', '30m', '1h', '4h'].filter((timeframe) => seconds[timeframe] >= seconds[minimum])
+  },
 }))
 
 beforeEach(() => {
@@ -102,6 +108,24 @@ describe('ReplayBar', () => {
     await user.click(screen.getByRole('option', { name: '30m' }))
     expect(replayMocks.setStepTimeframe).toHaveBeenCalledWith('30m')
     expect(interval).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('offers replay intervals at or above the smallest timeframe in the layout', async () => {
+    const user = userEvent.setup()
+    render(<ReplayBar minimumTimeframe="15s" />)
+
+    await user.click(screen.getByRole('button', { name: 'Replay interval' }))
+
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      '15s', '30s', '1m', '3m', '5m', '10m', '15m', '30m', '1h', '4h',
+    ])
+  })
+
+  it('raises a replay interval that falls below the new layout minimum', async () => {
+    replayMocks.snapshot.stepTimeframe = '15s'
+    render(<ReplayBar minimumTimeframe="1m" />)
+
+    await waitFor(() => expect(replayMocks.setStepTimeframe).toHaveBeenCalledWith('1m'))
   })
 
   it('supports keyboard navigation in the themed replay interval menu', async () => {

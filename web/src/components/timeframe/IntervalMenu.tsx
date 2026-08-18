@@ -3,13 +3,17 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import { createPortal } from 'react-dom'
 import type { Timeframe } from '../../api/types'
 import { useDismissableLayer } from '../../hooks/use-dismissable-layer'
-import { BUILT_IN_TIMEFRAMES, timeframePreferenceStore } from '../../replay/timeframe-preferences'
+import { BUILT_IN_TIMEFRAMES, SECOND_TIMEFRAMES, timeframePreferenceStore } from '../../replay/timeframe-preferences'
 import { normalizeTimeframe, parseTimeframe, sortTimeframes, type TimeframeUnit } from '../../replay/timeframe'
 import { useTimeframePreferences } from './use-timeframe-preferences'
 
 interface TimeframeMenuProps {
   active: Timeframe
   onSelect: (timeframe: Timeframe) => void
+  /** Whether the active symbol has a raw 5s dataset — gates the SECONDS
+   * category and the "Seconds" custom-interval option, since sub-minute
+   * bars can't be built for a symbol that only has 1m data. */
+  hasSecondsData?: boolean
 }
 
 interface CategoryProps extends TimeframeMenuProps {
@@ -36,7 +40,7 @@ function getMenuPosition(trigger: HTMLElement | null): MenuPosition | null {
 function intervalLabel(timeframe: Timeframe): string {
   const parsed = parseTimeframe(timeframe)
   if (!parsed) return timeframe
-  const unit = parsed.unit === 'm' ? 'minute' : parsed.unit === 'h' ? 'hour' : parsed.unit === 'd' ? 'day' : parsed.unit === 'w' ? 'week' : 'month'
+  const unit = parsed.unit === 's' ? 'second' : parsed.unit === 'm' ? 'minute' : parsed.unit === 'h' ? 'hour' : parsed.unit === 'd' ? 'day' : parsed.unit === 'w' ? 'week' : 'month'
   return `${parsed.multiplier} ${unit}${parsed.multiplier === 1 ? '' : 's'}`
 }
 
@@ -74,7 +78,7 @@ function Category({ title, timeframes, active, starred, onSelect }: CategoryProp
   )
 }
 
-export function TimeframeMenu({ active, onSelect }: TimeframeMenuProps) {
+export function TimeframeMenu({ active, onSelect, hasSecondsData = false }: TimeframeMenuProps) {
   const preferences = useTimeframePreferences()
   const [open, setOpen] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
@@ -89,6 +93,7 @@ export function TimeframeMenu({ active, onSelect }: TimeframeMenuProps) {
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null)
   const dismissBoundaries = useMemo(() => [menuRef], [])
   const all = [...new Set([...BUILT_IN_TIMEFRAMES, ...preferences.customTimeframes])]
+  const seconds = hasSecondsData ? sortTimeframes([...new Set([...SECOND_TIMEFRAMES, ...preferences.customTimeframes.filter((timeframe) => parseTimeframe(timeframe)?.unit === 's')])]) : []
   const minutes = sortTimeframes(all.filter((timeframe) => parseTimeframe(timeframe)?.unit === 'm'))
   const hours = sortTimeframes(all.filter((timeframe) => parseTimeframe(timeframe)?.unit === 'h'))
   const days = sortTimeframes(all.filter((timeframe) => parseTimeframe(timeframe)?.unit === 'd'))
@@ -117,6 +122,9 @@ export function TimeframeMenu({ active, onSelect }: TimeframeMenuProps) {
     intervalRef.current?.focus()
     return () => trigger?.focus()
   }, [customOpen])
+  useEffect(() => {
+    if (!hasSecondsData && unit === 's') setUnit('m')
+  }, [hasSecondsData, unit])
 
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
@@ -183,6 +191,7 @@ export function TimeframeMenu({ active, onSelect }: TimeframeMenuProps) {
             <Plus size={15} />Add custom interval…
           </button>
           <div className="max-h-[32rem] overflow-y-auto py-1">
+            <Category title="SECONDS" timeframes={seconds} active={active} starred={preferences.starredTimeframes} onSelect={choose} />
             <Category title="MINUTES" timeframes={minutes} active={active} starred={preferences.starredTimeframes} onSelect={choose} />
             <Category title="HOURS" timeframes={hours} active={active} starred={preferences.starredTimeframes} onSelect={choose} />
             <Category title="DAYS" timeframes={days} active={active} starred={preferences.starredTimeframes} onSelect={choose} />
@@ -204,6 +213,7 @@ export function TimeframeMenu({ active, onSelect }: TimeframeMenuProps) {
               <div className="grid gap-4 p-4 sm:grid-cols-[6rem_1fr] sm:items-center">
                 <label htmlFor="interval-unit" className="text-ui-body text-muted">Type</label>
                 <select id="interval-unit" value={unit} onChange={(event) => { setUnit(event.target.value as TimeframeUnit); setError(null) }} className="field-input h-9">
+                  {hasSecondsData ? <option value="s">Seconds</option> : null}
                   <option value="m">Minutes</option>
                   <option value="h">Hours</option>
                   <option value="d">Days</option>
