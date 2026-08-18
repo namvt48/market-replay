@@ -1,22 +1,11 @@
-import type { ReactElement, ReactNode } from 'react'
+import { useMemo, type ReactElement, type ReactNode } from 'react'
+import { chartTimezoneDisplayTimestamp, chartTimezoneIntlContext, DEFAULT_CHART_TIMEZONE, type ChartTimezone } from '../../replay/chart-timezone'
 
 const tradeMoney = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
-})
-
-const tradeDate = new Intl.DateTimeFormat('en-US', {
-  year: 'numeric',
-  month: 'short',
-  day: 'numeric',
-})
-
-const tradeClock = new Intl.DateTimeFormat('en-US', {
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
 })
 
 export interface TradeHistoryTableRecord {
@@ -37,6 +26,7 @@ interface TradeHistoryTableProps {
   loading?: boolean
   action?: ReactNode
   headingId: string
+  timezone?: ChartTimezone
 }
 
 interface TradeTimeLabel {
@@ -46,15 +36,22 @@ interface TradeTimeLabel {
   dateTime?: string
 }
 
-function formatTradeTime(entryTime: number | undefined, exitTime: number | undefined): TradeTimeLabel {
+interface TradeTimeFormatters {
+  date: Intl.DateTimeFormat
+  clock: Intl.DateTimeFormat
+  dayKey: Intl.DateTimeFormat
+  timezone: ChartTimezone
+}
+
+function formatTradeTime(entryTime: number | undefined, exitTime: number | undefined, formatters: TradeTimeFormatters): TradeTimeLabel {
   if (entryTime === undefined && exitTime === undefined) {
     return { primary: '—', secondary: '—', accessible: 'Entry and exit time unavailable' }
   }
 
-  const entry = entryTime === undefined ? null : new Date(entryTime * 1000)
-  const exit = exitTime === undefined ? null : new Date(exitTime * 1000)
+  const entry = entryTime === undefined ? null : new Date(chartTimezoneDisplayTimestamp(entryTime, formatters.timezone) * 1000)
+  const exit = exitTime === undefined ? null : new Date(chartTimezoneDisplayTimestamp(exitTime, formatters.timezone) * 1000)
   if (!entry) {
-    const exitLabel = exit ? `${tradeDate.format(exit)} ${tradeClock.format(exit)}` : '—'
+    const exitLabel = exit ? `${formatters.date.format(exit)} ${formatters.clock.format(exit)}` : '—'
     return {
       primary: '—',
       secondary: `→ ${exitLabel}`,
@@ -63,24 +60,22 @@ function formatTradeTime(entryTime: number | undefined, exitTime: number | undef
     }
   }
   if (!exit) {
-    const entryLabel = `${tradeDate.format(entry)} ${tradeClock.format(entry)}`
+    const entryLabel = `${formatters.date.format(entry)} ${formatters.clock.format(entry)}`
     return {
-      primary: tradeDate.format(entry),
-      secondary: `${tradeClock.format(entry)} → —`,
+      primary: formatters.date.format(entry),
+      secondary: `${formatters.clock.format(entry)} → —`,
       accessible: `Entry and exit time: ${entryLabel} to —`,
     }
   }
 
-  const sameDay = entry.getFullYear() === exit.getFullYear()
-    && entry.getMonth() === exit.getMonth()
-    && entry.getDate() === exit.getDate()
-  const entryLabel = `${tradeDate.format(entry)} ${tradeClock.format(entry)}`
-  const exitLabel = `${tradeDate.format(exit)} ${tradeClock.format(exit)}`
+  const sameDay = formatters.dayKey.format(entry) === formatters.dayKey.format(exit)
+  const entryLabel = `${formatters.date.format(entry)} ${formatters.clock.format(entry)}`
+  const exitLabel = `${formatters.date.format(exit)} ${formatters.clock.format(exit)}`
   return sameDay
     ? {
-        primary: tradeDate.format(entry),
-        secondary: `${tradeClock.format(entry)}–${tradeClock.format(exit)}`,
-        accessible: `Entry and exit time: ${tradeDate.format(entry)}, ${tradeClock.format(entry)} to ${tradeClock.format(exit)}`,
+        primary: formatters.date.format(entry),
+        secondary: `${formatters.clock.format(entry)}–${formatters.clock.format(exit)}`,
+        accessible: `Entry and exit time: ${formatters.date.format(entry)}, ${formatters.clock.format(entry)} to ${formatters.clock.format(exit)}`,
         dateTime: exit.toISOString(),
       }
     : {
@@ -100,8 +95,18 @@ function sideLabel(side: TradeHistoryTableRecord['side']): string {
   return side?.toUpperCase() ?? '—'
 }
 
-export function TradeHistoryTable({ trades, loading = false, action, headingId }: TradeHistoryTableProps): ReactElement {
+export function TradeHistoryTable({ trades, loading = false, action, headingId, timezone = DEFAULT_CHART_TIMEZONE }: TradeHistoryTableProps): ReactElement {
   const recentTrades = trades.toReversed()
+  const formatters = useMemo<TradeTimeFormatters>(() => {
+    const context = chartTimezoneIntlContext(timezone)
+    const options = { timeZone: context.timeZone }
+    return {
+      timezone,
+      date: new Intl.DateTimeFormat('en-US', { ...options, year: 'numeric', month: 'short', day: 'numeric' }),
+      clock: new Intl.DateTimeFormat('en-US', { ...options, hour: '2-digit', minute: '2-digit', hour12: false }),
+      dayKey: new Intl.DateTimeFormat('en-US', { ...options, year: 'numeric', month: '2-digit', day: '2-digit' }),
+    }
+  }, [timezone])
 
   return (
     <section className="border-t border-line" aria-labelledby={headingId}>
@@ -132,7 +137,7 @@ export function TradeHistoryTable({ trades, loading = false, action, headingId }
             </thead>
             <tbody className="divide-y divide-line font-mono text-ui-meta tabular-nums">
               {recentTrades.map((trade) => {
-                const time = formatTradeTime(trade.entryTime, trade.exitTime)
+                const time = formatTradeTime(trade.entryTime, trade.exitTime, formatters)
                 const favorable = Math.abs(trade.mfeTicks)
                 const adverse = Math.abs(trade.maeTicks)
                 return (

@@ -9,19 +9,13 @@ import { deleteEvalAccount, deriveEvalFinancials, loadEvalAccounts } from '../..
 import type { EvalPhase } from '../../store/eval-store'
 import { useUiStore } from '../../store/ui-store'
 import { TradeHistoryTable } from '../trades/TradeHistoryTable'
+import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
+import { formatChartTime, type ChartTimezone } from '../../replay/chart-timezone'
 
 const currency = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
   maximumFractionDigits: 0,
-})
-
-const accountTime = new Intl.DateTimeFormat('en-US', {
-  year: 'numeric',
-  month: 'short',
-  day: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
 })
 
 const percentage = new Intl.NumberFormat('en-US', {
@@ -88,9 +82,10 @@ function ProgressLine({ label, value, pct, tone = 'accent' }: { label: string; v
   )
 }
 
-function TradeHistory({ trades }: { trades: EvalTradeRecord[] }) {
+function TradeHistory({ trades, timezone }: { trades: EvalTradeRecord[]; timezone: ChartTimezone }) {
   return (
     <TradeHistoryTable
+      timezone={timezone}
       headingId="evaluation-trade-history"
       trades={trades.map((trade, index) => ({
         id: trade.id ?? `${trade.exitTime}-${index}`,
@@ -109,6 +104,7 @@ function TradeHistory({ trades }: { trades: EvalTradeRecord[] }) {
 }
 
 export function EvaluationPanel() {
+  const { state: chartWorkspace } = useChartWorkspace()
   const openReview = useUiStore((state) => state.openReview)
   const session = useEvalSession((state) => ({
     accountId: state.accountId,
@@ -305,7 +301,7 @@ export function EvaluationPanel() {
                   <p className="mt-0.5 font-mono text-ui-meta text-dim">
                     <code className="text-muted" title={`Full account ID: ${selected.id}`}>#{shortEvalAccountHash(selected.id)}</code>
                     <span aria-hidden="true"> · </span>
-                    Updated {accountTime.format(selected.lastCursorTs * 1000)}
+                    Updated {formatChartTime(selected.lastCursorTs, chartWorkspace.timezone)}
                   </p>
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-2">
@@ -401,7 +397,7 @@ export function EvaluationPanel() {
                 </>
               )}
 
-              <TradeHistory trades={selected.trades} />
+              <TradeHistory trades={selected.trades} timezone={chartWorkspace.timezone} />
             </section>
           ) : null}
         </div>

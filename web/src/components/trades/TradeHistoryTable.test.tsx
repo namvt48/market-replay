@@ -33,7 +33,7 @@ afterEach(cleanup)
 
 describe('TradeHistoryTable', () => {
   it('keeps every trade in the same semantic columns and shows newest first', () => {
-    render(<TradeHistoryTable headingId="trade-history-heading" trades={trades} />)
+    render(<TradeHistoryTable headingId="trade-history-heading" trades={trades} timezone={{ kind: 'preset', id: 'UTC' }} />)
 
     const table = screen.getByRole('table', { name: 'Trade history' })
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
@@ -52,6 +52,12 @@ describe('TradeHistoryTable', () => {
     expect(within(rows[2]).getByText('+$1,000.00')).toBeVisible()
     expect(within(rows[2]).getByText('R 2.00')).toBeVisible()
     expect(within(rows[2]).getByText('Jan 15, 2024')).toBeVisible()
+  })
+
+  it('formats entry and exit times in the selected workspace timezone', () => {
+    render(<TradeHistoryTable headingId="timezone-trade-history-heading" trades={[trades[0]]} timezone={{ kind: 'offset', minutes: 420 }} />)
+
+    expect(screen.getByText('07:00–08:00')).toBeVisible()
   })
 
   it('uses the same stable table section for an empty history', () => {

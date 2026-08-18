@@ -7,6 +7,8 @@ import { useUiStore } from '../../store/ui-store'
 import { SessionsPanel } from './SessionsPanel'
 import { tradeHistoryCsv } from './trade-history-csv'
 
+vi.mock('../../chart-workspace/use-chart-workspace', () => ({ useChartWorkspace: () => ({ state: { timezone: { kind: 'preset', id: 'ET' } } }) }))
+
 const mocks = vi.hoisted(() => ({
   fetchSessions: vi.fn(),
   fetchTrades: vi.fn(),

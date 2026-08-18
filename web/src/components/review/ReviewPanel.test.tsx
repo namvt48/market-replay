@@ -6,6 +6,8 @@ import { useReviewStore } from '../../store/review-store'
 import { useUiStore } from '../../store/ui-store'
 import { ReviewPanel } from './ReviewPanel'
 
+vi.mock('../../chart-workspace/use-chart-workspace', () => ({ useChartWorkspace: () => ({ state: { timezone: { kind: 'preset', id: 'ET' } } }) }))
+
 const capture = vi.hoisted(() => vi.fn(async () => 'data:image/jpeg;base64,chart'))
 const popout = vi.hoisted(() => ({ open: vi.fn() }))
 const reviewSource = vi.hoisted(() => ({

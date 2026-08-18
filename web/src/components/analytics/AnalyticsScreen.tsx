@@ -24,6 +24,8 @@ import { EdgeTab } from './EdgeTab'
 import { ExecutionDisciplineTab } from './ExecutionDisciplineTab'
 import { TagAnalyticsTab } from './TagAnalyticsTab'
 import { useAnalyticsResource, type ResourceState } from './use-analytics-resource'
+import { loadChartLayout } from '../../chart-workspace/layout-storage'
+import { chartTimezoneQueryValue } from '../../replay/chart-timezone'
 
 type AnalyticsTab = 'performance' | 'drawdown' | 'simulation' | 'edge' | 'discipline' | 'tags'
 type TimeMetric = 'pnl' | 'rr' | 'profitPct' | 'winRate'
@@ -380,10 +382,11 @@ export function AnalyticsScreen() {
   const parsedType = analyticsSourceTypeSchema.safeParse(params.get('sourceType'))
   const sourceType: AnalyticsSourceType | null = parsedType.success ? parsedType.data : null
   const validSource = sourceId.length > 0 && sourceType !== null
+  const workspaceTimezone = useMemo(() => chartTimezoneQueryValue(loadChartLayout().timezone), [])
   const loadPerformance = useCallback((signal: AbortSignal) => {
     if (!sourceType) return Promise.reject(new Error('Missing analytics source type'))
-    return fetchAnalyticsPerformance(sourceType, sourceId, breakevenThreshold, signal)
-  }, [breakevenThreshold, sourceId, sourceType])
+    return fetchAnalyticsPerformance(sourceType, sourceId, breakevenThreshold, workspaceTimezone, signal)
+  }, [breakevenThreshold, sourceId, sourceType, workspaceTimezone])
   const loadDrawdown = useCallback((signal: AbortSignal) => {
     if (!sourceType) return Promise.reject(new Error('Missing analytics source type'))
     return fetchAnalyticsDrawdown(sourceType, sourceId, signal)

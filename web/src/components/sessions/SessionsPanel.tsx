@@ -12,9 +12,10 @@ import { useReplaySelector } from '../../replay/use-replay'
 import { useUiStore } from '../../store/ui-store'
 import { TradeHistoryTable } from '../trades/TradeHistoryTable'
 import { tradeHistoryCsv } from './trade-history-csv'
+import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
+import { formatChartTime, type ChartTimezone } from '../../replay/chart-timezone'
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 })
-const sessionDateTime = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 function durationLabel(seconds: number): string {
   const totalMinutes = Math.max(0, Math.floor(seconds / 60))
   const days = Math.floor(totalMinutes / 1440)
@@ -49,9 +50,10 @@ interface SessionDetailsProps {
   deleting: boolean
   onRefresh: () => Promise<void>
   onDelete: () => Promise<void>
+  timezone: ChartTimezone
 }
 
-function SessionDetails({ session, trades, loading, current, deleting, onRefresh, onDelete }: SessionDetailsProps) {
+function SessionDetails({ session, trades, loading, current, deleting, onRefresh, onDelete, timezone }: SessionDetailsProps) {
   const stats = calculateTradeStats(trades)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -117,6 +119,7 @@ function SessionDetails({ session, trades, loading, current, deleting, onRefresh
       </dl>
 
       <TradeHistoryTable
+        timezone={timezone}
         headingId={`session-trade-history-${session.id}`}
         loading={loading}
         trades={trades.map((trade) => ({
@@ -145,6 +148,7 @@ interface SessionContextMenu {
 }
 
 export function SessionsPanel() {
+  const { state: chartWorkspace } = useChartWorkspace()
   const openReview = useUiStore((state) => state.openReview)
   const replay = useReplaySelector((snapshot) => ({
     sessionId: snapshot.sessionId,
@@ -304,7 +308,7 @@ export function SessionsPanel() {
                         <ChevronDown size={13} className={`text-dim transition-transform ${selectedRow ? 'rotate-180' : ''}`} aria-hidden="true" />
                       </span>
                     </span>
-                    <span className="mt-0.5 block truncate font-mono text-ui-meta text-dim">{sessionDateTime.format((session.cursorTs || session.startTs) * 1000)}</span>
+                    <span className="mt-0.5 block truncate font-mono text-ui-meta text-dim">{formatChartTime(session.cursorTs || session.startTs, chartWorkspace.timezone)}</span>
                   </span>
                 </span>
                 <dl className="grid grid-cols-4 border-t border-line text-center text-ui-meta">
@@ -314,7 +318,7 @@ export function SessionsPanel() {
                   <div className="min-w-0 border-l border-line px-1 py-1.5"><dt className="text-dim">Avg R</dt><dd className="truncate font-mono font-medium text-ink">{loading ? '…' : stats.averageR === null ? '—' : stats.averageR.toFixed(2)}</dd></div>
                 </dl>
               </button>
-              {selectedRow ? <SessionDetails key={session.id} session={session} trades={trades} loading={loading} current={current} deleting={deletingId === session.id} onRefresh={refresh} onDelete={() => remove(session)} /> : null}
+              {selectedRow ? <SessionDetails key={session.id} session={session} trades={trades} loading={loading} current={current} deleting={deletingId === session.id} onRefresh={refresh} onDelete={() => remove(session)} timezone={chartWorkspace.timezone} /> : null}
             </li>
           )
         })}

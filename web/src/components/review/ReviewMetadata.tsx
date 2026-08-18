@@ -8,8 +8,8 @@ import type { ReviewTrade } from '../../review/types'
 import { reviewDocumentKey, reviewTradeSnapshot } from '../../review/types'
 import { useReviewStore, type ReviewTag, type ReviewTagGroup } from '../../store/review-store'
 import { reviewTagBadge, reviewTagColors } from './tag-colors'
+import { formatChartTime, type ChartTimezone } from '../../replay/chart-timezone'
 
-const dateTime = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 })
 
 function TagEditor({ group, tag, onClose }: { group: ReviewTagGroup; tag: ReviewTag; onClose: () => void }): ReactElement {
@@ -136,28 +136,28 @@ function priceLabel(ticks: number | null, symbol: SymbolMeta | undefined): strin
   return symbol ? (ticks * symbol.tickSize).toFixed(symbol.priceDecimals) : `${ticks.toLocaleString('en-US')} ticks`
 }
 
-function Details({ trade, symbol }: { trade: ReviewTrade; symbol: SymbolMeta | undefined }): ReactElement {
+function Details({ trade, symbol, timezone }: { trade: ReviewTrade; symbol: SymbolMeta | undefined; timezone: ChartTimezone }): ReactElement {
   const grossCents = trade.realizedCents + trade.feesCents
   const rows = useMemo(() => [
     { section: 'context', icon: <Database size={14} />, label: 'Source', value: trade.sourceType === 'session' ? 'Replay session' : 'Evaluation account' },
     { section: 'context', icon: <TrendingUp size={14} />, label: 'Asset', value: trade.symbol },
     { section: 'context', icon: <ChevronsUp size={14} />, label: 'Side', value: trade.side === 'long' ? 'Long' : 'Short' },
     { section: 'execution', icon: <Info size={14} />, label: 'Exit reason', value: trade.exitReason ? trade.exitReason.replace(/([A-Z])/g, ' $1') : '—' },
-    { section: 'execution', icon: <CalendarDays size={14} />, label: 'Entry date', value: trade.entryTs ? dateTime.format(trade.entryTs * 1000) : '—' },
+    { section: 'execution', icon: <CalendarDays size={14} />, label: 'Entry date', value: trade.entryTs ? formatChartTime(trade.entryTs, timezone, true, true) : '—' },
     { section: 'execution', icon: <CircleDollarSign size={14} />, label: 'Entry price', value: priceLabel(trade.entryPriceTicks, symbol) },
     { section: 'execution', icon: <CircleDollarSign size={14} />, label: 'Total size', value: trade.qty.toFixed(2) },
     { section: 'execution', icon: <CircleDollarSign size={14} />, label: 'Stop loss', value: priceLabel(trade.initialStopTicks, symbol) },
     { section: 'execution', icon: <CircleDollarSign size={14} />, label: 'Take profit', value: priceLabel(trade.initialTakeProfitTicks, symbol) },
-    { section: 'execution', icon: <CalendarDays size={14} />, label: 'Exit date', value: dateTime.format(trade.exitTs * 1000) },
+    { section: 'execution', icon: <CalendarDays size={14} />, label: 'Exit date', value: formatChartTime(trade.exitTs, timezone, true, true) },
     { section: 'execution', icon: <CircleDollarSign size={14} />, label: 'Exit price', value: priceLabel(trade.exitPriceTicks, symbol) },
     { section: 'result', icon: <CircleDollarSign size={14} />, label: 'Gross P/L', value: money.format(grossCents / 100), tone: grossCents >= 0 ? 'text-profit-bright' : 'text-loss-bright' },
     { section: 'result', icon: <CircleDollarSign size={14} />, label: 'Commission', value: money.format(trade.feesCents / 100) },
     { section: 'result', icon: <CircleDollarSign size={14} />, label: 'Net P/L', value: money.format(trade.realizedCents / 100), tone: trade.realizedCents >= 0 ? 'text-profit-bright' : 'text-loss-bright' },
-  ], [grossCents, symbol, trade])
+  ], [grossCents, symbol, timezone, trade])
   return <dl>{rows.map((row, index) => <div key={row.label} className={index > 0 && row.section !== rows[index - 1].section ? 'mt-3 border-t border-line pt-3' : ''}><DetailRow icon={row.icon} label={row.label} value={row.value} tone={row.tone} /></div>)}</dl>
 }
 
-export function ReviewMetadata({ trade, symbols }: { trade: ReviewTrade; symbols: SymbolMeta[] }): ReactElement {
+export function ReviewMetadata({ trade, symbols, timezone }: { trade: ReviewTrade; symbols: SymbolMeta[]; timezone: ChartTimezone }): ReactElement {
   const [tab, setTab] = useState<'tags' | 'details'>('tags')
   const symbol = symbols.find((item) => item.symbol === trade.symbol)
   return (
@@ -170,7 +170,7 @@ export function ReviewMetadata({ trade, symbols }: { trade: ReviewTrade; symbols
         <ChevronDown size={16} className="text-active-bright" aria-hidden="true" />
       </header>
       <div role="tabpanel" className="max-h-[48vh] overflow-y-auto border-t border-line">
-        {tab === 'tags' ? <TagGroups trade={trade} /> : <Details trade={trade} symbol={symbol} />}
+        {tab === 'tags' ? <TagGroups trade={trade} /> : <Details trade={trade} symbol={symbol} timezone={timezone} />}
       </div>
     </section>
   )

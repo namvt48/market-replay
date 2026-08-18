@@ -5,6 +5,8 @@ import { EVAL_PRESETS, customConfig, dayKey, fundedConfig, newRuntime, shortEval
 import { getEvalState, loadEvalAccounts, useEvalStore } from '../../store/eval-store'
 import { EvaluationPanel } from './EvaluationPanel'
 
+vi.mock('../../chart-workspace/use-chart-workspace', () => ({ useChartWorkspace: () => ({ state: { timezone: { kind: 'preset', id: 'UTC' } } }) }))
+
 const replayMocks = vi.hoisted(() => ({ syncEvaluationSession: vi.fn() }))
 
 vi.mock('../../replay/replay-engine', () => ({ replayEngine: replayMocks }))

@@ -13,11 +13,10 @@ import { useReviewStore } from '../../store/review-store'
 import { useUiStore } from '../../store/ui-store'
 import { MarkdownPreview } from './MarkdownPreview'
 import { ReviewMetadata } from './ReviewMetadata'
+import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
+import { chartTimezoneDateValue, formatChartTime, type ChartTimezone } from '../../replay/chart-timezone'
 
-const fullDateTime = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 const monthTitle = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long' })
-const tradeListDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
-const tradeListTime = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
 const calendarDate = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
 const calendarWeekday = new Intl.DateTimeFormat('en-US', { weekday: 'short' })
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 })
@@ -49,7 +48,7 @@ function ReviewHeader({ sourceTitle, detached, onClose, onDetachChange }: Review
   )
 }
 
-function TradeList({ trades, selectedId, onSelect }: { trades: ReviewTrade[]; selectedId: string | null; onSelect: (id: string) => void }): ReactElement {
+function TradeList({ trades, selectedId, onSelect, timezone }: { trades: ReviewTrade[]; selectedId: string | null; onSelect: (id: string) => void; timezone: ChartTimezone }): ReactElement {
   const [query, setQuery] = useState('')
   const normalized = query.trim().toLocaleLowerCase()
   const filtered = trades.filter((trade) => `${trade.symbol} ${trade.side} ${pnlLabel(trade.realizedCents)}`.toLocaleLowerCase().includes(normalized))
@@ -72,7 +71,7 @@ function TradeList({ trades, selectedId, onSelect }: { trades: ReviewTrade[]; se
                 <strong className="min-w-0 truncate text-ui-control font-semibold text-ink">{trade.symbol}, {trade.side === 'long' ? 'buy' : 'sell'}</strong>
                 <span className={`shrink-0 justify-self-end rounded-[12px] px-2 py-0.5 font-mono text-ui-meta font-semibold ${trade.realizedCents >= 0 ? 'bg-profit/25 text-profit-bright' : 'bg-loss/20 text-loss-bright'}`}>{pnlLabel(trade.realizedCents)}</span>
                 <span className="font-mono text-ui-meta text-dim">{trade.rMultiple === null ? 'R —' : `${trade.rMultiple.toFixed(2)}R`}</span>
-                <time dateTime={new Date(trade.exitTs * 1000).toISOString()} className="flex items-center gap-1 whitespace-nowrap font-mono text-[11px] leading-4 text-[#8fc5df]"><span>{tradeListDate.format(trade.exitTs * 1000)}</span><span aria-hidden="true">·</span><span>{tradeListTime.format(trade.exitTs * 1000)}</span></time>
+                <time dateTime={new Date(trade.exitTs * 1000).toISOString()} className="whitespace-nowrap font-mono text-[11px] leading-4 text-[#8fc5df]">{formatChartTime(trade.exitTs, timezone)}</time>
               </button>
             </li>
           ))}
@@ -82,26 +81,35 @@ function TradeList({ trades, selectedId, onSelect }: { trades: ReviewTrade[]; se
   )
 }
 
-function TradeCalendar({ trades, onSelect }: { trades: ReviewTrade[]; onSelect: (id: string) => void }): ReactElement {
+function shiftMonth(value: string, delta: number): string {
+  const [year, month] = value.split('-').map(Number)
+  const next = new Date(Date.UTC(year, month - 1 + delta, 1))
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+function TradeCalendar({ trades, onSelect, timezone }: { trades: ReviewTrade[]; onSelect: (id: string) => void; timezone: ChartTimezone }): ReactElement {
   const latestTs = trades[0]?.exitTs ?? Math.floor(Date.now() / 1000)
-  const [month, setMonth] = useState(() => { const date = new Date(latestTs * 1000); return new Date(date.getFullYear(), date.getMonth(), 1) })
+  const [month, setMonth] = useState(() => chartTimezoneDateValue(latestTs, timezone).slice(0, 7))
+  useEffect(() => setMonth(chartTimezoneDateValue(latestTs, timezone).slice(0, 7)), [latestTs, timezone])
   const grouped = useMemo(() => {
     const map = new Map<number, ReviewTrade[]>()
     for (const trade of trades) {
-      const date = new Date(trade.exitTs * 1000)
-      if (date.getFullYear() !== month.getFullYear() || date.getMonth() !== month.getMonth()) continue
-      map.set(date.getDate(), [...(map.get(date.getDate()) ?? []), trade])
+      const date = chartTimezoneDateValue(trade.exitTs, timezone)
+      if (!date.startsWith(month)) continue
+      const day = Number(date.slice(8, 10))
+      map.set(day, [...(map.get(day) ?? []), trade])
     }
     return map
-  }, [month, trades])
+  }, [month, timezone, trades])
   const daysWithTrades = [...grouped.entries()].sort(([left], [right]) => right - left)
+  const monthDate = new Date(`${month}-01T12:00:00Z`)
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden pt-2">
-      <div className="flex h-11 shrink-0 items-center justify-between px-3"><button type="button" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="tool-button" aria-label="Previous month"><ChevronLeft size={16} /></button><strong className="text-ui-control font-semibold text-ink">{monthTitle.format(month)}</strong><button type="button" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} className="tool-button" aria-label="Next month"><ChevronRight size={16} /></button></div>
+      <div className="flex h-11 shrink-0 items-center justify-between px-3"><button type="button" onClick={() => setMonth((value) => shiftMonth(value, -1))} className="tool-button" aria-label="Previous month"><ChevronLeft size={16} /></button><strong className="text-ui-control font-semibold text-ink">{monthTitle.format(monthDate)}</strong><button type="button" onClick={() => setMonth((value) => shiftMonth(value, 1))} className="tool-button" aria-label="Next month"><ChevronRight size={16} /></button></div>
       {daysWithTrades.length ? (
-        <ul className="min-h-0 flex-1 divide-y divide-line overflow-y-auto border-t border-line" aria-label={`Trade days in ${monthTitle.format(month)}`}>
+        <ul className="min-h-0 flex-1 divide-y divide-line overflow-y-auto border-t border-line" aria-label={`Trade days in ${monthTitle.format(monthDate)}`}>
           {daysWithTrades.map(([day, dayTrades]) => {
-            const date = new Date(month.getFullYear(), month.getMonth(), day)
+            const date = new Date(`${month}-${String(day).padStart(2, '0')}T12:00:00Z`)
             const pnl = dayTrades.reduce((sum, trade) => sum + trade.realizedCents, 0)
             const latestTrade = dayTrades.toSorted((left, right) => right.exitTs - left.exitTs)[0]
             return (
@@ -124,7 +132,7 @@ function EmptyReview({ status, error }: { status: 'idle' | 'loading' | 'success'
   return <div className="grid min-h-0 flex-1 place-items-center px-6 text-center"><div><ClipboardCheck size={26} className="mx-auto text-dim" /><p className="mt-3 text-ui-control font-semibold text-ink">{status === 'loading' ? 'Loading trade history…' : status === 'error' ? 'Review unavailable' : 'No trades to review'}</p><p className={`mx-auto mt-1 max-w-xs text-ui-body leading-5 ${status === 'error' ? 'text-loss-bright' : 'text-dim'}`}>{error ?? 'Start or open a replay Session or Eval account. Closed trades will appear here automatically.'}</p></div></div>
 }
 
-function TradeEditor({ trade, trades, onBack, onNavigate, detached }: { trade: ReviewTrade; trades: ReviewTrade[]; onBack: () => void; onNavigate: (tradeId: string) => void; detached: boolean }): ReactElement {
+function TradeEditor({ trade, trades, onBack, onNavigate, detached, timezone }: { trade: ReviewTrade; trades: ReviewTrade[]; onBack: () => void; onNavigate: (tradeId: string) => void; detached: boolean; timezone: ChartTimezone }): ReactElement {
   const symbols = useReplaySelector((snapshot) => snapshot.symbols)
   const key = reviewDocumentKey(trade.sourceType, trade.sourceId, trade.id)
   const document = useReviewStore((state) => state.documents[key])
@@ -150,12 +158,12 @@ function TradeEditor({ trade, trades, onBack, onNavigate, detached }: { trade: R
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-2">
         <button type="button" onClick={onBack} className="secondary-button min-h-8 px-2.5"><ArrowLeft size={14} />All trades</button>
-        <span className="min-w-0 flex-1 truncate text-ui-meta text-muted">Modified {document ? fullDateTime.format(document.updatedAt) : '—'}</span>
+        <span className="min-w-0 flex-1 truncate text-ui-meta text-muted">Modified {document ? formatChartTime(document.updatedAt / 1000, timezone) : '—'}</span>
         <button type="button" disabled={index >= trades.length - 1} onClick={() => trades[index + 1] && onNavigate(trades[index + 1].id)} className="tool-button" aria-label="Previous trade"><ChevronLeft size={16} /></button>
         <button type="button" disabled={index <= 0} onClick={() => trades[index - 1] && onNavigate(trades[index - 1].id)} className="tool-button" aria-label="Next trade"><ChevronRight size={16} /></button>
       </div>
       <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-3">
-        <h2 className="min-w-0 truncate text-ui-title font-semibold text-ink">{trade.symbol}, {trade.side === 'long' ? 'buy' : 'sell'} <span className="ml-1 font-mono text-ui-meta text-muted">{fullDateTime.format(trade.exitTs * 1000)}</span></h2>
+        <h2 className="min-w-0 truncate text-ui-title font-semibold text-ink">{trade.symbol}, {trade.side === 'long' ? 'buy' : 'sell'} <span className="ml-1 font-mono text-ui-meta text-muted">{formatChartTime(trade.exitTs, timezone)}</span></h2>
         <span className={`shrink-0 rounded-[12px] px-2.5 py-1 font-mono text-ui-meta font-semibold ${trade.realizedCents >= 0 ? 'bg-profit/25 text-profit-bright' : 'bg-loss/20 text-loss-bright'}`}>{pnlLabel(trade.realizedCents)}</span>
       </div>
       <section className={`flex min-h-[260px] flex-1 flex-col overflow-hidden ${detached ? 'lg:min-h-[440px]' : ''}`} aria-label="Markdown trade note">
@@ -164,7 +172,7 @@ function TradeEditor({ trade, trades, onBack, onNavigate, detached }: { trade: R
           <div className="flex rounded-control bg-surface-2 p-0.5"><button type="button" onClick={() => setMode('write')} aria-pressed={mode === 'write'} className="rounded-control px-2.5 py-1 text-ui-meta text-muted aria-pressed:bg-surface-3 aria-pressed:text-ink">Write</button><button type="button" onClick={() => setMode('preview')} aria-pressed={mode === 'preview'} className="rounded-control px-2.5 py-1 text-ui-meta text-muted aria-pressed:bg-surface-3 aria-pressed:text-ink">Preview</button></div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
-          {document?.screenshots.length ? <div className="mb-4 grid gap-3 xl:grid-cols-2">{document.screenshots.map((item) => <figure key={item.id} className="group relative overflow-hidden rounded-panel border-2 border-active bg-chart"><img src={item.dataUrl} alt={`Chart captured ${fullDateTime.format(item.capturedAt)}`} className="block h-auto w-full" /><button type="button" onClick={() => removeScreenshot(key, item.id)} className="absolute right-2 top-2 hidden size-8 place-items-center rounded-control bg-surface-0/90 text-muted shadow-overlay hover:text-loss-bright group-hover:grid focus:grid" aria-label="Remove chart screenshot"><X size={14} /></button></figure>)}</div> : null}
+          {document?.screenshots.length ? <div className="mb-4 grid gap-3 xl:grid-cols-2">{document.screenshots.map((item) => <figure key={item.id} className="group relative overflow-hidden rounded-panel border-2 border-active bg-chart"><img src={item.dataUrl} alt={`Chart captured ${formatChartTime(item.capturedAt / 1000, timezone)}`} className="block h-auto w-full" /><button type="button" onClick={() => removeScreenshot(key, item.id)} className="absolute right-2 top-2 hidden size-8 place-items-center rounded-control bg-surface-0/90 text-muted shadow-overlay hover:text-loss-bright group-hover:grid focus:grid" aria-label="Remove chart screenshot"><X size={14} /></button></figure>)}</div> : null}
           {mode === 'write' ? <textarea autoFocus value={note} onChange={(event) => setNote(key, reviewTradeSnapshot(trade), event.target.value)} placeholder="Enter your review in Markdown. Type / for commands…" className="min-h-[220px] w-full resize-none bg-transparent text-ui-control leading-6 text-ink outline-none placeholder:italic placeholder:text-dim" aria-label="Trade review Markdown" /> : note ? <MarkdownPreview markdown={note} /> : <p className="italic text-ui-control text-dim">Nothing to preview yet.</p>}
         </div>
         <div className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-t border-line px-3">
@@ -173,7 +181,7 @@ function TradeEditor({ trade, trades, onBack, onNavigate, detached }: { trade: R
           {captureState === 'error' ? <span role="alert" className="text-ui-meta text-loss-bright">Chart capture failed. Make sure the chart is visible.</span> : null}
         </div>
       </section>
-      <ReviewMetadata trade={trade} symbols={symbols} />
+      <ReviewMetadata trade={trade} symbols={symbols} timezone={timezone} />
     </div>
   )
 }
@@ -189,6 +197,7 @@ interface ReviewSurfaceProps {
 }
 
 function ReviewSurface({ detached, onClose, onDetachChange, view, onViewChange, selectedId, onSelectedIdChange }: ReviewSurfaceProps): ReactElement {
+  const { state: chartWorkspace } = useChartWorkspace()
   const review = useReviewTrades()
   const selected = review.trades.find((trade) => trade.id === selectedId) ?? null
   useEffect(() => {
@@ -197,13 +206,13 @@ function ReviewSurface({ detached, onClose, onDetachChange, view, onViewChange, 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-ink">
       <ReviewHeader sourceTitle={review.source?.title ?? 'No source selected'} detached={detached} onClose={onClose} onDetachChange={onDetachChange} />
-      {selected ? <TradeEditor trade={selected} trades={review.trades} onBack={() => onSelectedIdChange(null)} onNavigate={onSelectedIdChange} detached={detached} /> : (
+      {selected ? <TradeEditor trade={selected} trades={review.trades} onBack={() => onSelectedIdChange(null)} onNavigate={onSelectedIdChange} detached={detached} timezone={chartWorkspace.timezone} /> : (
         <>
           <nav className="mx-auto mt-2 flex w-[min(11rem,calc(100%-1rem))] shrink-0 rounded-panel border border-line-strong bg-surface-0 p-0.5" aria-label="Review history view">
             <button type="button" onClick={() => onViewChange('trades')} aria-pressed={view === 'trades'} className="flex min-h-8 flex-1 items-center justify-center gap-1.5 rounded-control text-ui-body text-muted aria-pressed:bg-surface-3 aria-pressed:font-semibold aria-pressed:text-ink"><List size={14} />Trades</button>
             <button type="button" onClick={() => onViewChange('calendar')} aria-pressed={view === 'calendar'} className="flex min-h-8 flex-1 items-center justify-center gap-1.5 rounded-control text-ui-body text-muted aria-pressed:bg-surface-3 aria-pressed:font-semibold aria-pressed:text-ink"><CalendarDays size={14} />Calendar</button>
           </nav>
-          {review.status !== 'success' || review.trades.length === 0 ? <EmptyReview status={review.status} error={review.error} /> : view === 'trades' ? <TradeList trades={review.trades} selectedId={selectedId} onSelect={onSelectedIdChange} /> : <TradeCalendar trades={review.trades} onSelect={onSelectedIdChange} />}
+          {review.status !== 'success' || review.trades.length === 0 ? <EmptyReview status={review.status} error={review.error} /> : view === 'trades' ? <TradeList trades={review.trades} selectedId={selectedId} onSelect={onSelectedIdChange} timezone={chartWorkspace.timezone} /> : <TradeCalendar trades={review.trades} onSelect={onSelectedIdChange} timezone={chartWorkspace.timezone} />}
         </>
       )}
     </div>
