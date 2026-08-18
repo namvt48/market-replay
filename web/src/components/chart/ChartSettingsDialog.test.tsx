@@ -28,15 +28,15 @@ describe('ChartSettingsDialog', () => {
     expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ appearance: expect.objectContaining({ showGrid: false, showVolume: false }) }))
   })
 
-  it('supports preset and fixed-offset timezones', async () => {
+  it('keeps global timezone controls out of per-chart settings and preserves the timezone on reset', async () => {
     const user = userEvent.setup()
     const onPreview = vi.fn()
-    render(<ChartSettingsDialog value={DEFAULT_CHART_PANE_SETTINGS} onPreview={onPreview} onApply={vi.fn()} onCancel={vi.fn()} />)
-    await user.click(screen.getByRole('tab', { name: 'timezone' }))
-    await user.click(screen.getByRole('button', { name: 'UTC' }))
-    expect(onPreview).toHaveBeenLastCalledWith(expect.objectContaining({ timezone: { kind: 'preset', id: 'UTC' } }))
-    await user.selectOptions(screen.getByLabelText('Fixed UTC offset'), '420')
-    expect(onPreview).toHaveBeenLastCalledWith(expect.objectContaining({ timezone: { kind: 'offset', minutes: 420 } }))
+    const value = { ...DEFAULT_CHART_PANE_SETTINGS, timezone: { kind: 'preset', id: 'PT' } as const }
+    render(<ChartSettingsDialog value={value} onPreview={onPreview} onApply={vi.fn()} onCancel={vi.fn()} />)
+    expect(screen.queryByText('Timezone')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Fixed UTC offset')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Reset' }))
+    expect(onPreview).toHaveBeenLastCalledWith(expect.objectContaining({ timezone: { kind: 'preset', id: 'PT' } }))
   })
 
   it('resets the draft and cancels with Escape', async () => {
