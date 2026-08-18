@@ -2,7 +2,7 @@
 // (internal/model on the backend). Field names are camelCase to match
 // the server's `json:"..."` tags verbatim — no translation layer needed.
 
-export type Timeframe = `${number}${'m' | 'h' | 'd' | 'w' | 'M'}`
+export type Timeframe = `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'M'}`
 
 export interface SymbolRange {
   from: number

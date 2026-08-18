@@ -6,6 +6,12 @@ import { normalizeTimeframe, sortTimeframes, timeframeSchema } from './timeframe
 const STORAGE_KEY = 'market-replay:timeframe-preferences'
 const BUILT_INS: Timeframe[] = ['1m', '2m', '3m', '5m', '10m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '12h', '1d', '1w', '1M']
 const DEFAULT_STARRED: Timeframe[] = ['1m', '5m', '15m', '1h', '1d']
+// Kept out of BUILT_INS deliberately: unlike every other built-in, these
+// only exist for symbols with a raw 5s dataset (SymbolMeta.ranges['5s']) —
+// callers gate on that before offering them (see IntervalMenu's
+// hasSecondsData prop), rather than this module asserting they're always
+// available.
+const SECONDS: Timeframe[] = ['5s', '15s', '30s']
 
 const preferenceSchema = z.object({
   version: z.literal(1),
@@ -63,7 +69,7 @@ export class TimeframePreferenceStore {
 
   addCustom(input: string): PreferenceResult {
     const normalized = normalizeTimeframe(input)
-    if (!normalized) return { ok: false, error: 'Use 1–1440m, 1–12h, 1d, 1–52w, or 1–12M' }
+    if (!normalized) return { ok: false, error: 'Use 5–55s (multiple of 5), 1–1440m, 1–12h, 1d, 1–52w, or 1–12M' }
     const all = [...BUILT_INS, ...this.snapshot.customTimeframes]
     if (all.includes(normalized)) return { ok: false, error: `${normalized} already exists` }
     this.commit({ ...this.snapshot, customTimeframes: sortTimeframes([...this.snapshot.customTimeframes, normalized]) })
@@ -88,3 +94,4 @@ export class TimeframePreferenceStore {
 
 export const timeframePreferenceStore = new TimeframePreferenceStore()
 export const BUILT_IN_TIMEFRAMES = BUILT_INS
+export const SECOND_TIMEFRAMES = SECONDS

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { fetchWorkspaceSnapshot, putWorkspaceSnapshot } from '../api/client'
 import type { ActiveIndicator } from '../api/types'
-import { chartWorkspaceStateSchema } from '../chart-workspace/layout-storage'
+import { chartWorkspaceStateSchema, parseChartWorkspaceState } from '../chart-workspace/layout-storage'
 import type { ChartWorkspaceState } from '../chart-workspace/types'
 import type { FillEngineState } from '../fill-engine/types'
 import { withTimeout } from '../store/preference-sync'
@@ -9,7 +9,7 @@ import { timeframeSchema } from './timeframe'
 import type { ChartViewportSync } from './chart-adapter'
 import type { SerializedDrawing } from 'lightweight-charts-drawing'
 
-export type SnapshotStepTimeframe = '1m' | '3m' | '5m' | '10m' | '15m' | '30m' | '1h' | '4h'
+export type SnapshotStepTimeframe = '5s' | '15s' | '30s' | '1m' | '3m' | '5m' | '10m' | '15m' | '30m' | '1h' | '4h'
 
 const STORAGE_KEY = 'market-replay:session-workspace-snapshots:v1'
 const MAX_SNAPSHOTS = 20
@@ -146,6 +146,13 @@ const viewportSchema = z.object({
   time: z.object({ from: finiteNumber, to: finiteNumber }),
   logicalSpan: finiteNumber.optional(),
 })
+const snapshotWorkspaceSchema = z.preprocess((value) => {
+  try {
+    return parseChartWorkspaceState(value)
+  } catch {
+    return value
+  }
+}, chartWorkspaceStateSchema)
 const snapshotSchema = z.object({
   version: z.literal(1),
   owner: ownerSchema,
@@ -153,14 +160,14 @@ const snapshotSchema = z.object({
   capturedAt: finiteNumber,
   cursorTs: finiteNumber.nonnegative(),
   symbol: z.string().min(1),
-  layout: chartWorkspaceStateSchema,
+  layout: snapshotWorkspaceSchema,
   viewports: z.record(z.string(), viewportSchema),
   drawings: z.record(z.string(), z.array(drawingSchema)),
   fills: z.record(z.string(), fillSchema),
   indicators: z.array(indicatorSchema),
   preferences: z.object({
     speed: finiteNumber.positive(),
-    stepTimeframe: timeframeSchema.refine((value): value is SnapshotStepTimeframe => ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '4h'].includes(value)),
+    stepTimeframe: timeframeSchema.refine((value): value is SnapshotStepTimeframe => ['5s', '15s', '30s', '1m', '3m', '5m', '10m', '15m', '30m', '1h', '4h'].includes(value)),
     qty: z.number().int().positive(),
     drawingMode: z.enum(['analysis', 'replay']),
     keepDrawing: z.boolean(),

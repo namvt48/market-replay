@@ -373,6 +373,40 @@ describe('ReplayEngine multi-view invariant', () => {
     engine.destroy()
   })
 
+  it('steps seconds replay intervals against the canonical 5-second source', async () => {
+    const secondsSymbol: SymbolMeta = {
+      ...apiData.symbol,
+      ranges: { '5s': { from: 0, to: 40 }, '1m': { from: 0, to: 0 } },
+    }
+    const secondsFrame: BarFrame = {
+      ...apiData.frame,
+      count: 9,
+      ts: new Uint32Array([0, 5, 10, 15, 20, 25, 30, 35, 40]),
+      open: new Int32Array([400, 401, 402, 403, 404, 405, 406, 407, 408]),
+      high: new Int32Array([404, 405, 406, 407, 408, 409, 410, 411, 412]),
+      low: new Int32Array([396, 397, 398, 399, 400, 401, 402, 403, 404]),
+      close: new Int32Array([402, 403, 404, 405, 406, 407, 408, 409, 410]),
+      volume: new Uint32Array(9).fill(10),
+    }
+    engineMocks.fetchSymbols.mockResolvedValue([secondsSymbol])
+    engineMocks.fetchBarsAt.mockResolvedValue(secondsFrame)
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '15s', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.beginReplaySelection()
+    view.fireReplayBarSelect(0)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+
+    expect(engineMocks.fetchBarsAt).toHaveBeenCalledWith('NQ', '5s', expect.any(Number), 3000, 10000)
+    engine.setStepTimeframe('15s')
+    engine.stepForward()
+    expect(engine.getSnapshot()).toMatchObject({ stepTimeframe: '15s', cursorTs: 15 })
+
+    engine.stepBack()
+    expect(engine.getSnapshot().cursorTs).toBe(0)
+    engine.destroy()
+  })
+
   it('prefetches the next raw page before replay reaches the loaded window edge', async () => {
     const nextFrame: BarFrame = {
       count: 5,

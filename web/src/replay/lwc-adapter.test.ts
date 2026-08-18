@@ -229,6 +229,19 @@ describe('LwcAdapter lifecycle', () => {
     adapter.destroy()
   })
 
+  it('shows seconds on sub-minute charts and returns to minute precision for minute history', async () => {
+    const adapter = new LwcAdapter()
+    await adapter.init(document.createElement('div'), symbol, '15s')
+
+    expect(chartMocks.createChartOptions).toMatchObject({ timeScale: { secondsVisible: true } })
+    adapter.setHistory([
+      { time: 0, open: 1, high: 2, low: 0, close: 1, volume: 1 },
+      { time: 60, open: 1, high: 2, low: 0, close: 1, volume: 1 },
+    ])
+    expect(chartMocks.chartApplyOptions).toHaveBeenCalledWith(expect.objectContaining({ timeScale: expect.objectContaining({ secondsVisible: false }) }))
+    adapter.destroy()
+  })
+
   it('keeps the chart shell filling a fractional split pane after a snapped resize', async () => {
     const container = document.createElement('div')
     Object.defineProperties(container, {

@@ -47,6 +47,7 @@ import { IndicatorDrawingsPrimitive } from './indicator-drawings-primitive'
 import { projectDrawingsToHistory } from './drawing-projection'
 import { DEFAULT_CHART_APPEARANCE, type ChartAppearanceSettings } from './chart-settings'
 import { DEFAULT_CHART_TIMEZONE, formatChartTime, type ChartTimezone } from './chart-timezone'
+import { parseTimeframe } from './timeframe'
 import {
   IDLE_DRAWING_PLACEMENT,
   cancelDrawingPlacement,
@@ -238,6 +239,7 @@ export class LwcAdapter implements ChartAdapter {
   private lastClose = 0
   private appearance: ChartAppearanceSettings = { ...DEFAULT_CHART_APPEARANCE }
   private displayTimezone: ChartTimezone = DEFAULT_CHART_TIMEZONE
+  private secondsVisible = false
   private volumePaneHeight = 100
   private hoverUnsubscribe: (() => void) | null = null
   private readonly hoverStore: HoverBarStore
@@ -246,7 +248,7 @@ export class LwcAdapter implements ChartAdapter {
     this.hoverStore = hoverStore
   }
 
-  async init(element: HTMLElement, symbol: SymbolMeta, _tf: Timeframe): Promise<void> {
+  async init(element: HTMLElement, symbol: SymbolMeta, timeframe: Timeframe): Promise<void> {
     // ReplayEngine applies global drawing controls before a newly-created pane
     // is initialized. Preserve those externally-owned controls while clearing
     // any chart-owned resources from a previous initialization.
@@ -264,6 +266,7 @@ export class LwcAdapter implements ChartAdapter {
     this.pricePrecision = symbol.priceDecimals
     this.tickSize = symbol.tickSize
     this.symbolCode = symbol.symbol
+    this.secondsVisible = parseTimeframe(timeframe)?.unit === 's'
     const existingChildren = new Set(element.children)
     this.chart = createChart(element, {
       // This adapter already owns one guarded ResizeObserver below. Keeping
@@ -274,8 +277,8 @@ export class LwcAdapter implements ChartAdapter {
       grid: { vertLines: { color: this.appearance.verticalGridColor, visible: this.appearance.showGrid }, horzLines: { color: this.appearance.horizontalGridColor, visible: this.appearance.showGrid } },
       crosshair: { mode: CrosshairMode.Normal, vertLine: { color: '#787b8688', labelBackgroundColor: '#2a2e39' }, horzLine: { color: '#787b8688', labelBackgroundColor: '#2a2e39' } },
       rightPriceScale: { borderColor: '#434651', scaleMargins: { top: 0.08, bottom: 0.06 } },
-      timeScale: { borderColor: '#434651', rightOffset: 12, barSpacing: 7, shiftVisibleRangeOnNewBar: true, timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, this.displayTimezone, false) },
-      localization: { priceFormatter: createPriceFormatter(symbol.priceDecimals), timeFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, this.displayTimezone) },
+      timeScale: { borderColor: '#434651', rightOffset: 12, barSpacing: 7, shiftVisibleRangeOnNewBar: true, timeVisible: true, secondsVisible: this.secondsVisible, tickMarkFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, this.displayTimezone, false, this.secondsVisible) },
+      localization: { priceFormatter: createPriceFormatter(symbol.priceDecimals), timeFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, this.displayTimezone, true, this.secondsVisible) },
       handleScale: true,
       handleScroll: true,
     })
@@ -349,6 +352,14 @@ export class LwcAdapter implements ChartAdapter {
       ? Math.max(0, Math.min(this.history.length - 1, Math.floor(previousLogicalRange.from)))
       : -1
     const previousAnchorTs = this.history[previousAnchorIndex]?.time
+    const secondsVisible = bars.some((bar, index) => index > 0 && bar.time > bars[index - 1].time && bar.time - bars[index - 1].time < 60)
+    if (bars.length > 1 && secondsVisible !== this.secondsVisible) {
+      this.secondsVisible = secondsVisible
+      this.chart?.applyOptions({
+        localization: { timeFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, this.displayTimezone, true, this.secondsVisible) },
+        timeScale: { secondsVisible, tickMarkFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, this.displayTimezone, false, this.secondsVisible) },
+      })
+    }
     this.history = bars.slice(-MAX_ADAPTER_HISTORY_BARS)
     this.lastClose = this.history.at(-1)?.close ?? 0
     this.candles?.setData(this.history.map(toCandle))
@@ -488,8 +499,8 @@ export class LwcAdapter implements ChartAdapter {
   setDisplayTimezone(timezone: ChartTimezone): void {
     this.displayTimezone = timezone
     this.chart?.applyOptions({
-      localization: { timeFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, timezone) },
-      timeScale: { tickMarkFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, timezone, false) },
+      localization: { timeFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, timezone, true, this.secondsVisible) },
+      timeScale: { tickMarkFormatter: (time: Time) => formatChartTime(timestampFromTime(time) ?? 0, timezone, false, this.secondsVisible) },
     })
   }
 

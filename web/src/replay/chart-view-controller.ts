@@ -5,12 +5,23 @@ import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, E
 import type { ChartPaneSettings } from './chart-settings-store'
 import type { HoverBarStore } from './hover-bar-store'
 import { isRegularTradingHours, marketSessionIncludes, nextRegularTradingTimestamp, type MarketSession } from './market-session'
-import { timeframeSeconds } from './timeframe'
+import { parseTimeframe, timeframeSeconds } from './timeframe'
 import { MAX_VIEWPORT_DISPLAY_BARS } from './viewport-data'
 
 const FUTURE_WHITESPACE_BARS = 192
 const FUTURE_WHITESPACE_REFRESH_BARS = 96
 const DISPLAY_HISTORY_TRIM_THRESHOLD = MAX_VIEWPORT_DISPLAY_BARS + Math.ceil(MAX_VIEWPORT_DISPLAY_BARS * 0.1)
+
+function rawBarsSupportTimeframe(raw: readonly Bar1m[], timeframe: Timeframe): boolean {
+  if (parseTimeframe(timeframe)?.unit !== 's') return true
+  let minimumSpacing = Number.POSITIVE_INFINITY
+  for (let index = 1; index < raw.length; index += 1) {
+    const spacing = raw[index].ts - raw[index - 1].ts
+    if (spacing > 0 && spacing < minimumSpacing) minimumSpacing = spacing
+    if (minimumSpacing <= timeframeSeconds(timeframe)) return true
+  }
+  return false
+}
 
 export interface ChartViewControllerOptions {
   id: string
@@ -76,10 +87,19 @@ export class ChartViewController {
     this.pendingRawBars = []
     const history = buildDisplayHistory(raw, this.timeframe, symbol, symbol.tickSize, this.marketSession)
     const remoteHistory = this.sessionSafeDisplayBars(displayBars, symbol)
-    this.displayHistory = remoteHistory && remoteHistory.length > 0 ? remoteHistory : history.bars
+    const rawSupported = rawBarsSupportTimeframe(raw, this.timeframe)
+    if (remoteHistory && remoteHistory.length > 0) {
+      this.displayHistory = remoteHistory
+    } else if (rawSupported) {
+      this.displayHistory = history.bars
+    }
+    // Otherwise the raw feed is coarser than this seconds pane. Keep the
+    // existing remote history rather than mislabel a whole minute as 5s.
     this.publishHistory({ preserveViewport, resetView: !preserveViewport })
     this.syncSpacerTimes(true)
-    this.aggregator = history.aggregator
+    // A 5s canonical replay source can drive 5s/15s/30s panes directly.
+    // A 1m source leaves this null and relies on the bounded server page.
+    this.aggregator = rawSupported ? history.aggregator : null
   }
 
   mergeViewportPage(page: DisplayBar[], direction: ViewportDirection): void {

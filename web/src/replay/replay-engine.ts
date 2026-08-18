@@ -30,7 +30,7 @@ import type { Bar1m, EngineTrade, FillEngineState, OrderSide, OrderType } from '
 import { getEvalState, isEvalActive, type EvalFillState } from '../store/eval-store'
 import { aggregateRange } from './aggregate'
 import { BarSource } from './bar-source'
-import { timeframeSeconds } from './timeframe'
+import { REPLAY_STEP_TIMEFRAMES, parseTimeframe, timeframeSeconds, type ReplayStepTimeframe } from './timeframe'
 import { restoreReplayIndicators, restoreReplayRuntime, serializeReplayRuntime } from './session-state'
 import {
   captureChartWorkspaceState,
@@ -71,8 +71,12 @@ import {
 } from './viewport-data'
 
 export const SPEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] as const
-export const STEP_TIMEFRAMES = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '4h'] as const
-export type ReplayStepTimeframe = (typeof STEP_TIMEFRAMES)[number]
+export const STEP_TIMEFRAMES = REPLAY_STEP_TIMEFRAMES
+export type { ReplayStepTimeframe } from './timeframe'
+
+function replayBaseTimeframe(symbol: SymbolMeta): Timeframe {
+  return symbol.ranges['5s'] ? '5s' : '1m'
+}
 const HIGH_THROUGHPUT_BARS_PER_SECOND = 100
 const TIMEFRAME_SWITCH_SETTLE_MS = 48
 const MAX_REPLAY_CONTRACTS = 1_000
@@ -252,6 +256,15 @@ export class ReplayEngine {
   private indicatorControllers = new Map<string, AbortController>()
   private indicatorRefreshTimer: ReturnType<typeof setTimeout> | null = null
   private indicatorVisibilityBeforeHide = new Map<string, boolean>()
+  /**
+   * Seconds-unit panes (5s/15s/30s) can't use the normal pushRawBars live
+   * path — the replay feed is 1m bars, which can't be split into correct
+   * sub-minute buckets (see ChartViewController.isSecondsTimeframe). This
+   * timer re-fetches such panes from /chart-bars/at on a short interval
+   * instead, so they still update during continuous playback rather than
+   * freezing until the user pauses.
+   */
+  private secondsPaneRefreshTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(viewportClient: ViewportDataClient = new HttpViewportDataClient()) {
     this.viewportClient = viewportClient
@@ -550,6 +563,60 @@ export class ReplayEngine {
     }, delay)
   }
 
+  private secondsPaneViews(): ChartViewController[] {
+    return this.views.all().filter((view) => parseTimeframe(view.timeframe)?.unit === 's')
+  }
+
+  /**
+   * Keeps seconds-unit panes fresh. Unlike scheduleIndicatorRefresh, this
+   * keeps firing on an interval even during continuous playback rather than
+   * only once ticks stop — /chart-bars/at is cheap regardless of timeframe
+   * (perf baseline: 0.8-1.7ms), and freezing a 5s chart until pause would be
+   * a worse experience than the coarser timeframes already have.
+   */
+  private scheduleSecondsPaneRefresh(immediate = false): void {
+    const panes = this.secondsPaneViews()
+    if (panes.length === 0) {
+      if (this.secondsPaneRefreshTimer) {
+        clearInterval(this.secondsPaneRefreshTimer)
+        this.secondsPaneRefreshTimer = null
+      }
+      return
+    }
+    if (!this.secondsPaneRefreshTimer) {
+      this.secondsPaneRefreshTimer = setInterval(() => void this.refreshSecondsPanes(), 1_000)
+    }
+    if (immediate) void this.refreshSecondsPanes()
+  }
+
+  private async refreshSecondsPanes(): Promise<void> {
+    if (this.snapshot.status !== 'ready') return
+    const cursorTs = this.snapshot.cursorTs
+    await Promise.all(this.secondsPaneViews().map(async (view) => {
+      const symbol = view.symbol()
+      if (!symbol) return
+      try {
+        const page = await this.viewportClient.load({
+          symbol: symbol.symbol,
+          visibleTimeframe: view.timeframe,
+          direction: 'before',
+          anchorTs: cursorTs,
+          pageBars: VIEWPORT_PAGE_BARS,
+          maxTs: cursorTs,
+          tickSize: symbol.tickSize,
+          marketSession: this.marketSession,
+        }, new AbortController().signal)
+        const displayBars = page.bars.filter((bar) => bar.time <= cursorTs)
+        // Empty means "no fresher data yet" (or a transient miss) — keep
+        // whatever the pane is already showing rather than blank it.
+        if (displayBars.length > 0) view.rebuild([], symbol, true, displayBars)
+      } catch {
+        // Best-effort background refresh — leave the pane's current (if
+        // slightly stale) bars alone rather than surface a transient error.
+      }
+    }))
+  }
+
   private async bootstrap(): Promise<void> {
     this.setSnapshot({ status: 'loading', error: null }, true)
     try {
@@ -573,6 +640,7 @@ export class ReplayEngine {
     if (this.drawingTimer) clearTimeout(this.drawingTimer)
     if (this.transientErrorTimer) clearTimeout(this.transientErrorTimer)
     if (this.indicatorRefreshTimer) clearTimeout(this.indicatorRefreshTimer)
+    if (this.secondsPaneRefreshTimer) clearInterval(this.secondsPaneRefreshTimer)
     this.indicatorControllers.forEach((controller) => controller.abort())
     this.indicatorControllers.clear()
     this.indicatorResults.clear()
@@ -671,7 +739,7 @@ export class ReplayEngine {
         }, controller.signal),
         isReplaySymbol
           ? Promise.resolve<BarSource | null>(null)
-          : fetchBarsAt(symbol.symbol, '1m', this.snapshot.cursorTs, 3000, 10000, controller.signal).then((frame) => new BarSource(frame)),
+          : fetchBarsAt(symbol.symbol, replayBaseTimeframe(symbol), this.snapshot.cursorTs, 3000, 10000, controller.signal).then((frame) => new BarSource(frame)),
       ])
       if (controller.signal.aborted || this.timeframeControllers.get(id) !== controller) return
       if (auxiliarySource) this.auxiliarySources.set(symbol.symbol, auxiliarySource)
@@ -731,15 +799,20 @@ export class ReplayEngine {
     this.highSpeedChartFrame = 0
     this.setSnapshot({ playing: false }, true)
     this.scheduleSessionPersist()
-    if (wasPlaying) this.scheduleIndicatorRefresh(0)
+    if (wasPlaying) {
+      this.scheduleIndicatorRefresh(0)
+      this.scheduleSecondsPaneRefresh(true)
+    }
   }
 
-  /** Number of underlying 1-minute bars the current step-timeframe covers. */
+  /** Number of canonical source bars covered by the selected replay interval. */
   private stepBars(): number {
-    return Math.max(1, Math.round(timeframeSeconds(this.snapshot.stepTimeframe) / 60))
+    const symbol = this.snapshot.symbol
+    const baseSeconds = symbol ? timeframeSeconds(replayBaseTimeframe(symbol)) : 60
+    return Math.max(1, Math.round(timeframeSeconds(this.snapshot.stepTimeframe) / baseSeconds))
   }
 
-  stepForward(): void { this.pause(); this.ensureCursorViewport(); this.advance(this.stepBars()); this.scheduleIndicatorRefresh(0); this.emitSnapshot(true) }
+  stepForward(): void { this.pause(); this.ensureCursorViewport(); this.advance(this.stepBars()); this.scheduleIndicatorRefresh(0); this.scheduleSecondsPaneRefresh(true); this.emitSnapshot(true) }
   stepBack(): void {
     if (isEvalActive()) return
     this.pause()
@@ -772,6 +845,7 @@ export class ReplayEngine {
     this.syncChartTradingState(true)
     this.scheduleSessionPersist()
     this.scheduleIndicatorRefresh(0)
+    this.scheduleSecondsPaneRefresh(true)
     this.emitSnapshot(true)
   }
 
@@ -785,6 +859,7 @@ export class ReplayEngine {
     this.setSpeed(SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, index + direction))])
   }
   setStepTimeframe(stepTimeframe: ReplayStepTimeframe): void {
+    if (!STEP_TIMEFRAMES.includes(stepTimeframe)) return
     this.accumulator = 0
     this.setSnapshot({ stepTimeframe }, true)
   }
@@ -887,7 +962,7 @@ export class ReplayEngine {
     this.setSnapshot({ status: 'loading' }, true)
     try {
       if (!this.source || targetTimestamp < this.source.firstTs || targetTimestamp > this.source.lastTs) {
-        this.source = new BarSource(await fetchBarsAt(symbol.symbol, '1m', targetTimestamp, 3000, 10000))
+        this.source = new BarSource(await fetchBarsAt(symbol.symbol, replayBaseTimeframe(symbol), targetTimestamp, 3000, 10000))
       }
       this.cursorIndex = alignment === 'ceil'
         ? this.source.findIndexAtOrAfter(targetTimestamp)
@@ -908,6 +983,7 @@ export class ReplayEngine {
       if (activeView) this.activateChartView(activeView.id)
       await this.reconcileDrawings()
       await this.refreshIndicators()
+      this.scheduleSecondsPaneRefresh(true)
     } catch (error) {
       this.setSnapshot({ status: 'error', error: error instanceof Error ? error.message : 'Seek failed' }, true)
     }
@@ -1244,11 +1320,12 @@ export class ReplayEngine {
   }
 
   private async resolveDataTimestamp(symbol: SymbolMeta, timestamp: number, direction: NearestDataDirection): Promise<DataTimestampResolution> {
-    const range = symbol.ranges['1m']
+    const baseTimeframe = replayBaseTimeframe(symbol)
+    const range = symbol.ranges[baseTimeframe]
     if (!range) return { timestamp, calendarAvailable: false }
     const bounded = Math.max(range.from, Math.min(timestamp, range.to))
     try {
-      const calendar = await fetchCalendar(symbol.symbol, '1m', range.from, range.to)
+      const calendar = await fetchCalendar(symbol.symbol, baseTimeframe, range.from, range.to)
       return { timestamp: nearestDataTimestamp(calendar, bounded, direction) ?? bounded, calendarAvailable: true }
     } catch {
       return { timestamp: bounded, calendarAvailable: false }
@@ -1262,11 +1339,12 @@ export class ReplayEngine {
     this.views.setReplaySelection({ mode: 'inactive' })
     this.setSnapshot({ status: 'loading', error: null, eagerState: 'idle', sessionId: null, sessionStatus: null, replayMode: 'inactive', replayStartTs: null }, true)
     try {
-      const range = symbol.ranges['1m']
-      if (!range) throw new Error(`${symbol.symbol} has no 1m data range`)
+      const baseTimeframe = replayBaseTimeframe(symbol)
+      const range = symbol.ranges[baseTimeframe]
+      if (!range) throw new Error(`${symbol.symbol} has no ${baseTimeframe} data range`)
       const fallbackStart = Math.max(range.from, range.to - 5 * 86400)
       const start = Math.min(range.to, Math.max(range.from, requestedStart ?? fallbackStart))
-      const frame = await fetchBarsAt(symbol.symbol, '1m', start, 3000, 10000)
+      const frame = await fetchBarsAt(symbol.symbol, baseTimeframe, start, 3000, 10000)
       this.source = new BarSource(frame)
       this.cursorIndex = this.source.findIndex(start)
       this.startIndex = this.cursorIndex
@@ -1672,6 +1750,7 @@ export class ReplayEngine {
     this.syncChartTradingState()
     this.scheduleSessionPersist()
     this.scheduleIndicatorRefresh()
+    this.scheduleSecondsPaneRefresh()
     if (tradeCheckpoint) this.captureWorkspaceRecoveryPoint('trade-close', tradeCheckpoint)
     void this.prefetchSource()
   }
@@ -1687,7 +1766,8 @@ export class ReplayEngine {
     if (this.sourcePrefetchPromise) return this.sourcePrefetchPromise
     const source = this.source
     const symbol = this.snapshot.symbol
-    const range = symbol?.ranges['1m']
+    const baseTimeframe = symbol ? replayBaseTimeframe(symbol) : '1m'
+    const range = symbol?.ranges[baseTimeframe]
     if (!source || !symbol || !range || source.count === 0 || source.lastTs >= range.to) return Promise.resolve()
     const remaining = source.count - this.cursorIndex - 1
     if (!force && remaining > SOURCE_PREFETCH_REMAINING_BARS) return Promise.resolve()
@@ -1697,7 +1777,7 @@ export class ReplayEngine {
     const cursorTs = this.snapshot.cursorTs
     const promise = fetchBarsAt(
       symbol.symbol,
-      '1m',
+      baseTimeframe,
       source.lastTs,
       0,
       SOURCE_PREFETCH_PAGE_BARS,
@@ -2020,7 +2100,7 @@ export class ReplayEngine {
     await Promise.all([...symbols.values()].map(async (symbol) => {
       const source = this.auxiliarySources.get(symbol.symbol)
       if (source && cursorTs >= source.firstTs && cursorTs <= source.lastTs) return
-      const frame = await fetchBarsAt(symbol.symbol, '1m', cursorTs, 3000, 10000)
+      const frame = await fetchBarsAt(symbol.symbol, replayBaseTimeframe(symbol), cursorTs, 3000, 10000)
       this.auxiliarySources.set(symbol.symbol, new BarSource(frame))
     }))
     await Promise.all(views.map(async (view) => {
@@ -2041,7 +2121,7 @@ export class ReplayEngine {
     raw: Bar1m[],
     cursorTs = this.snapshot.cursorTs,
   ): Promise<DisplayBar[] | undefined> {
-    const estimatedBars = raw.length / Math.max(1, timeframeSeconds(timeframe) / 60)
+    const estimatedBars = raw.length / Math.max(1, timeframeSeconds(timeframe) / timeframeSeconds(replayBaseTimeframe(symbol)))
     if (estimatedBars >= VIEWPORT_PAGE_BARS) return undefined
     const controller = new AbortController()
     this.timeframeControllers.get(viewId)?.abort()
@@ -2094,7 +2174,10 @@ export class ReplayEngine {
     const view = this.views.get(viewId)
     const symbol = view?.symbol() ?? null
     if (!view || this.views.active()?.id !== viewId || !symbol || this.snapshot.status !== 'ready') return
-    const range = symbol.ranges['1m']
+    // Bound paging by whichever raw dataset this pane's own timeframe
+    // aggregates from — a seconds-unit pane's earliest available bucket is
+    // ranges['5s'], not ranges['1m'] (see bars.BaseTimeframe server-side).
+    const range = symbol.ranges[parseTimeframe(view.timeframe)?.unit === 's' ? '5s' : '1m']
     if (!range) return
     if (demand.direction === 'before' && demand.anchorTs <= range.from) return
     if (demand.direction === 'after') {
@@ -2249,7 +2332,7 @@ export class ReplayEngine {
 
   private async resetChartToLatest(): Promise<void> {
     const symbol = this.snapshot.symbol
-    const latest = symbol?.ranges['1m']?.to
+    const latest = symbol?.ranges[symbol ? replayBaseTimeframe(symbol) : '1m']?.to
     if (!symbol || latest === undefined) return
     this.views.active()?.adapter.setDrawingTool(null)
     this.views.active()?.adapter.deselectDrawing()

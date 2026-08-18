@@ -209,4 +209,52 @@ describe('ChartViewController.pushRawBars', () => {
 
     expect(currentHistory(mock, view)).toHaveLength(240)
   })
+
+  it('never builds seconds-unit candles from 1m raw bars — a raw-only rebuild leaves the pane empty rather than mislabel a whole minute as one 5s bar', () => {
+    const { mock, view } = makeController('5s')
+    view.rebuild([bar1m(0), bar1m(1), bar1m(2)], symbol)
+    expect(currentHistory(mock, view)).toEqual([])
+  })
+
+  it('uses the server-aggregated page for a seconds-unit timeframe when one is supplied', () => {
+    const { mock, view } = makeController('5s')
+    const remoteHistory: DisplayBar[] = [{ time: 300, open: 100, high: 101, low: 99, close: 100.5, volume: 5 }]
+    view.rebuild([bar1m(0)], symbol, false, remoteHistory)
+    expect(currentHistory(mock, view)).toEqual(remoteHistory)
+  })
+
+  it('builds and advances seconds candles when the canonical raw source is 5s', () => {
+    const { mock, view } = makeController('15s')
+    const raw5s = [0, 5, 10, 15, 20, 25].map((seconds, index) => ({ ...bar1m(index), ts: seconds }))
+
+    view.rebuild(raw5s.slice(0, 4), symbol)
+    expect(currentHistory(mock, view)).toHaveLength(2)
+
+    view.pushRawBars(raw5s.slice(4))
+    expect(mock.pushBars).toHaveBeenCalled()
+    expect(currentHistory(mock, view).at(-1)?.time).toBe(15)
+  })
+
+  it('keeps a seconds-unit pane\'s existing bars instead of wiping them when a refresh comes back with no fresher page', () => {
+    const { mock, view } = makeController('5s')
+    const remoteHistory: DisplayBar[] = [{ time: 300, open: 100, high: 101, low: 99, close: 100.5, volume: 5 }]
+    view.rebuild([bar1m(0)], symbol, false, remoteHistory)
+
+    // Simulates replay-engine's periodic seconds-pane refresh finding no
+    // fresher data yet (e.g. a transient empty page) — must not fall back
+    // to (wrong) 1m-raw-built bars, and must not blank the pane either.
+    view.rebuild([bar1m(0), bar1m(1)], symbol, true, [])
+    expect(currentHistory(mock, view)).toEqual(remoteHistory)
+  })
+
+  it('disables the live pushRawBars path for a seconds-unit pane instead of mislabeling 1m bars as 5s candles', () => {
+    const { mock, view } = makeController('5s')
+    const remoteHistory: DisplayBar[] = [{ time: 300, open: 100, high: 101, low: 99, close: 100.5, volume: 5 }]
+    view.rebuild([bar1m(0)], symbol, false, remoteHistory)
+
+    view.pushRawBars([bar1m(5)])
+
+    expect(mock.pushBars).not.toHaveBeenCalled()
+    expect(currentHistory(mock, view)).toEqual(remoteHistory)
+  })
 })
