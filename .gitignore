@@ -31,3 +31,4 @@ pipeline/.venv/
 .archcore/
 .impeccable/
 .playwright-mcp/
+backup_data/
