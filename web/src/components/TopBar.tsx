@@ -1,4 +1,4 @@
-import { Activity, Keyboard, PanelRightClose, PanelRightOpen, Rewind } from 'lucide-react'
+import { Activity, Keyboard, PanelRightClose, PanelRightOpen, Rewind, Settings } from 'lucide-react'
 import { lazy, Suspense, useState, type ReactElement } from 'react'
 import type { Timeframe } from '../api/types'
 import { replayEngine } from '../replay/replay-engine'
@@ -14,10 +14,10 @@ import { useChartWorkspace } from '../chart-workspace/use-chart-workspace'
 import { IndicatorMenu } from './indicators/IndicatorMenu'
 import { paneIds } from '../chart-workspace/layout-presets'
 import { ReplayBrandMark } from './ReplayBrandMark'
-import { WorkspaceTimezoneMenu } from './chart/WorkspaceTimezoneMenu'
 // Opened by a keystroke or a click, never on first paint — so its symbol
 // table, filters and search index stay out of the initial download.
 const SymbolBrowserDialog = lazy(() => import('./symbols/SymbolBrowserDialog').then((module) => ({ default: module.SymbolBrowserDialog })))
+const SettingsDialog = lazy(() => import('./settings/SettingsDialog').then((module) => ({ default: module.SettingsDialog })))
 
 interface TopBarProps {
   layoutMenuRequest?: number
@@ -40,6 +40,7 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
   const setActiveTf = useUiStore((state) => state.setActiveTf)
   const preferences = useTimeframePreferences()
   const [symbolBrowserOpen, setSymbolBrowserOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const hasSecondsData = !!replay.symbols.find((symbol) => symbol.symbol === replay.symbol)?.ranges?.['5s']
   const pinnedTimeframes = hasSecondsData
     ? [...preferences.starredTimeframes, activeTf]
@@ -98,9 +99,9 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
       </div>
 
       <div className="flex shrink-0 items-center gap-1 border-l border-line bg-[#101114] px-2 text-ui-body text-muted md:gap-2 md:px-3">
-        <WorkspaceTimezoneMenu />
         <IndicatorMenu />
         <LayoutMenu openRequest={layoutMenuRequest} />
+        <button type="button" onClick={() => setSettingsOpen(true)} className="tool-button" aria-label="Workspace settings" title="Workspace settings"><Settings size={16} strokeWidth={1.7} /></button>
         <button type="button" onClick={onOpenShortcuts} className="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts · ?"><Keyboard size={16} strokeWidth={1.7} /></button>
         <button
           type="button"
@@ -118,6 +119,7 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
         if (evalLocked) replayEngine.requestChartViewSymbol(targetPaneId, meta.symbol)
         else void replayEngine.selectSymbol(meta.symbol).then(() => replayEngine.requestChartViewSymbol(targetPaneId, meta.symbol))
       }} /></Suspense> : null}
+      {settingsOpen ? <Suspense fallback={null}><SettingsDialog symbols={replay.symbols} timezone={chartWorkspace.timezone} onTimezoneChange={(timezone) => dispatchChartWorkspace({ type: 'set-timezone', timezone })} onClose={() => setSettingsOpen(false)} /></Suspense> : null}
     </header>
   )
 }

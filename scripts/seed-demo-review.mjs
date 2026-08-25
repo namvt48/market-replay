@@ -2,6 +2,9 @@
 
 const baseUrl = (process.env.MARKET_REPLAY_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, '')
 const reviewPreferenceKey = 'market-replay:trade-review:v1'
+// Keep the generated review preference below the server's 256 KiB safety
+// limit while giving every source a substantial tagged journal sample.
+const maxReviewTradesPerSource = 60
 
 const tagGroups = [
   {
@@ -97,18 +100,20 @@ async function main() {
   for (const session of sessions.filter((item) => item.kind !== 'eval')) {
     const trades = await request(`/api/v1/sessions/${encodeURIComponent(session.id)}/trades`)
     const source = { id: session.id, type: 'session' }
-    trades.forEach((trade, index) => { const [key, value] = documentFor(source, trade, index); documents[key] = value })
-    tradeCount += trades.length
-    sourceCounts.push({ type: source.type, id: source.id, name: session.name, trades: trades.length })
+    const reviewTrades = trades.slice(0, maxReviewTradesPerSource)
+    reviewTrades.forEach((trade, index) => { const [key, value] = documentFor(source, trade, index); documents[key] = value })
+    tradeCount += reviewTrades.length
+    sourceCounts.push({ type: source.type, id: source.id, name: session.name, trades: trades.length, taggedTrades: reviewTrades.length })
   }
 
   const accounts = Array.isArray(preferences['replay:eval:accounts']) ? preferences['replay:eval:accounts'] : []
   for (const account of accounts) {
     const trades = Array.isArray(account.trades) ? account.trades : []
     const source = { id: account.sessionId ?? account.accountId, type: 'evaluation' }
-    trades.forEach((trade, index) => { const [key, value] = documentFor(source, trade, index); documents[key] = value })
-    tradeCount += trades.length
-    sourceCounts.push({ type: source.type, id: source.id, name: account.name ?? account.accountId, trades: trades.length })
+    const reviewTrades = trades.slice(0, maxReviewTradesPerSource)
+    reviewTrades.forEach((trade, index) => { const [key, value] = documentFor(source, trade, index); documents[key] = value })
+    tradeCount += reviewTrades.length
+    sourceCounts.push({ type: source.type, id: source.id, name: account.name ?? account.accountId, trades: trades.length, taggedTrades: reviewTrades.length })
   }
 
   const payload = JSON.stringify({ state: { documents, tagGroups }, version: 0 })

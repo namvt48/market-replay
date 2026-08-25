@@ -17,6 +17,7 @@ const sessionSchema = z.object({
   status: z.enum(['active', 'paused', 'stopped']),
   kind: z.enum(['replay', 'eval']),
   config: z.record(z.string(), z.unknown()).nullable(), createdAt: z.number(), updatedAt: z.number(),
+  deletedAt: z.number().optional(),
 })
 const tradeSchema = z.object({
   id: z.string(), sessionId: z.string(), symbol: z.string(), side: z.enum(['long', 'short']),
@@ -308,6 +309,19 @@ export async function createSession(
 export async function fetchSessions(): Promise<ReplaySession[]> {
   const response = await checkedFetch('/api/v1/sessions')
   return z.array(sessionSchema).parse(await response.json()) as ReplaySession[]
+}
+
+export async function fetchDeletedSessions(): Promise<ReplaySession[]> {
+  const response = await checkedFetch('/api/v1/sessions-deleted')
+  return z.array(sessionSchema).parse(await response.json()) as ReplaySession[]
+}
+
+export async function restoreSession(id: string): Promise<void> {
+  await checkedFetch(`/api/v1/sessions/${encodeURIComponent(id)}/restore`, { method: 'POST' })
+}
+
+export async function permanentlyDeleteSession(id: string): Promise<void> {
+  await checkedFetch(`/api/v1/sessions/${encodeURIComponent(id)}/permanent`, { method: 'DELETE' })
 }
 
 export async function patchSession(id: string, patch: Partial<Pick<ReplaySession, 'name' | 'cursorTs' | 'equityCents' | 'status' | 'config'>>): Promise<void> {

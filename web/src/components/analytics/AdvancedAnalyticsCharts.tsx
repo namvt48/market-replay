@@ -36,13 +36,53 @@ interface InspectorProps {
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
 const compactMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 })
 
+function niceStep(maximum: number, targetTicks = 4): number {
+  const rough = Math.max(Number.EPSILON, maximum / targetTicks)
+  if (maximum <= 4) return Math.max(0.25, Math.ceil(rough * 4) / 4)
+  const magnitude = 10 ** Math.floor(Math.log10(rough))
+  const normalized = rough / magnitude
+  const factor = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10
+  return factor * magnitude
+}
+
+function nextNiceStep(step: number): number {
+  if (step < 0.25) return 0.25
+  if (step < 0.5) return 0.5
+  if (step < 1) return 1
+  const magnitude = 10 ** Math.floor(Math.log10(step))
+  const normalized = step / magnitude
+  if (normalized < 2) return 2 * magnitude
+  if (normalized < 2.5) return 2.5 * magnitude
+  if (normalized < 5) return 5 * magnitude
+  return 10 * magnitude
+}
+
+function domainTicks(minimum: number, maximum: number, maxLines = 5): { minimum: number; maximum: number; values: number[] } {
+  let low = Math.min(minimum, maximum)
+  let high = Math.max(minimum, maximum)
+  if (Math.abs(high - low) < Number.EPSILON) { low = Math.min(0, low); high = Math.max(1, high) }
+  let step = niceStep(high - low, maxLines - 1)
+  let axisMinimum = Math.floor(low / step) * step
+  let axisMaximum = Math.ceil(high / step) * step
+  let count = Math.round((axisMaximum - axisMinimum) / step) + 1
+  while (count > maxLines) {
+    step = nextNiceStep(step)
+    axisMinimum = Math.floor(low / step) * step
+    axisMaximum = Math.ceil(high / step) * step
+    count = Math.round((axisMaximum - axisMinimum) / step) + 1
+  }
+  return { minimum: axisMinimum, maximum: axisMaximum, values: Array.from({ length: count }, (_, index) => axisMinimum + index * step) }
+}
+
 function Inspector({ children, className, inspect }: InspectorProps) {
   const [tooltip, setTooltip] = useState<(TooltipData & { x: number; y: number; placement: 'above' | 'below' }) | null>(null)
+  const [crosshairX, setCrosshairX] = useState<number | null>(null)
 
   const showAt = (element: HTMLDivElement, clientX: number, clientY: number): void => {
     const bounds = element.getBoundingClientRect()
     const xRatio = Math.min(1, Math.max(0, (clientX - bounds.left) / Math.max(1, bounds.width)))
     const yRatio = Math.min(1, Math.max(0, (clientY - bounds.top) / Math.max(1, bounds.height)))
+    setCrosshairX(xRatio * 100)
     setTooltip({
       ...inspect(xRatio, yRatio),
       x: Math.min(window.innerWidth - 120, Math.max(120, clientX)),
@@ -66,19 +106,20 @@ function Inspector({ children, className, inspect }: InspectorProps) {
     <div
       className={`relative ${className}`}
       onPointerMove={handlePointerMove}
-      onPointerLeave={() => setTooltip(null)}
+      onPointerLeave={() => { setTooltip(null); setCrosshairX(null) }}
     >
       {children}
+      {crosshairX !== null ? <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 z-10 border-l border-dashed border-[#aeb4bd]/45" style={{ left: `${crosshairX}%` }} /> : null}
       {tooltip && typeof document !== 'undefined' ? createPortal(
         <div
           role="tooltip"
           style={{ left: tooltip.x, top: tooltip.y }}
           className={`pointer-events-none fixed z-[140] min-w-52 -translate-x-1/2 rounded-md border border-[#626975] bg-[#090b0e] px-3 py-2.5 shadow-[0_16px_38px_rgba(0,0,0,0.72)] ${tooltip.placement === 'above' ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}
         >
-          <p className="whitespace-nowrap text-xs font-semibold leading-4 text-[#e6e9ed]">{tooltip.title}</p>
+          <p className="whitespace-nowrap text-ui-meta font-semibold text-[#e6e9ed]">{tooltip.title}</p>
           <dl className="mt-2 space-y-1.5">
             {tooltip.rows.map((row) => (
-              <div key={`${row.label}-${row.value}`} className="flex items-center justify-between gap-6 text-xs leading-4">
+              <div key={`${row.label}-${row.value}`} className="flex items-center justify-between gap-6 text-ui-meta">
                 <dt className="whitespace-nowrap text-[#9ba2ad]">{row.label}</dt>
                 <dd className={`whitespace-nowrap font-mono font-semibold tabular-nums ${toneClass(row.tone)}`}>{row.value}</dd>
               </div>
@@ -98,11 +139,11 @@ interface DrawdownChartProps {
 export function DrawdownChart({ points, mode }: DrawdownChartProps) {
   const width = 1120
   const height = 310
-  const plot = { left: 66, right: 18, top: 26, bottom: 68 }
+  const plot = { left: 106, right: 18, top: 26, bottom: 68 }
   const values = points.map((point) => mode === 'dollar' ? point.dollars : point.percent)
   const minimum = Math.min(-1, ...values)
-  const floor = mode === 'dollar' ? Math.floor(minimum / 5_000) * 5_000 : Math.floor(minimum / 5) * 5
-  const y = (value: number): number => plot.top + (value / floor) * (height - plot.top - plot.bottom)
+  const axis = domainTicks(minimum, 0)
+  const y = (value: number): number => plot.top + (axis.maximum - value) / Math.max(1, axis.maximum - axis.minimum) * (height - plot.top - plot.bottom)
   const x = (index: number): number => plot.left + index / Math.max(1, points.length - 1) * (width - plot.left - plot.right)
   const barWidth = Math.max(1.2, (width - plot.left - plot.right) / points.length * 0.62)
   const inspect = (ratio: number): TooltipData => {
@@ -135,10 +176,9 @@ export function DrawdownChart({ points, mode }: DrawdownChartProps) {
         tabIndex={0}
         onKeyDown={handleKeyDown}
       >
-        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-          const value = floor * ratio
+        {axis.values.map((value) => {
           const lineY = y(value)
-          return <g key={ratio}><line x1={plot.left} x2={width - plot.right} y1={lineY} y2={lineY} stroke="#656a72" strokeDasharray="8 7" opacity="0.78" /><text x={plot.left - 12} y={lineY + 4} textAnchor="end" fill="#9ba2ad" fontSize="12" fontFamily="Roboto Variable">{mode === 'dollar' ? compactMoney.format(Math.abs(value)) : `${value.toFixed(0)}%`}</text></g>
+          return <g key={value}><line x1={plot.left} x2={width - plot.right} y1={lineY} y2={lineY} stroke="#656a72" strokeDasharray="8 7" opacity="0.78" /><text x={plot.left - 14} y={lineY + 4} textAnchor="end" fill="#9ba2ad" fontSize="11" fontFamily="Roboto Variable">{mode === 'dollar' ? compactMoney.format(Math.abs(value)) : `${value.toFixed(0)}%`}</text></g>
         })}
         {points.map((point, index) => {
           const value = mode === 'dollar' ? point.dollars : point.percent
@@ -151,7 +191,7 @@ export function DrawdownChart({ points, mode }: DrawdownChartProps) {
           return <text key={point.date} x={x(originalIndex)} y={height - 42} transform={`rotate(-43 ${x(originalIndex)} ${height - 42})`} textAnchor="end" fill="#8f97a3" fontSize="11" fontFamily="JetBrains Mono Variable">{point.date}</text>
         })}
         <text x={width / 2} y={height - 5} textAnchor="middle" fill="#f1f3f5" fontSize="12" fontWeight="600">Trade date</text>
-        <text x="15" y={height / 2} transform={`rotate(-90 15 ${height / 2})`} textAnchor="middle" fill="#f1f3f5" fontSize="12" fontWeight="600">{mode === 'dollar' ? 'Drawdown ($)' : 'Drawdown (% of peak)'}</text>
+        <text x="24" y={height / 2} transform={`rotate(-90 24 ${height / 2})`} textAnchor="middle" fill="#f1f3f5" fontSize="12" fontWeight="600">{mode === 'dollar' ? 'Drawdown ($)' : 'Drawdown (% of peak)'}</text>
       </svg>
     </Inspector>
   )
@@ -164,7 +204,7 @@ interface HistogramChartProps {
 export function HistogramChart({ bins }: HistogramChartProps) {
   const width = 1060
   const height = 250
-  const inset = { left: 54, right: 16, top: 20, bottom: 46 }
+  const inset = { left: 82, right: 16, top: 20, bottom: 46 }
   const maximum = Math.max(1, ...bins.map((bin) => bin.value))
   const inspect = (ratio: number): TooltipData => {
     const index = Math.min(bins.length - 1, Math.max(0, Math.floor(ratio * bins.length)))
@@ -176,7 +216,7 @@ export function HistogramChart({ bins }: HistogramChartProps) {
       <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Maximum adverse excursion distribution. Move the pointer across bars for exact values.">
         {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
           const lineY = inset.top + ratio * (height - inset.top - inset.bottom)
-          return <g key={ratio}><line x1={inset.left} x2={width - inset.right} y1={lineY} y2={lineY} stroke="#5d626a" strokeDasharray="8 7" opacity="0.75" /><text x={inset.left - 11} y={lineY + 4} textAnchor="end" fill="#9ba2ad" fontSize="11">{Math.round(maximum * (1 - ratio))}</text></g>
+          return <g key={ratio}><line x1={inset.left} x2={width - inset.right} y1={lineY} y2={lineY} stroke="#5d626a" strokeDasharray="8 7" opacity="0.75" /><text x={inset.left - 12} y={lineY + 4} textAnchor="end" fill="#9ba2ad" fontSize="10">{Math.round(maximum * (1 - ratio))}</text></g>
         })}
         {bins.map((bin, index) => {
           const slot = (width - inset.left - inset.right) / bins.length
@@ -202,13 +242,16 @@ interface MultiSeriesChartProps {
 export function MultiSeriesChart({ series, selectedId, yLabel, valueFormatter, tooltipRows, ariaLabel, includeZero = true }: MultiSeriesChartProps) {
   const width = 1080
   const height = 320
-  const plot = { left: 62, right: 18, top: 24, bottom: 46 }
+  const plot = { left: 108, right: 18, top: 24, bottom: 46 }
   const allValues = series.flatMap((item) => item.values)
   const rawMinimum = Math.min(...allValues)
   const rawMaximum = Math.max(...allValues)
   const padding = Math.max(1, (rawMaximum - rawMinimum) * 0.08)
-  const minimum = includeZero ? Math.min(0, rawMinimum - padding) : rawMinimum - padding
-  const maximum = includeZero ? Math.max(1, rawMaximum + padding) : rawMaximum + padding
+  const rawLower = includeZero ? Math.min(0, rawMinimum - padding) : rawMinimum - padding
+  const rawUpper = includeZero ? Math.max(1, rawMaximum + padding) : rawMaximum + padding
+  const axis = domainTicks(rawLower, rawUpper)
+  const minimum = axis.minimum
+  const maximum = axis.maximum
   const span = Math.max(1, maximum - minimum)
   const x = (index: number, count: number): number => plot.left + index / Math.max(1, count - 1) * (width - plot.left - plot.right)
   const y = (value: number): number => plot.top + (maximum - value) / span * (height - plot.top - plot.bottom)
@@ -223,13 +266,12 @@ export function MultiSeriesChart({ series, selectedId, yLabel, valueFormatter, t
   return (
     <Inspector className="h-[340px] min-w-[820px] w-full" inspect={inspect}>
       <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label={`${ariaLabel}. Move the pointer over a line to inspect the scenario.`}>
-        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-          const value = maximum - ratio * span
+        {axis.values.map((value) => {
           const lineY = y(value)
-          return <g key={ratio}><line x1={plot.left} x2={width - plot.right} y1={lineY} y2={lineY} stroke="#535860" strokeDasharray="8 7" opacity="0.78" /><text x={plot.left - 10} y={lineY + 4} textAnchor="end" fill="#9ba2ad" fontSize="11" fontFamily="JetBrains Mono Variable">{valueFormatter(value)}</text></g>
+          return <g key={value}><line x1={plot.left} x2={width - plot.right} y1={lineY} y2={lineY} stroke="#535860" strokeDasharray="8 7" opacity="0.78" /><text x={plot.left - 14} y={lineY + 4} textAnchor="end" fill="#9ba2ad" fontSize="10" fontFamily="JetBrains Mono Variable">{valueFormatter(value)}</text></g>
         })}
         {series.map((item) => <polyline key={item.id} points={item.values.map((value, index) => `${x(index, item.values.length).toFixed(1)},${y(value).toFixed(1)}`).join(' ')} fill="none" stroke={item.color} strokeWidth={item.id === selectedId ? 2.3 : 1.35} opacity={item.id === selectedId ? 1 : 0.74} vectorEffect="non-scaling-stroke" />)}
-        <text x="14" y={height / 2} transform={`rotate(-90 14 ${height / 2})`} textAnchor="middle" fill="#e9ecf0" fontSize="12" fontWeight="600">{yLabel}</text>
+        <text x="26" y={height / 2} transform={`rotate(-90 26 ${height / 2})`} textAnchor="middle" fill="#e9ecf0" fontSize="12" fontWeight="600">{yLabel}</text>
       </svg>
     </Inspector>
   )

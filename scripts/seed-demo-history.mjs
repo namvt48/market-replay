@@ -42,7 +42,7 @@ function shortEvalAccountHash(accountId) {
   return (hash >>> 0).toString(36).toUpperCase().padStart(6, '0').slice(-6)
 }
 
-function makeTrades({ count, seed, startTs, targetNetCents, symbol = 'NQ' }) {
+function makeTrades({ count, seed, startTs, targetNetCents, symbol = 'NQ', winThreshold = 0.46, breakEvenCount = 0 }) {
   const next = random(seed)
   const trades = []
   let net = 0
@@ -53,10 +53,13 @@ function makeTrades({ count, seed, startTs, targetNetCents, symbol = 'NQ' }) {
     const duration = 300 + Math.floor(next() * 4200)
     const side = next() > 0.47 ? 'long' : 'short'
     const qty = next() > 0.82 ? 2 : 1
-    const win = next() > 0.46
-    const realizedCents = win
-      ? 18000 + Math.floor(next() * 82000)
-      : -(12000 + Math.floor(next() * 68000))
+    const isBreakeven = index < breakEvenCount
+    const win = next() > (isBreakeven ? 0.5 : winThreshold)
+    const realizedCents = isBreakeven
+      ? (win ? 100 + Math.floor(next() * 400) : -(100 + Math.floor(next() * 400)))
+      : win
+        ? 18000 + Math.floor(next() * 82000)
+        : -(12000 + Math.floor(next() * 68000))
     const riskCents = 40000
     const entryPriceTicks = 80000 + Math.floor(next() * 6000)
     const tickMove = Math.max(1, Math.round(Math.abs(realizedCents) / (qty * 500)))
@@ -206,10 +209,10 @@ function evalAccount({ id, session, outcome, netCents, failReason = null }) {
 async function main() {
   const startTs = Math.floor(Date.parse('2025-01-06T00:00:00Z') / 1000)
   const definitions = [
-    { key: 'progress', legacyName: 'Eval - In Progress', kind: 'eval', status: 'paused', symbol: 'NQ', tf: '5m', count: 64, seed: 101, targetNetCents: 245000, initialBalanceCents: 10000000, outcome: 'in_progress' },
-    { key: 'failed', legacyName: 'Eval - Failed', kind: 'eval', status: 'stopped', symbol: 'NQ', tf: '5m', count: 66, seed: 202, targetNetCents: -1055000, initialBalanceCents: 10000000, outcome: 'failed', failReason: 'total' },
-    { key: 'passed', legacyName: 'Eval - Passed', kind: 'eval', status: 'stopped', symbol: 'NQ', tf: '5m', count: 68, seed: 303, targetNetCents: 1105000, initialBalanceCents: 10000000, outcome: 'passed' },
-    { key: 'replay', name: 'Replay - Opening Range', kind: 'replay', status: 'paused', symbol: 'ES', tf: '5m', count: 44, seed: 404, targetNetCents: 186500, initialBalanceCents: 1000000 },
+    { key: 'progress', legacyName: 'Eval - In Progress', kind: 'eval', status: 'paused', symbol: 'NQ', tf: '5m', count: 170, seed: 101, winThreshold: 0.35, breakEvenCount: 10, targetNetCents: 2600000, initialBalanceCents: 10000000, outcome: 'in_progress' },
+    { key: 'failed', legacyName: 'Eval - Failed', kind: 'eval', status: 'stopped', symbol: 'NQ', tf: '5m', count: 150, seed: 202, targetNetCents: -1055000, initialBalanceCents: 10000000, outcome: 'failed', failReason: 'total' },
+    { key: 'passed', legacyName: 'Eval - Passed', kind: 'eval', status: 'stopped', symbol: 'NQ', tf: '5m', count: 160, seed: 303, targetNetCents: 1105000, initialBalanceCents: 10000000, outcome: 'passed' },
+    { key: 'replay', name: 'Replay - Opening Range', kind: 'replay', status: 'paused', symbol: 'ES', tf: '5m', count: 160, seed: 404, winThreshold: 0.15, targetNetCents: 7100000, initialBalanceCents: 1000000 },
   ].map((definition, index) => {
     const accountId = definition.kind === 'eval' ? `${demoAccountPrefix}${definition.key}` : null
     return {
@@ -217,7 +220,7 @@ async function main() {
       accountId,
       name: accountId ? `#${shortEvalAccountHash(accountId)}` : definition.name,
       startTs: startTs + index * 35 * 86400,
-      trades: makeTrades({ count: definition.count, seed: definition.seed, startTs: startTs + index * 35 * 86400, targetNetCents: definition.targetNetCents, symbol: definition.symbol }),
+      trades: makeTrades({ count: definition.count, seed: definition.seed, startTs: startTs + index * 35 * 86400, targetNetCents: definition.targetNetCents, symbol: definition.symbol, winThreshold: definition.winThreshold, breakEvenCount: definition.breakEvenCount }),
     }
   })
 

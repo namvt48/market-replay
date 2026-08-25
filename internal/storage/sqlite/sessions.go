@@ -135,9 +135,25 @@ func (s *Store) UpdateSession(ctx context.Context, id string, patch model.Sessio
 	return nil
 }
 
-// DeleteSession removes one replay session and its private journal/drawings
-// atomically. Global symbol drawings are deliberately preserved.
+// DeleteSession archives one replay session. Its journal and private drawings
+// remain intact so settings can restore the session in place.
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET deleted_at = unixepoch(), status = ?, updated_at = unixepoch() WHERE id = ? AND deleted_at IS NULL`, model.SessionStopped, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: archive session %s: %w", id, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sqlite: archive session %s rows affected: %w", id, err)
+	}
+	if changed == 0 {
+		return storage.ErrSessionNotFound
+	}
+	return nil
+}
+
+// PermanentlyDeleteSession removes one archived session and its private data.
+func (s *Store) PermanentlyDeleteSession(ctx context.Context, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqlite: delete session %s: begin tx: %w", id, err)
@@ -149,7 +165,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM trades WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("sqlite: delete session %s trades: %w", id, err)
 	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND deleted_at IS NOT NULL`, id)
 	if err != nil {
 		return fmt.Errorf("sqlite: delete session %s: %w", id, err)
 	}
@@ -162,6 +178,21 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite: delete session %s commit: %w", id, err)
+	}
+	return nil
+}
+
+func (s *Store) RestoreSession(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET deleted_at = NULL, status = ?, updated_at = unixepoch() WHERE id = ? AND deleted_at IS NOT NULL`, model.SessionPaused, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: restore session %s: %w", id, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sqlite: restore session %s rows affected: %w", id, err)
+	}
+	if changed == 0 {
+		return storage.ErrSessionNotFound
 	}
 	return nil
 }
@@ -184,7 +215,7 @@ func (s *Store) DeleteEmptySessions(ctx context.Context) (int64, error) {
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id FROM sessions
-		WHERE status <> ? AND cursor_ts = start_ts
+		WHERE deleted_at IS NULL AND status <> ? AND cursor_ts = start_ts
 		AND NOT EXISTS (SELECT 1 FROM trades WHERE trades.session_id = sessions.id)
 		AND NOT EXISTS (SELECT 1 FROM drawings WHERE drawings.bucket = 'session:' || sessions.id AND drawings.deleted = 0)
 	`, model.SessionActive)
@@ -220,7 +251,7 @@ func (s *Store) DeleteEmptySessions(ctx context.Context) (int64, error) {
 func (s *Store) GetSession(ctx context.Context, id string) (model.Session, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, name, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
-		FROM sessions WHERE id = ?
+		FROM sessions WHERE id = ? AND deleted_at IS NULL
 	`, id)
 	sess, err := scanSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -235,7 +266,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (model.Session, error
 func (s *Store) ListSessions(ctx context.Context) ([]model.Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
-		FROM sessions ORDER BY created_at DESC
+		FROM sessions WHERE deleted_at IS NULL ORDER BY created_at DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list sessions: %w", err)
@@ -252,6 +283,29 @@ func (s *Store) ListSessions(ctx context.Context) ([]model.Session, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite: iterate sessions: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) ListDeletedSessions(ctx context.Context) ([]model.Session, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at, deleted_at
+		FROM sessions WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list deleted sessions: %w", err)
+	}
+	defer rows.Close()
+	out := make([]model.Session, 0)
+	for rows.Next() {
+		sess, err := scanDeletedSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: scan deleted session: %w", err)
+		}
+		out = append(out, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate deleted sessions: %w", err)
 	}
 	return out, nil
 }
@@ -273,6 +327,26 @@ func scanSession(row rowScanner) (model.Session, error) {
 	if initialBalanceCents.Valid {
 		value := initialBalanceCents.Int64
 		sess.InitialBalanceCents = &value
+	}
+	sess.Config = json.RawMessage(configJSON)
+	return sess, nil
+}
+
+func scanDeletedSession(row rowScanner) (model.Session, error) {
+	var sess model.Session
+	var configJSON string
+	var initialBalanceCents sql.NullInt64
+	var deletedAt sql.NullInt64
+	if err := row.Scan(&sess.ID, &sess.Name, &sess.Symbol, &sess.Tf, &sess.StartTs, &sess.CursorTs, &sess.EquityCents, &sess.Status, &sess.Kind, &initialBalanceCents, &configJSON, &sess.CreatedAt, &sess.UpdatedAt, &deletedAt); err != nil {
+		return model.Session{}, err
+	}
+	if initialBalanceCents.Valid {
+		value := initialBalanceCents.Int64
+		sess.InitialBalanceCents = &value
+	}
+	if deletedAt.Valid {
+		value := deletedAt.Int64
+		sess.DeletedAt = &value
 	}
 	sess.Config = json.RawMessage(configJSON)
 	return sess, nil

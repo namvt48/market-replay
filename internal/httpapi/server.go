@@ -47,7 +47,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/v1/sessions", s.handleCreateSession)
 	mux.HandleFunc("GET /api/v1/sessions", s.handleListSessions)
+	mux.HandleFunc("GET /api/v1/sessions-deleted", s.handleListDeletedSessions)
 	mux.HandleFunc("DELETE /api/v1/sessions", s.handleDeleteEmptySessions)
+	mux.HandleFunc("POST /api/v1/sessions/{id}/restore", s.handleRestoreSession)
+	mux.HandleFunc("DELETE /api/v1/sessions/{id}/permanent", s.handlePermanentlyDeleteSession)
 	mux.HandleFunc("PATCH /api/v1/sessions/{id}", s.handlePatchSession)
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("PUT /api/v1/sessions/{id}/trades", s.handleReplaceTrades)

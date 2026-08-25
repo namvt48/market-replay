@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	initial_balance_cents INTEGER,
 	config_json TEXT NOT NULL,
 	created_at INTEGER NOT NULL,
-	updated_at INTEGER NOT NULL
+	updated_at INTEGER NOT NULL,
+	deleted_at INTEGER
 );
 
 -- Append-only journal of closed trades. Typed columns (not a JSON blob)

@@ -94,6 +94,7 @@ export interface ReplaySession {
   config: Record<string, unknown> | null
   createdAt: number
   updatedAt: number
+  deletedAt?: number
 }
 
 export interface ClosedTrade {

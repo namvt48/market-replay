@@ -81,9 +81,9 @@ function Metric({ label, value, detail, tone = 'default', info }: MetricProps) {
   const detailClass = tone === 'default' ? 'text-muted' : toneClass
   return (
     <div className="min-w-0">
-      <p className="flex items-center text-[13px] leading-5 text-[#b0b6bf]">{label}{info ? <InfoTip label={label}>{info}</InfoTip> : null}</p>
+      <p className="flex items-center text-ui-body text-[#b0b6bf]">{label}{info ? <InfoTip label={label}>{info}</InfoTip> : null}</p>
       <p className={`mt-0.5 flex flex-wrap items-baseline gap-2 text-[21px] font-semibold leading-7 tracking-[-0.02em] tabular-nums ${toneClass}`}>
-        {value}{detail ? <span className={`font-mono text-xs font-medium tracking-normal ${detailClass}`}>{detail}</span> : null}
+        {value}{detail ? <span className={`font-mono text-ui-meta font-medium tracking-normal ${detailClass}`}>{detail}</span> : null}
       </p>
     </div>
   )
@@ -98,21 +98,42 @@ function ReportPanel({ children, className = '' }: ReportPanelProps) {
   return <section className={`rounded-[14px] border border-[#3c4046] bg-[#121416] ${className}`}>{children}</section>
 }
 
+type PnlPeriod = 'all' | 'day' | 'hour' | '15m'
+
+function periodCurve(report: AnalyticsReportView, period: PnlPeriod): { values: number[]; labels: string[] } {
+  if (period === 'all') return { values: report.equityCurve, labels: report.curveLabels }
+  const buckets = new Map<string, { value: number; date: Date }>()
+  report.equityCurve.forEach((value, index) => {
+    const timestamp = report.equityCurveDates[index]
+    if (!timestamp) return
+    const date = new Date(timestamp)
+    const minute = period === '15m' ? Math.floor(date.getUTCMinutes() / 15) * 15 : 0
+    const key = period === 'day'
+      ? date.toISOString().slice(0, 10)
+      : `${date.toISOString().slice(0, 13)}:${String(minute).padStart(2, '0')}`
+    buckets.set(key, { value, date })
+  })
+  const entries = [...buckets.values()]
+  const labels = entries.map(({ date }) => period === 'day' ? date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }) : date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }))
+  return { values: [0, ...entries.map(({ value }) => value)], labels: ['', ...labels] }
+}
+
 function PnlOverview({ report, onThresholdChange }: { report: AnalyticsReportView; onThresholdChange: (value: number) => void }) {
-  const [period, setPeriod] = useState<'all' | 'day' | 'hour' | '15m'>('all')
+  const [period, setPeriod] = useState<PnlPeriod>('all')
   const [threshold, setThreshold] = useState('0')
   const [appliedThreshold, setAppliedThreshold] = useState(0)
+  const curve = periodCurve(report, period)
   const pnlTone = report.pnlPercent.startsWith('-') ? 'loss' as const : report.pnlPercent === '0.00%' ? 'default' as const : 'profit' as const
   return (
     <ReportPanel className="overflow-hidden p-4 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-[22px] font-semibold leading-7 tracking-[-0.025em] text-[#f4f5f7]">Profit and loss</h2>
-          <p className="mt-0.5 text-[13px] leading-5 text-[#a1a7b0]">Over time</p>
+          <p className="mt-0.5 text-ui-body text-[#a1a7b0]">Over time</p>
         </div>
         <div className="flex rounded-lg border border-[#464a51] bg-[#090a0c] p-0.5" aria-label="Profit and loss period">
           {([['all', 'All'], ['day', 'Day'], ['hour', '1 Hour'], ['15m', '15 Min']] as const).map(([value, label]) => (
-            <button key={value} type="button" aria-pressed={period === value} onClick={() => setPeriod(value)} className="min-h-8 rounded-md px-3 text-[13px] font-medium text-[#aab0b9] transition-colors hover:text-white aria-pressed:bg-[#4a505b] aria-pressed:text-white">{label}</button>
+            <button key={value} type="button" aria-pressed={period === value} onClick={() => setPeriod(value)} className="min-h-8 rounded-md px-3 text-ui-body font-medium text-[#aab0b9] transition-colors hover:text-white aria-pressed:bg-[#4a505b] aria-pressed:text-white">{label}</button>
           ))}
         </div>
       </div>
@@ -123,18 +144,18 @@ function PnlOverview({ report, onThresholdChange }: { report: AnalyticsReportVie
         <Metric label="Total Trades" value={String(report.totalTrades)} detail={`${report.longTrades} long · ${report.shortTrades} short`} info="Shows long trades, short trades, and the combined total." />
         <Metric label="Breakeven Trades" value={String(report.breakevenTrades)} />
         <form className="flex items-end gap-2" onSubmit={(event) => { event.preventDefault(); const value = Number(threshold) || 0; setAppliedThreshold(value); onThresholdChange(value) }}>
-          <label className="min-w-0 flex-1 text-[13px] leading-5 text-[#b0b6bf]">Breakeven threshold
+          <label className="min-w-0 flex-1 text-ui-body text-[#b0b6bf]">Breakeven threshold
             <input aria-label="Breakeven threshold" className="mt-1 h-10 w-full rounded-lg border border-[#464a51] bg-[#090a0c] px-3 font-mono text-sm text-white outline-none transition-colors focus:border-active" inputMode="decimal" value={threshold} onChange={(event) => setThreshold(event.target.value)} />
           </label>
-          <button type="submit" className="h-10 rounded-lg border border-[#464a51] bg-[#202328] px-4 text-[13px] font-medium text-[#d8dce2] transition-colors hover:border-[#626872] hover:bg-[#292d33]">Apply</button>
+          <button type="submit" className="h-10 rounded-lg border border-[#464a51] bg-[#202328] px-4 text-ui-body font-medium text-[#d8dce2] transition-colors hover:border-[#626872] hover:bg-[#292d33]">Apply</button>
         </form>
       </div>
       <span className="sr-only" role="status">Applied breakeven threshold: {appliedThreshold}</span>
       <div className="mt-5 overflow-x-auto">
-        <LineChart values={report.equityCurve} valueLabel="Cumulative PnL" valueFormatter={(value) => money.format(value)} ariaLabel={`${report.kind} profit and loss curve for ${period} period`} />
+        <LineChart values={curve.values} valueLabel="Cumulative PnL" valueFormatter={(value) => money.format(value)} ariaLabel={`${report.kind} profit and loss curve for ${period} period`} />
       </div>
       <div className="mt-1 flex min-w-[720px] justify-between px-6 font-mono text-ui-meta text-dim" aria-hidden="true">
-        {report.curveLabels.map((label, index) => <span key={`${label}-${index}`}>{label}</span>)}
+        {curve.labels.map((label, index) => <span key={`${label}-${index}`}>{label}</span>)}
       </div>
     </ReportPanel>
   )
@@ -176,12 +197,12 @@ function Expectancy({ report }: { report: AnalyticsReportView }) {
           <Metric label="Expectancy" value={report.expectancy} tone={report.expectancy.startsWith('-') ? 'loss' : 'profit'} />
           <div>
             <div className="grid h-4 grid-cols-[1.2fr_1fr] gap-1" aria-label={`Average win ${report.averageWin}, average loss ${report.averageLoss}`}><span className="rounded-full border border-[#38bca3] bg-profit" /><span className="rounded-full border border-[#f07167] bg-loss" /></div>
-            <div className="mt-1.5 flex justify-between font-mono text-[13px]"><span className="text-profit-bright">{report.averageWin}</span><span className="text-loss-bright">{report.averageLoss}</span></div>
+            <div className="mt-1.5 flex justify-between font-mono text-ui-body"><span className="text-profit-bright">{report.averageWin}</span><span className="text-loss-bright">{report.averageLoss}</span></div>
           </div>
         </ReportPanel>
         <ReportPanel className="flex min-h-28 items-center justify-between p-5">
           <Metric label="Profit factor" value={report.profitFactor} tone={Number(report.profitFactor) >= 1 ? 'profit' : Number(report.profitFactor) < 1 ? 'loss' : 'default'} />
-          <div className="grid size-16 place-items-center rounded-full border-[6px] border-[#24272b] border-t-[#d7a600] font-mono text-xs text-[#c4c8ce]" aria-label={`Profit factor ${report.profitFactor}`}>{report.profitFactor}</div>
+          <div className="grid size-16 place-items-center rounded-full border-[6px] border-[#24272b] border-t-[#d7a600] font-mono text-ui-meta text-[#c4c8ce]" aria-label={`Profit factor ${report.profitFactor}`}>{report.profitFactor}</div>
         </ReportPanel>
       </div>
     </section>
@@ -200,7 +221,7 @@ function WinnersLosers({ report }: { report: AnalyticsReportView }) {
           <ReportPanel key={title} className={`p-6 ${borderTone}`}>
             <h3 className="mb-3 text-[17px] font-semibold text-[#f1f3f5]">{title}</h3>
             <dl className="space-y-2">
-              {rows.map(({ label, value }) => <div key={label} className="flex items-center justify-between gap-4 rounded px-0.5 transition-colors hover:bg-white/[0.025]"><dt className="text-[14px] leading-5 text-muted">{label}</dt><dd className={`font-mono text-[14px] font-semibold leading-5 ${valueTone}`}>{value}</dd></div>)}
+              {rows.map(({ label, value }) => <div key={label} className="flex items-center justify-between gap-4 rounded px-0.5 transition-colors hover:bg-white/[0.025]"><dt className="text-ui-control text-muted">{label}</dt><dd className={`font-mono text-ui-control font-semibold ${valueTone}`}>{value}</dd></div>)}
             </dl>
           </ReportPanel>
         ))}
@@ -216,12 +237,12 @@ function PerformanceBySide({ report }: { report: AnalyticsReportView }) {
       <div className="grid gap-3 lg:grid-cols-2">
         <ReportPanel className="p-6">
           <h3 className="text-[17px] font-semibold text-[#f1f3f5]">Total trades</h3>
-          <p className="mt-2 text-center text-[12px] text-[#aeb4bd]"><span className="text-profit-bright">● Buy</span><span className="ml-4 text-active-bright">● Sell</span></p>
+          <p className="mt-2 text-center text-ui-meta text-[#aeb4bd]"><span className="text-profit-bright">● Buy</span><span className="ml-4 text-active-bright">● Sell</span></p>
           <Donut buy={report.buyPercent} sell={report.sellPercent} ariaLabel={`${report.buyPercent} percent buy trades and ${report.sellPercent} percent sell trades`} />
         </ReportPanel>
         <ReportPanel className="p-6">
           <h3 className="text-[17px] font-semibold text-[#f1f3f5]">Win rate</h3>
-          <p className="mt-2 text-center text-[12px] text-[#aeb4bd]"><span className="text-profit-bright">● Buy</span><span className="ml-4 text-active-bright">● Sell</span></p>
+          <p className="mt-2 text-center text-ui-meta text-[#aeb4bd]"><span className="text-profit-bright">● Buy</span><span className="ml-4 text-active-bright">● Sell</span></p>
           <WinRateRings buy={report.buyWinRate} sell={report.sellWinRate} />
         </ReportPanel>
       </div>
@@ -252,7 +273,7 @@ function PerformanceByTime({ report }: { report: AnalyticsReportView }) {
       <SectionTitle info="Groups closed trades by their entry hour." action={
         <label className="relative">
           <span className="sr-only">Performance by time metric</span>
-          <select value={metric} onChange={(event) => setMetric(event.target.value as TimeMetric)} className="h-11 appearance-none rounded-xl border border-[#464a51] bg-[#090a0c] pl-4 pr-10 text-[14px] font-medium text-[#eef0f3] outline-none transition-colors focus:border-active">
+          <select value={metric} onChange={(event) => setMetric(event.target.value as TimeMetric)} className="h-11 appearance-none rounded-xl border border-[#464a51] bg-[#090a0c] pl-4 pr-10 text-ui-control font-medium text-[#eef0f3] outline-none transition-colors focus:border-active">
             {(Object.keys(metricLabels) as TimeMetric[]).map((key) => <option key={key} value={key}>{metricLabels[key]}</option>)}
           </select>
           <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted" />
@@ -346,13 +367,13 @@ function EvaluationPerformanceContent({ performance, account, report, onThreshol
 
 function ResourcePanel<T>({ state, children }: { state: ResourceState<T>; children: (data: T) => ReactNode }) {
   if (state.status === 'success') return <>{children(state.data)}</>
-  if (state.status === 'error') return <ReportPanel className="p-8 text-center"><p className="text-sm font-medium text-loss-bright">Unable to load this analytics report.</p><p className="mx-auto mt-2 max-w-xl text-xs leading-5 text-[#9299a3]">{state.error.message}</p><button type="button" onClick={() => window.location.reload()} className="mt-4 rounded-lg border border-[#464a51] px-4 py-2 text-xs font-medium text-white">Retry</button></ReportPanel>
+  if (state.status === 'error') return <ReportPanel className="p-8 text-center"><p className="text-ui-control font-medium text-loss-bright">Unable to load this analytics report.</p><p className="mx-auto mt-2 max-w-xl text-ui-body text-[#9299a3]">{state.error.message}</p><button type="button" onClick={() => window.location.reload()} className="mt-4 rounded-lg border border-[#464a51] px-4 py-2 text-ui-body font-medium text-white">Retry</button></ReportPanel>
   return <ReportPanel className="flex min-h-64 items-center justify-center"><span className="text-sm text-[#9299a3]">Loading analytics…</span></ReportPanel>
 }
 
 export function AnalyticsScreen() {
   const [tab, setTab] = useState<AnalyticsTab>('performance')
-  const [breakevenThreshold, setBreakevenThreshold] = useState(0)
+  const [breakevenThreshold, setBreakevenThreshold] = useState(5)
   const params = useMemo(() => typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams(), [])
   const sourceId = params.get('analytics') ?? ''
   const parsedType = analyticsSourceTypeSchema.safeParse(params.get('sourceType'))
@@ -413,7 +434,7 @@ export function AnalyticsScreen() {
       <header className="sticky top-0 z-30 border-b border-[#292c31] bg-[#0d0f11]/95 backdrop-blur-sm">
         <div className="mx-auto flex min-h-14 max-w-[1500px] flex-wrap items-center gap-2 px-3 py-2 sm:flex-nowrap sm:gap-3 sm:px-6">
           <a href="/" className="tool-button shrink-0" aria-label="Back to replay workspace"><ArrowLeft size={18} /></a>
-          <div className="min-w-0 flex-1 border-l border-[#34373c] pl-3"><h1 className="truncate text-[16px] font-semibold leading-5 tracking-[-0.01em] text-[#f4f5f7]">{evalAccount ? evaluationDisplayName(evalAccount) : report?.title ?? 'Analytics report'}</h1><p className="mt-0.5 truncate text-xs leading-4 text-[#8f959f]">Analytics{report ? ` · ${report.subtitle}` : ''}</p></div>
+          <div className="min-w-0 flex-1 border-l border-[#34373c] pl-3"><h1 className="truncate text-[16px] font-semibold leading-5 tracking-[-0.01em] text-[#f4f5f7]">{evalAccount ? evaluationDisplayName(evalAccount) : report?.title ?? 'Analytics report'}</h1></div>
           <label className="flex min-w-0 basis-full items-center gap-2 sm:basis-auto">
             <span className="shrink-0 text-xs font-medium text-[#9ba2ad]">Report</span>
             <select aria-label="Analytics source" value={sourceType ? `${sourceType}:${sourceId}` : ''} onChange={switchSource} disabled={sources.status !== 'success' || sources.data.length === 0} className="h-9 min-w-0 flex-1 rounded-lg border border-[#454a52] bg-[#090b0d] px-3 text-sm font-medium text-[#edf0f3] outline-none transition-colors hover:border-[#626873] focus:border-active disabled:opacity-50 sm:w-64">
@@ -425,7 +446,7 @@ export function AnalyticsScreen() {
       </header>
       <main className="mx-auto max-w-[1500px] px-3 py-5 sm:px-6 sm:py-7">
         <nav className="flex overflow-x-auto rounded-[26px] border border-[#40444a] bg-[#151719] p-1 xl:grid xl:grid-cols-6" role="tablist" aria-label="Analytics views">
-          {tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" role="tab" aria-selected={tab === id} aria-controls={`analytics-panel-${id}`} id={`analytics-tab-${id}`} onClick={() => setTab(id)} className="flex min-h-10 min-w-[148px] items-center justify-center gap-2 rounded-[21px] border border-transparent px-3 text-[14px] font-medium text-[#aeb4bd] transition-colors hover:text-white aria-selected:border-[#454a51] aria-selected:bg-[#070809] aria-selected:text-white sm:min-w-0"><Icon size={15} strokeWidth={1.75} />{label}</button>)}
+          {tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" role="tab" aria-selected={tab === id} aria-controls={`analytics-panel-${id}`} id={`analytics-tab-${id}`} onClick={() => setTab(id)} className="flex min-h-10 min-w-[148px] items-center justify-center gap-2 rounded-[21px] border border-transparent px-3 text-ui-control font-medium text-[#aeb4bd] transition-colors hover:text-white aria-selected:border-[#454a51] aria-selected:bg-[#070809] aria-selected:text-white sm:min-w-0"><Icon size={15} strokeWidth={1.75} />{label}</button>)}
         </nav>
         <div className="mt-6" role="tabpanel" id={`analytics-panel-${tab}`} aria-labelledby={`analytics-tab-${tab}`}>
           {!validSource ? <ReportPanel className="p-8 text-center"><p className="text-base font-semibold text-white">Choose an analytics source</p><p className="mt-2 text-sm text-[#9299a3]">Open a replay session or evaluation account from the Analytics sidebar.</p><a href="/" className="mt-5 inline-flex rounded-lg bg-active px-4 py-2 text-sm font-medium text-white">Back to workspace</a></ReportPanel> : null}

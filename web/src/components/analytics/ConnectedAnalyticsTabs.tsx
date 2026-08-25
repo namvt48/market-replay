@@ -1,4 +1,4 @@
-import { AlertCircle, AlertTriangle, ChevronUp, Plus, RotateCcw, Sparkles } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Plus, RotateCcw, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
   runMonteCarloSimulation, runRrSimulation, runStopLossSimulation,
@@ -75,10 +75,22 @@ function RrResults({ report, selected }: { report: RrSimulation; selected: strin
 }
 
 interface MonteInputs { simulations: number; trades: number; startBalance: number; averageGain: number; averageLoss: number; winRate: number }
+
+function roundTo(value: number, increment: number): number {
+  return Math.round(value / increment) * increment
+}
+
 function MonteCarloSimulator({ performance }: { performance: AnalyticsPerformance }) {
-  const defaults: MonteInputs = { simulations: 10, trades: 10, startBalance: performance.overview.accountBalance, averageGain: Math.abs(performance.expectancy.averageWin), averageLoss: Math.abs(performance.expectancy.averageLoss), winRate: performance.overview.winRate }
+  const defaults: MonteInputs = {
+    simulations: 25,
+    trades: Math.max(10, Math.min(100, performance.overview.totalTrades)),
+    startBalance: Math.max(100, roundTo(performance.overview.accountBalance, 100)),
+    averageGain: Math.max(1, roundTo(Math.abs(performance.expectancy.averageWin), 10)),
+    averageLoss: Math.max(1, roundTo(Math.abs(performance.expectancy.averageLoss), 10)),
+    winRate: Math.min(100, Math.max(1, Math.round(performance.overview.winRate))),
+  }
   const [inputs, setInputs] = useState(defaults); const [result, setResult] = useState<MonteCarloSimulation | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
-  const fields: Array<{ key: keyof MonteInputs; label: string; min: number; max: number; step?: number }> = [{ key: 'simulations', label: 'N. simulations', min: 1, max: 50 }, { key: 'trades', label: 'Trades per sim', min: 1, max: 500 }, { key: 'startBalance', label: 'Start balance $', min: 1, max: 10_000_000, step: .01 }, { key: 'averageGain', label: 'Avg gain', min: .01, max: 1_000_000, step: .01 }, { key: 'averageLoss', label: 'Avg loss', min: .01, max: 1_000_000, step: .01 }, { key: 'winRate', label: 'Win rate', min: .01, max: 100, step: .01 }]
+  const fields: Array<{ key: keyof MonteInputs; label: string; min: number; max: number; step?: number }> = [{ key: 'simulations', label: 'N. simulations', min: 1, max: 50 }, { key: 'trades', label: 'Trades per sim', min: 1, max: 500 }, { key: 'startBalance', label: 'Start balance $', min: 1, max: 10_000_000 }, { key: 'averageGain', label: 'Avg gain', min: 1, max: 1_000_000 }, { key: 'averageLoss', label: 'Avg loss', min: 1, max: 1_000_000 }, { key: 'winRate', label: 'Win rate', min: 1, max: 100 }]
   const submit = async (event: FormEvent) => { event.preventDefault(); const invalid = fields.find((field) => inputs[field.key] < field.min || inputs[field.key] > field.max); if (invalid) { setError(`${invalid.label} must be between ${invalid.min} and ${integer.format(invalid.max)}.`); return } setBusy(true); setError(''); try { setResult(await runMonteCarloSimulation({ simulationCount: Math.round(inputs.simulations), tradesPerSimulation: Math.round(inputs.trades), startBalance: inputs.startBalance, averageGain: inputs.averageGain, averageLoss: inputs.averageLoss, winRatePercent: inputs.winRate })) } catch (reason) { setError(reason instanceof Error ? reason.message : 'Simulation failed') } finally { setBusy(false) } }
   const stats = result ? [['Average balance', money.format(result.summary.averageEndingBalance)], ['Max balance', money.format(result.summary.maxEndingBalance)], ['Min balance', money.format(result.summary.minEndingBalance)], ['Average profit factor', result.summary.averageProfitFactor?.toFixed(2) ?? '—'], ['Max consecutive wins', String(result.summary.maxConsecutiveWins)], ['Max consecutive losses', String(result.summary.maxConsecutiveLosses)], ['Total wins', String(result.summary.totalWins)], ['Total losses', String(result.summary.totalLosses)]] : []
   const series: SimulationSeries[] = result?.paths.map((path, index) => ({ id: String(path.simulationIndex), label: `Simulation ${path.simulationIndex}`, color: colors[index % colors.length] ?? '#2962ff', values: path.balances })) ?? []
@@ -86,5 +98,5 @@ function MonteCarloSimulator({ performance }: { performance: AnalyticsPerformanc
 }
 
 export function SimulationTab({ source, performance }: { source: { id: string; type: AnalyticsSourceType }; performance: AnalyticsPerformance }) {
-  return <div className="space-y-11"><StopLossSimulator source={source} /><RrSimulator source={source} /><MonteCarloSimulator performance={performance} /><button type="button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} className="mx-auto flex min-h-10 items-center gap-2 rounded-full border border-[#454a51] px-4 text-xs text-[#b8bec7]"><ChevronUp size={15} />Back to analytics tabs</button></div>
+  return <div className="space-y-11"><StopLossSimulator source={source} /><RrSimulator source={source} /><MonteCarloSimulator performance={performance} /></div>
 }

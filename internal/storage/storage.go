@@ -34,9 +34,12 @@ type Store interface {
 	CreateSession(ctx context.Context, s model.Session) (model.Session, error)
 	UpdateSession(ctx context.Context, id string, patch model.SessionPatch) error
 	DeleteSession(ctx context.Context, id string) error
+	PermanentlyDeleteSession(ctx context.Context, id string) error
+	RestoreSession(ctx context.Context, id string) error
 	DeleteEmptySessions(ctx context.Context) (int64, error)
 	GetSession(ctx context.Context, id string) (model.Session, error)
 	ListSessions(ctx context.Context) ([]model.Session, error)
+	ListDeletedSessions(ctx context.Context) ([]model.Session, error)
 
 	// ReplaceTrades makes the stored journal for one session exactly equal
 	// to trades. The client-side fill engine owns the journal, and a replay

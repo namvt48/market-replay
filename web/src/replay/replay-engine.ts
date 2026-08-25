@@ -28,6 +28,7 @@ import {
 import { calculateTradeStats, type TradeStats } from '../fill-engine/stats'
 import type { Bar1m, EngineTrade, FillEngineState, OrderSide, OrderType } from '../fill-engine/types'
 import { getEvalState, isEvalActive, type EvalFillState } from '../store/eval-store'
+import { executionCostFor } from '../store/workspace-settings-store'
 import { aggregateRange } from './aggregate'
 import { BarSource } from './bar-source'
 import { REPLAY_STEP_TIMEFRAMES, parseTimeframe, timeframeSeconds, type ReplayStepTimeframe } from './timeframe'
@@ -1565,11 +1566,12 @@ export class ReplayEngine {
     const evaluation = getEvalState()
     const evalLimit = evaluation.phase === 'running' ? (evaluation.config?.maxPositionSize ?? 0) : 0
     const maxContracts = evalLimit > 0 ? Math.min(MAX_REPLAY_CONTRACTS, evalLimit) : MAX_REPLAY_CONTRACTS
+    const executionCost = executionCostFor(symbol.symbol)
     const fill = createFillEngine({
       symbol: symbol.symbol,
       tickValueCents: Math.round(symbol.tickSize * symbol.pointValue * 100),
-      commissionPerSideCents: Math.round(symbol.commissionPerSide * 100),
-      slippageTicks: symbol.defaultSlippageTicks,
+      commissionPerSideCents: Math.round((executionCost?.commissionPerSide ?? symbol.commissionPerSide) * 100),
+      slippageTicks: executionCost?.spreadTicks ?? symbol.defaultSlippageTicks,
       maxContracts,
       startingEquityCents: REPLAY_STARTING_EQUITY_CENTS,
     })

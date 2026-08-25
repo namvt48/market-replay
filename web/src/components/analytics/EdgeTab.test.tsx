@@ -20,4 +20,15 @@ describe('EdgeTab', () => {
     fireEvent.pointerMove(band, { clientX: 100, clientY: 20 })
     expect(screen.getByText('90% bootstrap interval').closest('[role="tooltip"]')).toHaveTextContent('Observed')
   })
+
+  it('shows every Kelly eligibility check in a compact status strip', () => {
+    render(<EdgeTab report={edgeFixture} />)
+
+    const checks = screen.getByRole('status', { name: 'Kelly eligibility' })
+    expect(checks).toHaveTextContent(/Sample size\s*80\/50/)
+    expect(checks).toHaveTextContent(/Statistical evidence\s*p 0\.030/)
+    expect(checks).toHaveTextContent(/Breakeven\s*52\.0% > 40\.0%/)
+    expect(checks).toHaveTextContent(/OOS expectancy\s*0\.15R/)
+    expect(checks).toHaveTextContent(/Payoff ratio\s*1\.50R/)
+  })
 })

@@ -32,6 +32,7 @@ export interface AnalyticsReportView {
   shortTrades: number
   breakevenTrades: number
   equityCurve: number[]
+  equityCurveDates: Array<string | null>
   curveLabels: string[]
   averageRr: string
   maxRr: string
@@ -152,6 +153,7 @@ export function toAnalyticsReportView(report: AnalyticsPerformance, timeZone = '
     shortTrades: report.overview.shortTrades,
     breakevenTrades: report.overview.breakevenTrades,
     equityCurve: report.equityCurve.map((point) => point.cumulativePnl),
+    equityCurveDates: report.equityCurve.map((point) => point.closedAt),
     curveLabels: curveLabels(report),
     averageRr: report.riskReward.averageRr.toFixed(2),
     maxRr: report.riskReward.maxRr.toFixed(2),

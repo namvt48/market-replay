@@ -6,6 +6,7 @@ FIRST VIEWPORT: One wide evidence verdict with sample guardrails, followed by a 
 FORM: A vertical quantitative review that extends the incumbent Analytics operating surface.
 */
 import { FlaskConical, Scale, ShieldCheck, TrendingUp } from 'lucide-react'
+import type { ReactElement } from 'react'
 import type { AnalyticsEdge } from '../../api/analytics'
 import { ConfidenceBand, StabilityChart } from './DecisionIntelligenceCharts'
 import { DecisionMetric, DecisionPanel, DecisionSectionTitle, SignalBadge } from './DecisionIntelligenceUi'
@@ -30,6 +31,21 @@ function sensitivityTone(value: number, minimum: number, maximum: number): strin
   if (ratio >= 0.55) return 'border-[#356b5e] bg-[#15312a] text-[#b8e3d8]'
   if (ratio >= 0.3) return 'border-[#5b563d] bg-[#292618] text-[#d9c980]'
   return 'border-loss/40 bg-loss/15 text-loss-bright'
+}
+
+function formatPValue(value: number): string {
+  return value < 0.001 ? '<0.001' : value.toFixed(3)
+}
+
+function KellyEligibilityStrip({ report }: { report: AnalyticsEdge }): ReactElement {
+  const checks = [
+    { label: 'Sample size', value: `${report.edge.sampleSize}/50`, passed: report.edge.sampleSize >= 50 },
+    { label: 'Statistical evidence', value: `p ${formatPValue(report.edge.pValue)}`, passed: report.edge.pValue < 0.05 },
+    { label: 'Breakeven', value: `${report.edge.winRate.toFixed(1)}% > ${report.edge.breakevenRate?.toFixed(1) ?? '—'}%`, passed: report.edge.breakevenRate !== null && report.edge.winRate > report.edge.breakevenRate },
+    { label: 'OOS expectancy', value: `${report.walkForward.outOfSample.expectancyR.toFixed(2)}R`, passed: report.walkForward.outOfSample.expectancyR >= 0 },
+    { label: 'Payoff ratio', value: `${report.edge.averageRR?.toFixed(2) ?? '—'}R`, passed: report.edge.averageRR !== null && report.edge.averageRR > 0 },
+  ]
+  return <div role="status" aria-label="Kelly eligibility" className="mb-5 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-surface-0 px-3 py-2"><span className="mr-1 text-ui-meta font-semibold text-muted">Kelly checks</span>{checks.map((check) => <span key={check.label} className={`inline-flex items-center gap-1 rounded-control border px-2 py-1 text-ui-meta ${check.passed ? 'border-profit/50 bg-profit/10 text-profit-bright' : 'border-caution/50 bg-caution/10 text-caution-bright'}`}><span aria-hidden="true">{check.passed ? '✓' : '!'}</span><span>{check.label}</span><span className="font-mono tabular-nums">{check.value}</span></span>)}</div>
 }
 
 export function EdgeTab({ report }: EdgeTabProps) {
@@ -117,7 +133,8 @@ export function EdgeTab({ report }: EdgeTabProps) {
       <section>
         <DecisionSectionTitle info="Kelly sizing is hidden unless the edge verdict passes every guardrail. The recommendation uses one-quarter Kelly and is capped at 2% account risk per trade.">Position sizing</DecisionSectionTitle>
         <DecisionPanel className="p-5 sm:p-7">
-          {model.sizing ? <div className="grid gap-7 lg:grid-cols-[1.2fr_1fr] lg:items-center"><div><div className="flex items-center gap-3"><ShieldCheck size={22} className="text-profit-bright" /><h3 className="text-[20px] font-semibold text-ink">Sizing unlocked by evidence</h3></div><p className="mt-3 max-w-[68ch] text-ui-body leading-6 text-muted">Fractional Kelly translates the measured edge into a conservative risk budget. The product cap remains the final guardrail.</p></div><dl className="grid grid-cols-2 gap-5"><DecisionMetric label="Full Kelly" value={percentage(model.sizing.fullKelly)} /><DecisionMetric label="Fractional Kelly" value={percentage(model.sizing.fractionalKelly)} /><DecisionMetric label="Suggested risk / trade" value={percentage(model.sizing.suggestedRiskPerTrade)} tone="positive" /><DecisionMetric label="Risk cap" value={percentage(model.sizing.maxRiskCap)} note={model.sizing.capped ? 'Recommendation capped' : 'Cap not binding'} /></dl></div> : <div className="flex items-start gap-4"><ShieldCheck size={22} className="mt-0.5 text-caution-bright" /><div><h3 className="text-[18px] font-semibold text-ink">Sizing remains locked</h3><p className="mt-2 text-ui-body leading-6 text-muted">Kelly output is withheld until sample size, statistical evidence, and breakeven guardrails all pass.</p></div></div>}
+          <KellyEligibilityStrip report={report} />
+          {model.sizing ? <div className="grid gap-7 lg:grid-cols-[1.2fr_1fr] lg:items-center"><div><div className="flex items-center gap-3"><ShieldCheck size={22} className="text-profit-bright" /><h3 className="text-[20px] font-semibold text-ink">Sizing unlocked by evidence</h3></div><p className="mt-3 max-w-[68ch] text-ui-body leading-6 text-muted">Fractional Kelly translates the measured edge into a conservative risk budget. The product cap remains the final guardrail.</p></div><dl className="grid grid-cols-2 gap-5"><DecisionMetric label="Full Kelly" value={percentage(model.sizing.fullKelly)} /><DecisionMetric label="Fractional Kelly" value={percentage(model.sizing.fractionalKelly)} /><DecisionMetric label="Suggested risk / trade" value={percentage(model.sizing.suggestedRiskPerTrade)} tone="positive" /><DecisionMetric label="Risk cap" value={percentage(model.sizing.maxRiskCap)} note={model.sizing.capped ? 'Recommendation capped' : 'Cap not binding'} /></dl></div> : <div className="flex items-start gap-4"><ShieldCheck size={22} className="mt-0.5 text-caution-bright" /><div><h3 className="text-[18px] font-semibold text-ink">Sizing remains locked</h3><p className="mt-2 text-ui-body leading-6 text-muted">Kelly output is withheld until the checks above pass.</p></div></div>}
         </DecisionPanel>
       </section>
     </div>

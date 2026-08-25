@@ -26,6 +26,9 @@ type Session struct {
 	Config              json.RawMessage `json:"config"`
 	CreatedAt           int64           `json:"createdAt"`
 	UpdatedAt           int64           `json:"updatedAt"`
+	// DeletedAt is set when a replay session is moved to the settings trash.
+	// Archived sessions retain their journal and can be restored in place.
+	DeletedAt *int64 `json:"deletedAt,omitempty"`
 }
 
 // SessionPatch carries the mutable subset of Session accepted by

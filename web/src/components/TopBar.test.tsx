@@ -18,8 +18,8 @@ const workspaceMocks = vi.hoisted(() => ({
 const snapshot = {
   status: 'ready',
   symbols: [
-    { symbol: 'NQ', name: 'E-mini Nasdaq-100 Futures', kind: 'future', currency: 'USD', ranges: {} },
-    { symbol: 'ES', name: 'E-mini S&P 500 Futures', kind: 'future', currency: 'USD', ranges: {} },
+    { symbol: 'NQ', name: 'E-mini Nasdaq-100 Futures', kind: 'future', currency: 'USD', tickSize: 0.25, pointValue: 20, priceDecimals: 2, sessionTz: 'America/New_York', rollRule: '', commissionPerSide: 2.09, defaultSlippageTicks: 1, ranges: {} },
+    { symbol: 'ES', name: 'E-mini S&P 500 Futures', kind: 'future', currency: 'USD', tickSize: 0.25, pointValue: 50, priceDecimals: 2, sessionTz: 'America/New_York', rollRule: '', commissionPerSide: 2.09, defaultSlippageTicks: 1, ranges: {} },
   ],
   symbol: { symbol: 'NQ' },
   eagerState: 'ready',
@@ -82,8 +82,10 @@ describe('TopBar timeframe visibility', () => {
     const user = userEvent.setup()
     render(<TopBar />)
 
-    await user.click(screen.getByRole('button', { name: 'Workspace timezone: ET' }))
-    await user.click(screen.getByRole('menuitemradio', { name: 'PT' }))
+    expect(screen.queryByRole('button', { name: 'Workspace timezone: ET' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Workspace settings' }))
+    await user.click(await screen.findByRole('button', { name: /^Timezone/ }))
+    await user.click(screen.getByRole('radio', { name: /PT.*Los Angeles/ }))
 
     expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-timezone', timezone: { kind: 'preset', id: 'PT' } })
   })

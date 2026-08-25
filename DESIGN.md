@@ -42,7 +42,7 @@ Use a restrained strategy: blue-black neutrals form the workstation, electric bl
 
 ## Typography
 
-Use the self-hosted **Roboto Variable** face for every interface and chart-canvas label, with the platform UI stack only as fallback. JetBrains Mono Variable is reserved for timestamps, prices, P&L, shortcuts, and stable numeric fields. The role scale stays compact without sacrificing long-session readability: **12/17px metadata**, **13/20px body**, **14/20px controls**, and **15/22px titles/symbols**. Avoid one-off 9px and 10px labels; hierarchy comes from role, weight, tone, and spacing rather than shrinking important information. Body uses 400, interactive controls 500, and headings 600; 700 is reserved for evaluation outcomes or similarly exceptional emphasis.
+Use the self-hosted **Roboto Variable** face for every interface and chart-canvas label, with the platform UI stack only as fallback. JetBrains Mono Variable is reserved for timestamps, prices, P&L, shortcuts, and stable numeric fields. The role scale stays compact without sacrificing long-session readability: **13/18px metadata**, **14/21px body**, **15/22px controls**, and **16/24px titles/symbols**. Chart-axis labels may use 8.5–10px only when they are secondary numeric guides with a high-contrast tooltip available; meaningful interface labels never shrink below the metadata role. Hierarchy comes from role, weight, tone, and spacing rather than shrinking important information. Body uses 400, interactive controls 500, and headings 600; 700 is reserved for evaluation outcomes or similarly exceptional emphasis.
 
 **The Stable Number Rule.** Price, time, quantity, and money always use tabular figures so the interface does not jitter as values change.
 

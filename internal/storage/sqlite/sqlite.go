@@ -82,6 +82,9 @@ func (s *Store) Init(ctx context.Context) error {
 	if err := s.migrateSessionAnalyticsColumns(ctx); err != nil {
 		return err
 	}
+	if err := s.migrateSessionTrashColumn(ctx); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, drawingsSchema); err != nil {
 		return fmt.Errorf("sqlite: init drawings schema: %w", err)
 	}
@@ -101,6 +104,41 @@ func (s *Store) Init(ctx context.Context) error {
 	// but require an explicit Resume before it can accept more trades.
 	if _, err := s.db.ExecContext(ctx, `UPDATE sessions SET status = ? WHERE status = ?`, "paused", "active"); err != nil {
 		return fmt.Errorf("sqlite: pause active sessions on startup: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) migrateSessionTrashColumn(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(sessions)`)
+	if err != nil {
+		return fmt.Errorf("sqlite: inspect sessions trash schema: %w", err)
+	}
+	hasDeletedAt := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("sqlite: scan sessions trash schema: %w", err)
+		}
+		if name == "deleted_at" {
+			hasDeletedAt = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("sqlite: iterate sessions trash schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("sqlite: close sessions trash schema: %w", err)
+	}
+	if !hasDeletedAt {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN deleted_at INTEGER`); err != nil {
+			return fmt.Errorf("sqlite: add sessions.deleted_at: %w", err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_sessions_deleted_created ON sessions(deleted_at, created_at DESC)`); err != nil {
+		return fmt.Errorf("sqlite: add sessions trash index: %w", err)
 	}
 	return nil
 }

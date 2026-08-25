@@ -236,7 +236,7 @@ export async function fetchAnalyticsSources(signal?: AbortSignal): Promise<Analy
   return (await parseJson('/api/v1/analytics/sources', schema, { signal })).items
 }
 
-export async function fetchAnalyticsPerformance(sourceType: AnalyticsSourceType, sourceId: string, breakevenThreshold = 0, timezone = 'UTC', signal?: AbortSignal): Promise<AnalyticsPerformance> {
+export async function fetchAnalyticsPerformance(sourceType: AnalyticsSourceType, sourceId: string, breakevenThreshold = 5, timezone = 'UTC', signal?: AbortSignal): Promise<AnalyticsPerformance> {
   const query = sourceQuery(sourceType, sourceId)
   query.set('breakevenThreshold', String(breakevenThreshold))
   query.set('timezone', timezone)

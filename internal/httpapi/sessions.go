@@ -118,6 +118,15 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sessions)
 }
 
+func (s *Server) handleListDeletedSessions(w http.ResponseWriter, r *http.Request) {
+	sessions, err := s.Store.ListDeletedSessions(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessions)
+}
+
 func (s *Server) handleDeleteEmptySessions(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("empty") != "true" {
 		writeError(w, fmt.Errorf("%w: empty=true is required", errBadRequest))
@@ -163,6 +172,22 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.DeleteSession(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleRestoreSession(w http.ResponseWriter, r *http.Request) {
+	if err := s.Store.RestoreSession(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "restored"})
+}
+
+func (s *Server) handlePermanentlyDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if err := s.Store.PermanentlyDeleteSession(r.Context(), r.PathValue("id")); err != nil {
 		writeError(w, err)
 		return
 	}

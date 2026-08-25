@@ -22,6 +22,7 @@ export const SYNCED_PREFERENCE_KEYS = [
   'market-replay:timeframe-preferences',
   'market-replay:drawing-favorites:v1',
   'market-replay:trade-review:v1',
+  'market-replay:workspace-settings:v1',
   'replay:eval',
   'replay:eval:accounts',
 ] as const

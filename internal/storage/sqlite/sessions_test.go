@@ -154,7 +154,7 @@ func TestUpdateSession_NotFound(t *testing.T) {
 	}
 }
 
-func TestDeleteSession_RemovesSessionAndTrades(t *testing.T) {
+func TestDeleteSession_ArchivesRestoresAndPermanentlyDeletes(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	created, err := s.CreateSession(ctx, model.Session{Symbol: "NQ", Tf: "1m", StartTs: 1000})
@@ -174,8 +174,38 @@ func TestDeleteSession_RemovesSessionAndTrades(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTrades: %v", err)
 	}
+	if len(trades) != 1 {
+		t.Fatalf("len(trades) = %d, want archived journal intact", len(trades))
+	}
+	deleted, err := s.ListDeletedSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListDeletedSessions: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0].ID != created.ID || deleted[0].DeletedAt == nil {
+		t.Fatalf("deleted sessions = %+v, want archived session with deletedAt", deleted)
+	}
+	if err := s.RestoreSession(ctx, created.ID); err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	restored, err := s.GetSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSession restored: %v", err)
+	}
+	if restored.Status != model.SessionPaused {
+		t.Fatalf("restored status = %q, want paused", restored.Status)
+	}
+	if err := s.DeleteSession(ctx, created.ID); err != nil {
+		t.Fatalf("archive restored session: %v", err)
+	}
+	if err := s.PermanentlyDeleteSession(ctx, created.ID); err != nil {
+		t.Fatalf("PermanentlyDeleteSession: %v", err)
+	}
+	trades, err = s.ListTrades(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("ListTrades after permanent delete: %v", err)
+	}
 	if len(trades) != 0 {
-		t.Fatalf("len(trades) = %d, want 0", len(trades))
+		t.Fatalf("len(trades) after permanent delete = %d, want 0", len(trades))
 	}
 }
 
