@@ -1,11 +1,22 @@
 # Go
 /bin/
+/server
 
 # Frontend (web/) — dist is a build artifact; `make build` regenerates it
 # before the Go embed step, so it must never be relied on as committed.
 web/node_modules/
 web/dist/
 web/*.local
+
+# Generated QA/debug output — keep source tests, never their screenshots,
+# recordings, reports, coverage, or profiler dumps.
+/web/artifacts/
+/reports/
+/*.png
+coverage/
+web/coverage/
+*.prof
+*.trace
 
 # Python pipeline — .venv is a regenerable virtualenv (deps: databento_dbn,
 # zstandard, pyarrow, pandas, pytz — no requirements.txt/uv.lock yet).
