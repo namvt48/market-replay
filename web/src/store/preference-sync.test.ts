@@ -103,6 +103,7 @@ describe('hydratePreferences', () => {
       'market-replay:saved-chart-layouts',
       'market-replay:timeframe-preferences',
       'market-replay:drawing-favorites:v1',
+      'market-replay:trade-review:v1',
       'replay:eval',
       'replay:eval:accounts',
     ]))
@@ -163,6 +164,21 @@ describe('hydratePreferences local-writer-wins keys', () => {
 
     expect(storage.getItem('replay:eval')).toBe('{"accountId":"eval-ES-new","phase":"ready"}')
     expect(storage.getItem('replay:eval:accounts')).toBe('[{"accountId":"eval-ES-new"}]')
+  })
+
+  it('adds remote-only evaluation accounts to an existing local registry', async () => {
+    const storage = memoryStorage()
+    storage.setItem('replay:eval:accounts', '[{"accountId":"eval-local","name":"Local name"}]')
+    api.fetchPreferences.mockResolvedValue({
+      'replay:eval:accounts': '[{"accountId":"eval-local","name":"Stale remote name"},{"accountId":"demo-eval-progress"}]',
+    })
+
+    await hydratePreferences(storage)
+
+    expect(JSON.parse(storage.getItem('replay:eval:accounts') ?? '[]')).toEqual([
+      { accountId: 'eval-local', name: 'Local name' },
+      { accountId: 'demo-eval-progress' },
+    ])
   })
 
   it('seeds the eval keys from the backend on a browser that has no local copy', async () => {

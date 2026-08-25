@@ -173,9 +173,9 @@ export function ChartTile({ pane, active, removable, maximized, onActivate, onTo
               </div>
             ) : null}
           </div>
-          <OhlcLegend store={hoverStore} precision={paneSymbolMeta?.priceDecimals ?? replay.priceDecimals} />
+          <OhlcLegend store={hoverStore} precision={paneSymbolMeta?.priceDecimals ?? replay.priceDecimals} textColor={pane.settings.appearance.textColor} />
         </div>
-        <IndicatorLegend />
+        <IndicatorLegend textColor={pane.settings.appearance.textColor} />
       </div>
       <div className="absolute right-1.5 top-1.5 z-30 flex items-center gap-0.5">
         {onPopOut ? <button type="button" onClick={onPopOut} className="tool-button chart-action-button border border-line bg-surface-1/95" aria-label={`Open ${pane.timeframe} chart in new window`} title="Open chart on another screen"><ExternalLink size={14} strokeWidth={1.75} /></button> : null}

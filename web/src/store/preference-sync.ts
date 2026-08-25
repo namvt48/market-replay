@@ -21,6 +21,7 @@ export const SYNCED_PREFERENCE_KEYS = [
   'market-replay:saved-chart-layouts',
   'market-replay:timeframe-preferences',
   'market-replay:drawing-favorites:v1',
+  'market-replay:trade-review:v1',
   'replay:eval',
   'replay:eval:accounts',
 ] as const
@@ -34,6 +35,7 @@ const SYNCED = new Set<string>(SYNCED_PREFERENCE_KEYS)
  * not imported from there because eval-store imports this module.
  */
 const LOCAL_WRITER_WINS_KEYS = new Set<string>(['replay:eval', 'replay:eval:accounts'])
+const EVAL_ACCOUNTS_KEY = 'replay:eval:accounts'
 const PUSH_DEBOUNCE_MS = 400
 const HYDRATE_TIMEOUT_MS = 1_200
 // Long enough to survive a slow backend, short enough that a dead one never
@@ -156,6 +158,28 @@ const syncedPreferenceStorage = new SyncedPreferenceStorage()
 
 export const preferenceStorage: PreferenceStorage = syncedPreferenceStorage
 
+function mergeEvalAccountRegistries(localPayload: string, remotePayload: string): string {
+  try {
+    const local = JSON.parse(localPayload) as unknown
+    const remote = JSON.parse(remotePayload) as unknown
+    if (!Array.isArray(local) || !Array.isArray(remote)) return localPayload
+    const localIds = new Set(local.flatMap((account) => {
+      if (typeof account !== 'object' || account === null || !('accountId' in account)) return []
+      const accountId = (account as { accountId?: unknown }).accountId
+      return typeof accountId === 'string' ? [accountId] : []
+    }))
+    const remoteOnly = remote.filter((account) => {
+      if (typeof account !== 'object' || account === null || !('accountId' in account)) return false
+      const accountId = (account as { accountId?: unknown }).accountId
+      return typeof accountId === 'string' && !localIds.has(accountId)
+    })
+    if (remoteOnly.length === 0) return localPayload
+    return JSON.stringify([...local, ...remoteOnly].slice(0, 50))
+  } catch {
+    return localPayload
+  }
+}
+
 /** Pushes every queued backend write now, for code paths about to navigate. */
 export function flushPreferenceSync(): Promise<void> {
   return syncedPreferenceStorage.flush()
@@ -183,7 +207,10 @@ export async function hydratePreferences(storage: PreferenceStorage | null = bro
       if (!SYNCED.has(key)) continue
       if (LOCAL_WRITER_WINS_KEYS.has(key)) {
         const local = storage.getItem(key)
-        if (local !== null && local !== payload) continue
+        if (local !== null && local !== payload) {
+          if (key === EVAL_ACCOUNTS_KEY) storage.setItem(key, mergeEvalAccountRegistries(local, payload))
+          continue
+        }
       }
       storage.setItem(key, payload)
     }

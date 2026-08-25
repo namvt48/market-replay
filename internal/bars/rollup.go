@@ -50,52 +50,99 @@ type rollups struct {
 	rthDaily []rollupBar
 }
 
-// buildRollups derives the hourly index from f. The daily index needs the
-// companion .idx and is attached separately by the registry once loaded.
-func buildRollups(f *BarFile) *rollups {
-	return &rollups{hourly: buildHourlyRollup(f)}
+// indexPlan says what one index() pass should produce.
+type indexPlan struct {
+	// rollups asks for the derived indexes. False makes index() a
+	// validate-and-hash pass that reads the ts column and nothing else —
+	// a quarter of the bytes, which is what makes the .roll cache worth
+	// consulting before deciding to build anything.
+	rollups bool
+	// location is the session timezone the RTH indexes align to. Only read
+	// when rollups is true; nil then means UTC, matching a symbol that
+	// declares no session timezone at all.
+	location *time.Location
 }
 
-// attachCalendarRollup builds and stores the session-day index. The
-// registry calls this after loadCalendar and before the file is published
+// planFor derives the index plan for one dataset from its own timeframe and
+// symbol metadata.
+func planFor(tf string, meta model.SymbolMeta) (indexPlan, error) {
+	if !rollupsServeDisplayTimeframes(tf) {
+		return indexPlan{}, nil
+	}
+	location, err := sessionLocation(meta)
+	if err != nil {
+		return indexPlan{}, err
+	}
+	return indexPlan{rollups: true, location: location}, nil
+}
+
+// rollupsServeDisplayTimeframes reports whether any display timeframe served
+// from a dataset of this timeframe can actually read a rollup.
+//
+// Every rollup consumer — rollupFor and rthRollupFor — answers only for the
+// 'h'/'d'/'w'/'M' units and for an 'm' multiplier that is a whole number of
+// hours; a seconds-unit timeframe always falls through to the raw-bar scan.
+// And BaseTimeframe routes exactly the seconds-unit timeframes to the sub-
+// minute dataset. So the four indexes built over a 5s file are unreachable by
+// construction: TestSubMinuteRollupsUnreachable enumerates every timeframe the
+// HTTP layer accepts and pins that. Building them anyway cost 6.1 GB of
+// startup reads, ~13 s of CPU and ~190 MB of resident rollups for six symbols.
+func rollupsServeDisplayTimeframes(tf string) bool {
+	parsed, err := parseChartTimeframe(tf)
+	if err != nil {
+		// An unrecognised dataset timeframe keeps the old behaviour: index it
+		// and let the aggregator decide, rather than silently serving a
+		// dataset with no indexes because its filename was unexpected.
+		return true
+	}
+	return parsed.unit != 's'
+}
+
+// sessionLocation resolves a symbol's session timezone. Invalid timezone
+// metadata is surfaced instead of silently leaving requests on the
+// multi-million-bar scan path.
+func sessionLocation(meta model.SymbolMeta) (*time.Location, error) {
+	if meta.SessionTz == "" {
+		return time.UTC, nil
+	}
+	location, err := cachedLoadLocation(meta.SessionTz)
+	if err != nil {
+		return nil, fmt.Errorf("load session timezone %q: %w", meta.SessionTz, err)
+	}
+	return location, nil
+}
+
+// attachCalendarRollup validates the companion calendar against this file
+// and, when plan.rollups asks for it, folds one daily entry per session day.
+// The registry calls this after loadCalendar and before the file is published
 // to a slot, so no reader can observe a half-built index.
 //
 // It returns why the index could not be built, if it could not. That reason
 // used to be discarded, which made a stale .idx a silent twenty-fold
 // slowdown: daily, weekly and monthly aggregation quietly reverted to
 // scanning raw bars with nothing anywhere saying so.
-func (f *BarFile) attachCalendarRollup(cal *Calendar) (rejected string) {
+//
+// Calendar.ordered is set for every dataset, indexed or not: GET
+// /api/v1/calendar accepts any timeframe the registry holds — including a
+// sub-minute one that gets no rollups — and Calendar.Range binary-searches
+// only on that flag.
+func (f *BarFile) attachCalendarRollup(cal *Calendar, plan indexPlan) (rejected string) {
 	if f.rollups == nil {
 		f.rollups = &rollups{}
 	}
-	daily, reason := buildDailyRollup(f, cal, f.rollups.hourly)
-	f.rollups.daily = daily
-	if cal != nil {
-		// A daily index only builds when every entry proved in-bounds,
-		// ascending and non-overlapping — which is precisely the invariant
-		// Calendar.Range needs before it can binary-search.
-		cal.ordered = len(f.rollups.daily) == len(cal.dates)
+	if cal == nil || len(cal.dates) == 0 {
+		return ""
 	}
-	return reason
-}
-
-// attachRTHRollups builds the regular-session indexes before a BarFile is
-// published by the registry. Invalid timezone metadata is surfaced instead
-// of silently leaving requests on the multi-million-bar scan path.
-func (f *BarFile) attachRTHRollups(meta model.SymbolMeta) error {
-	location := time.UTC
-	var err error
-	if meta.SessionTz != "" {
-		location, err = cachedLoadLocation(meta.SessionTz)
-		if err != nil {
-			return fmt.Errorf("load session timezone %q: %w", meta.SessionTz, err)
-		}
+	if reason := verifyCalendarRanges(f, cal); reason != "" {
+		cal.ordered = false
+		f.rollups.daily = nil
+		return reason
 	}
-	if f.rollups == nil {
-		f.rollups = &rollups{}
+	cal.ordered = true
+	if plan.rollups {
+		f.rollups.daily = buildDailyRollup(f, cal, f.rollups.hourly)
 	}
-	f.rollups.rthHourly, f.rollups.rthDaily = buildRTHRollups(f, location)
-	return nil
+	return ""
 }
 
 const (
@@ -157,34 +204,106 @@ func floorDivSeconds(value, divisor int64) int64 {
 	return quotient
 }
 
-// buildRTHRollups filters and aggregates the raw file in one pass. RTH bars
-// for one hour/day occupy a contiguous raw range, so [from,to) remains safe
-// for recomputing the single entry clipped by a replay spoiler boundary.
+// tsHashOffset/tsHashPrime are FNV-1a's 64-bit parameters. The hash exists
+// to answer "is this the same bar timeline as when the .roll cache was
+// written?" — see rollupcache.go. FNV is chosen for being a two-instruction
+// accumulate: the ts values are already in a register from the validation
+// compare, so hashing all of them adds no memory traffic at all.
+const (
+	tsHashOffset = 14695981039346656037
+	tsHashPrime  = 1099511628211
+)
+
+// indexBuildHook fires whenever index() commits to a full rollup build. Kept
+// as a variable, like discardMappedPages, so a test can prove the .roll cache
+// actually prevented a rebuild instead of inferring it from a timing
+// difference. Always nil in production.
+var indexBuildHook func()
+
+// index walks the file once, validating that timestamps strictly increase,
+// hashing them, and building every derived index the plan asks for.
 //
-// The calendar fields this needs (weekday, minute-of-day) are derived by
-// integer arithmetic from a cached zone offset rather than through time.Time
-// accessors — see zoneWindow. The one thing that stays on time.Date is the
-// session's 09:30 open, computed once per session: its offset can legitimately
-// differ from the offset at the bar being read when a transition lands between
-// them, and only a real tzdata lookup resolves that correctly.
-func buildRTHRollups(f *BarFile, location *time.Location) (hourly, daily []rollupBar) {
+// One pass, not three. Validation, the wall-clock hourly index and the RTH
+// indexes each used to walk the whole file on their own; all three read the
+// same 24 bytes per bar, so on a 5 M-bar dataset the two extra passes bought
+// nothing but 2x the memory traffic. Folding validation in is safe because a
+// violation is detected at bar i before bar i's OHLCV is used for anything
+// that escapes: index() returns the error and the caller discards the file.
+//
+// RTH bars for one hour/day occupy a contiguous raw range, so [from,to)
+// remains safe for recomputing the single entry clipped by a replay spoiler
+// boundary. The calendar fields the RTH filter needs (weekday, minute-of-day)
+// are derived by integer arithmetic from a cached zone offset rather than
+// through time.Time accessors — see zoneWindow. The one thing that stays on
+// time.Date is the session's 09:30 open, computed once per session: its offset
+// can legitimately differ from the offset at the bar being read when a
+// transition lands between them, and only a real tzdata lookup resolves that
+// correctly.
+//
+// A file too large to index with int32 bar indices (~2.1 B bars, a 51 GB file)
+// is validated and hashed but left unindexed — the aggregator then keeps
+// scanning raw bars, which is slower but still correct.
+func (f *BarFile) index(plan indexPlan) (tsHash uint64, err error) {
 	n := f.Count()
-	if n == 0 || n > math.MaxInt32 {
-		return nil, nil
+	if f.rollups == nil {
+		f.rollups = &rollups{}
 	}
-	hourly = make([]rollupBar, 0, n/180+1)
-	daily = make([]rollupBar, 0, n/(23*60)+1)
-	currentHour := int64(math.MinInt64)
-	currentDay := int64(math.MinInt64)
+	if !plan.rollups || n > math.MaxInt32 {
+		return f.scanTimestamps()
+	}
+	if indexBuildHook != nil {
+		indexBuildHook()
+	}
+
+	location := plan.location
+	if location == nil {
+		location = time.UTC
+	}
+
+	// Capacity from the file's actual ts span, not from an assumed one-minute
+	// bar spacing: n/60 over-allocated 8.5x on a 5s dataset, ~190 MB across
+	// six symbols. Hour buckets cannot outnumber either the hours the file
+	// spans or its bars, and a regular session covers seven hour buckets
+	// (09:30 through 15:30).
+	span := f.TsAt(n-1) - f.TsAt(0)
+	hourCap := min(int(span/hourSeconds)+2, n)
+	dayCap := min(int(span/daySeconds)+2, n)
+	rthHourlyPerDay := (rthCloseMinute - rthOpenMinute + 59) / 60
+	hourly := make([]rollupBar, 0, hourCap)
+	rthHourly := make([]rollupBar, 0, min(dayCap*rthHourlyPerDay, n))
+	rthDaily := make([]rollupBar, 0, dayCap)
+
 	hourBar := rollupBar{from: -1}
-	dayBar := rollupBar{from: -1}
+	currentHour := int64(math.MinInt64)
+	rthHourBar := rollupBar{from: -1}
+	rthDayBar := rollupBar{from: -1}
+	currentRTHHour := int64(math.MinInt64)
+	currentRTHDay := int64(math.MinInt64)
 
 	zone := newZoneWindow(location)
 	openDay := int64(math.MinInt64) // local day number `open` was derived from
 	open := int64(0)
 
+	hash := uint64(tsHashOffset)
+	previous := int64(-1)
 	for i := 0; i < n; i++ {
 		ts := f.TsAt(i)
+		if ts <= previous {
+			return 0, fmt.Errorf("%w: bar %d ts=%d <= previous %d", ErrNonMonotonicTs, i, ts, previous)
+		}
+		previous = ts
+		hash = (hash ^ uint64(ts)) * tsHashPrime
+
+		if hour := ts / hourSeconds * hourSeconds; hour != currentHour {
+			if hourBar.from >= 0 {
+				hourly = append(hourly, hourBar)
+			}
+			currentHour = hour
+			hourBar = newRollupBar(f, i)
+		} else {
+			accumulateRollupBar(&hourBar, f, i)
+		}
+
 		local := ts + zone.offsetAt(ts)
 		days := floorDivSeconds(local, daySeconds)
 		// 1970-01-01 was a Thursday and time.Weekday counts Sunday as 0.
@@ -200,90 +319,97 @@ func buildRTHRollups(f *BarFile, location *time.Location) (hourly, daily []rollu
 			y, m, d := time.Unix(ts, 0).In(location).Date()
 			open = time.Date(y, m, d, 9, 30, 0, 0, location).Unix()
 		}
-		hour := open + int64((minute-rthOpenMinute)/60)*hourSeconds
-		if hour != currentHour {
-			if hourBar.from >= 0 {
-				hourly = append(hourly, hourBar)
+		if hour := open + int64((minute-rthOpenMinute)/60)*hourSeconds; hour != currentRTHHour {
+			if rthHourBar.from >= 0 {
+				rthHourly = append(rthHourly, rthHourBar)
 			}
-			currentHour = hour
-			hourBar = newRollupBar(f, i)
+			currentRTHHour = hour
+			rthHourBar = newRollupBar(f, i)
 		} else {
-			accumulateRollupBar(&hourBar, f, i)
+			accumulateRollupBar(&rthHourBar, f, i)
 		}
-		if open != currentDay {
-			if dayBar.from >= 0 {
-				daily = append(daily, dayBar)
+		if open != currentRTHDay {
+			if rthDayBar.from >= 0 {
+				rthDaily = append(rthDaily, rthDayBar)
 			}
-			currentDay = open
-			dayBar = newRollupBar(f, i)
+			currentRTHDay = open
+			rthDayBar = newRollupBar(f, i)
 		} else {
-			accumulateRollupBar(&dayBar, f, i)
+			accumulateRollupBar(&rthDayBar, f, i)
 		}
 	}
 	if hourBar.from >= 0 {
 		hourly = append(hourly, hourBar)
 	}
-	if dayBar.from >= 0 {
-		daily = append(daily, dayBar)
+	if rthHourBar.from >= 0 {
+		rthHourly = append(rthHourly, rthHourBar)
 	}
-	return hourly, daily
+	if rthDayBar.from >= 0 {
+		rthDaily = append(rthDaily, rthDayBar)
+	}
+
+	f.rollups.hourly = hourly
+	f.rollups.rthHourly = rthHourly
+	f.rollups.rthDaily = rthDaily
+	return hash, nil
 }
 
-// buildHourlyRollup aggregates f into wall-clock hour buckets in one pass.
-// Returns nil for a file too large to index with int32 bar indices (~2.1B
-// bars, a 51 GB file) — the aggregator then keeps scanning raw bars, which
-// is slower but still correct.
-func buildHourlyRollup(f *BarFile) []rollupBar {
-	n := f.Count()
-	if n == 0 || n > math.MaxInt32 {
-		return nil
-	}
-	out := make([]rollupBar, 0, n/60+1)
-	current := rollupBar{from: -1}
-	currentHour := int64(math.MinInt64)
-	for i := 0; i < n; i++ {
-		hour := f.TsAt(i) / hourSeconds * hourSeconds
-		if hour != currentHour {
-			if current.from >= 0 {
-				out = append(out, current)
-			}
-			currentHour = hour
-			current = newRollupBar(f, i)
-			continue
+// scanTimestamps is index()'s validate-and-hash-only path: it reads the ts
+// column and none of the five price/volume columns, a quarter of the file's
+// bytes. That is what lets the registry decide whether the .roll cache is
+// current before committing to a full read.
+func (f *BarFile) scanTimestamps() (tsHash uint64, err error) {
+	hash := uint64(tsHashOffset)
+	previous := int64(-1)
+	for i, n := 0, f.Count(); i < n; i++ {
+		ts := f.TsAt(i)
+		if ts <= previous {
+			return 0, fmt.Errorf("%w: bar %d ts=%d <= previous %d", ErrNonMonotonicTs, i, ts, previous)
 		}
-		accumulateRollupBar(&current, f, i)
+		previous = ts
+		hash = (hash ^ uint64(ts)) * tsHashPrime
 	}
-	if current.from >= 0 {
-		out = append(out, current)
-	}
-	return out
+	return hash, nil
 }
 
-// buildDailyRollup aggregates one entry per calendar session day. It
-// returns nil — deliberately degrading to the raw-scan path rather than
-// failing here — whenever the calendar and the .bin disagree (out-of-range,
-// overlapping, or out-of-order entries). That keeps the existing
-// ErrIdxOutOfBounds diagnostic firing at request time from
-// aggregateCalendarChartWindow, where it already has a test, instead of
+// verifyCalendarRanges checks that every session's bar range is in-bounds,
+// ascending and non-overlapping against f, returning why not when it isn't.
+//
+// That is exactly the invariant two separate things need: the daily index,
+// which cannot fold a session whose range it can't trust, and
+// Calendar.Range's binary search. Reporting it instead of failing keeps the
+// existing ErrIdxOutOfBounds diagnostic firing at request time from
+// aggregateCalendarChartWindow, where it already has a test, rather than
 // turning a stale .idx into a startup failure.
-func buildDailyRollup(f *BarFile, cal *Calendar, hourly []rollupBar) (entries []rollupBar, rejected string) {
+func verifyCalendarRanges(f *BarFile, cal *Calendar) (rejected string) {
 	n := f.Count()
-	if cal == nil || len(cal.dates) == 0 || n == 0 || n > math.MaxInt32 {
-		return nil, ""
+	if n > math.MaxInt32 {
+		return fmt.Sprintf("%d bars exceeds the int32 bar index the session index uses", n)
 	}
-	out := make([]rollupBar, 0, len(cal.dates))
+	previousTo := 0
 	for _, date := range cal.dates {
 		entry := cal.byDate[date]
 		if entry.Offset < 0 || entry.Count <= 0 || entry.Offset+entry.Count > n {
-			return nil, fmt.Sprintf("session %s claims bars [%d,%d) of a %d-bar file", date, entry.Offset, entry.Offset+entry.Count, n)
+			return fmt.Sprintf("session %s claims bars [%d,%d) of a %d-bar file", date, entry.Offset, entry.Offset+entry.Count, n)
 		}
-		from, to := int32(entry.Offset), int32(entry.Offset+entry.Count)
-		if len(out) > 0 && from < out[len(out)-1].to {
-			return nil, fmt.Sprintf("session %s starts at bar %d, inside the previous session which ends at %d", date, from, out[len(out)-1].to)
+		if entry.Offset < previousTo {
+			return fmt.Sprintf("session %s starts at bar %d, inside the previous session which ends at %d", date, entry.Offset, previousTo)
 		}
-		out = append(out, foldRange(f, hourly, int(from), int(to)))
+		previousTo = entry.Offset + entry.Count
 	}
-	return out, ""
+	return ""
+}
+
+// buildDailyRollup aggregates one entry per calendar session day. Callers
+// must have cleared verifyCalendarRanges first — every range is read here
+// without re-checking it.
+func buildDailyRollup(f *BarFile, cal *Calendar, hourly []rollupBar) []rollupBar {
+	out := make([]rollupBar, 0, len(cal.dates))
+	for _, date := range cal.dates {
+		entry := cal.byDate[date]
+		out = append(out, foldRange(f, hourly, entry.Offset, entry.Offset+entry.Count))
+	}
+	return out
 }
 
 // foldRange aggregates raw bars [from,to) by reusing whole hourly entries

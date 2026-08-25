@@ -41,7 +41,7 @@ vi.mock('../../replay/use-replay', () => ({
 }))
 
 const saved: ReplaySession = {
-  id: '018f08de-1111-7222-8333-abcdef123456', symbol: 'NQ', tf: '5m', startTs: 1_700_000_000,
+  id: '018f08de-1111-7222-8333-abcdef123456', name: '', symbol: 'NQ', tf: '5m', startTs: 1_700_000_000,
   cursorTs: 1_700_007_200, equityCents: 1_025_000, status: 'paused', kind: 'replay', config: {}, createdAt: 1_700_000_000, updatedAt: 1_700_007_200,
 }
 const trade: ClosedTrade = {
@@ -74,7 +74,7 @@ describe('SessionsPanel', () => {
     render(<SessionsPanel />)
 
     const hash = shortReplaySessionHash(saved.id)
-    expect(await screen.findAllByText(new RegExp(`#${hash}`))).toHaveLength(1)
+    expect((await screen.findAllByText(new RegExp(`#${hash}`))).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/paused/i).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('$250.00')).length).toBeGreaterThan(0)
     expect(screen.getByText('100%')).toBeVisible()
@@ -109,7 +109,7 @@ describe('SessionsPanel', () => {
     render(<SessionsPanel />)
 
     const review = await screen.findByRole('button', { name: 'Review active session' })
-    const activeRow = screen.getByRole('button', { name: `Inspect NQ 5m session ${shortReplaySessionHash(saved.id)}` })
+    const activeRow = screen.getByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` })
     expect(activeRow).toHaveAttribute('aria-current', 'true')
     expect(activeRow).toHaveClass('bg-active/10')
     await user.click(review)
@@ -122,7 +122,7 @@ describe('SessionsPanel', () => {
     const user = userEvent.setup()
     render(<SessionsPanel />)
     const hash = shortReplaySessionHash(saved.id)
-    const row = await screen.findByRole('button', { name: `Inspect NQ 5m session ${hash}` })
+    const row = await screen.findByRole('button', { name: `Inspect replay session #${hash}` })
     fireEvent.contextMenu(row, { clientX: 120, clientY: 140 })
 
     await user.click(screen.getByRole('menuitem', { name: 'Delete session' }))
@@ -142,10 +142,25 @@ describe('SessionsPanel', () => {
     expect(mocks.beginReplaySelection).toHaveBeenCalledWith({ createSession: true })
   })
 
+  it('renames a replay session and refreshes its persisted display name', async () => {
+    const user = userEvent.setup()
+    mocks.fetchSessions
+      .mockResolvedValueOnce([saved])
+      .mockResolvedValue([{ ...saved, name: 'London open practice' }])
+    render(<SessionsPanel />)
+
+    await user.click(await screen.findByRole('button', { name: 'Rename replay session' }))
+    await user.type(screen.getByLabelText('Display name'), 'London open practice')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(mocks.patchSession).toHaveBeenCalledWith(saved.id, { name: 'London open practice' })
+    expect((await screen.findAllByText('London open practice')).length).toBeGreaterThan(0)
+  })
+
   it('exports complete trade rows as CSV', () => {
     const csv = tradeHistoryCsv(saved, [trade])
-    expect(csv).toContain('session_id,symbol,side,quantity')
-    expect(csv).toContain(`${saved.id},NQ,long,1`)
+    expect(csv).toContain('session_id,session_name,symbol,side,quantity')
+    expect(csv).toContain(`${saved.id},#${shortReplaySessionHash(saved.id)},NQ,long,1`)
     expect(csv).toContain(',25000,0,24,3,2')
   })
 })

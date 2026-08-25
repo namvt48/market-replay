@@ -19,9 +19,11 @@ type BarFile struct {
 
 	tsOff, openOff, highOff, lowOff, closeOff, volOff int
 
-	// rollups are derived aggregate indexes over this file's bars, built
-	// once at open time so /chart-bars/at costs O(buckets returned) instead
-	// of O(raw bars in the window). Never nil after newBarFile.
+	// rollups are derived aggregate indexes over this file's bars, built by
+	// index() at open time so /chart-bars/at costs O(buckets returned)
+	// instead of O(raw bars in the window). Never nil after newBarFile, but
+	// empty until index() runs — and deliberately left empty for a dataset
+	// no rollup consumer can reach (see rollupsServeDisplayTimeframes).
 	rollups *rollups
 }
 
@@ -34,10 +36,14 @@ var discardMappedPages = func(file *BarFile) error {
 	return unix.Madvise(file.data, unix.MADV_DONTNEED)
 }
 
-// openBarFile mmaps path and validates it fail-fast: magic/version/flags,
-// file size matching the header's declared count, and every ts strictly
-// increasing. A corrupt or truncated file is rejected here, not discovered
-// later via an out-of-range slice.
+// openBarFile mmaps path and validates its header fail-fast:
+// magic/version/flags and file size matching the header's declared count. A
+// corrupt or truncated file is rejected here, not discovered later via an
+// out-of-range slice.
+//
+// Timestamp monotonicity is NOT checked here — it needs a pass over the ts
+// column, which index() already walks, so folding the two together halves the
+// bytes a startup reads. Callers must call index() before publishing the file.
 func openBarFile(path string) (*BarFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -70,8 +76,10 @@ func openBarFile(path string) (*BarFile, error) {
 	return bf, nil
 }
 
-// newBarFile validates an already-loaded byte slice (mmap'd in production,
-// a plain []byte in tests) and builds a BarFile over it in place.
+// newBarFile validates the header of an already-loaded byte slice (mmap'd in
+// production, a plain []byte in tests) and lays a BarFile over it in place.
+// The result is readable but unindexed: index() must run before it is
+// published, both to prove ts monotonicity and to derive the rollups.
 func newBarFile(data []byte) (*BarFile, error) {
 	h, err := parseHeader(data)
 	if err != nil {
@@ -95,17 +103,7 @@ func newBarFile(data []byte) (*BarFile, error) {
 		lowOff: lowOff, closeOff: closeOff, volOff: volOff,
 	}
 
-	prev := int64(-1)
-	for i := 0; i < n; i++ {
-		ts := bf.TsAt(i)
-		if ts <= prev {
-			return nil, fmt.Errorf("%w: bar %d ts=%d <= previous %d", ErrNonMonotonicTs, i, ts, prev)
-		}
-		prev = ts
-	}
-	// Only index a file that already passed validation — buildRollups
-	// assumes strictly increasing ts and in-range column offsets.
-	bf.rollups = buildRollups(bf)
+	bf.rollups = &rollups{}
 	return bf, nil
 }
 

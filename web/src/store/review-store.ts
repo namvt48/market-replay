@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import type { ReviewTradeSnapshot } from '../review/types'
+import { preferenceStorage } from './preference-sync'
 
 export type ReviewTagColor = 'green' | 'blue' | 'orange' | 'red' | 'purple' | 'cyan' | 'grey'
 
@@ -101,6 +102,6 @@ export const useReviewStore = create<ReviewState>()(persist((set) => ({
   }),
 }), {
   name: 'market-replay:trade-review:v1',
-  storage: createJSONStorage(() => localStorage),
+  storage: createJSONStorage(() => preferenceStorage),
   partialize: (state) => ({ documents: state.documents, tagGroups: state.tagGroups }),
 }))

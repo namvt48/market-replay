@@ -35,6 +35,60 @@ describe('drawing appearance utilities', () => {
     expect(lineDashFor('dotted')).toEqual([2, 5])
   })
 
+  it('preserves Default quantity precision across unrelated position changes', () => {
+    const position: DrawingAppearance = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'long-1', type: 'long-position', lineWidth: 1,
+      extendLeft: false, extendRight: false, supportsExtend: false,
+      positionTickSize: 0.25,
+      positionPricePrecision: 2,
+    }
+
+    const merged = mergeDrawingAppearance(position, { positionAccountSize: 2500 })
+
+    expect(merged.positionQtyPrecision).toBe('default')
+    expect(appearanceOptions(merged)).toMatchObject({
+      accountSize: 2500,
+      qtyPrecision: 'default',
+      tickSize: 0.25,
+      pricePrecision: 2,
+    })
+  })
+
+  it('maps dedicated Text background, border, wrap and extended font sizes', () => {
+    const text: DrawingAppearance = {
+      ...DEFAULT_DRAWING_METADATA,
+      id: 'text-1', type: 'text-annotation', text: 'Breakout', fontSize: 14,
+      extendLeft: false, extendRight: false, supportsExtend: false, lineWidth: 1,
+    }
+    const merged = mergeDrawingAppearance(text, {
+      fontSize: 40,
+      bold: true,
+      italic: true,
+      horizontalAlign: 'left',
+      textBackgroundVisible: true,
+      textBorderVisible: true,
+      textWrap: true,
+      textAnchored: true,
+      textAnchorX: 2,
+      textAnchorY: -1,
+    })
+
+    expect(merged.fontSize).toBe(40)
+    expect(appearanceOptions(merged)).toMatchObject({
+      text: 'Breakout',
+      fontSize: 40,
+      fontWeight: 'italic 700',
+      textAlign: 'left',
+      backgroundColor: 'rgba(19, 23, 34, 0.82)',
+      borderColor: 'rgba(41, 98, 255, 1)',
+      textWrap: true,
+      screenAnchored: true,
+      screenXRatio: 1,
+      screenYRatio: 0,
+    })
+  })
+
   it('normalizes and maps all 24 Fibonacci level slots to drawing options', () => {
     const levels = normalizeFibonacciLevels([{ value: 0.25, visible: true, color: '#ABCDEF' }])
     const drawing: DrawingAppearance = {
@@ -47,7 +101,14 @@ describe('drawing appearance utilities', () => {
       supportsExtend: true,
       fibonacciLevels: levels,
     }
-    const merged = mergeDrawingAppearance(drawing, { fibonacciExtend: true, fibonacciLevelDecimals: 20 })
+    const merged = mergeDrawingAppearance(drawing, {
+      fibonacciExtend: true,
+      fibonacciLevelDecimals: 20,
+      fibonacciTrendLineColor: '#4CAF50',
+      fibonacciTrendLineOpacity: 0.5,
+      fibonacciTrendLineWidth: 3,
+      fibonacciTrendLineStyle: 'dotted',
+    })
 
     expect(merged.fibonacciLevels).toHaveLength(24)
     expect(merged.fibonacciLevels[0]).toEqual({ value: 0.25, visible: true, color: '#abcdef' })
@@ -62,6 +123,9 @@ describe('drawing appearance utilities', () => {
       levelFormat: 'values',
       reverseDirection: false,
       showDiagonalLine: true,
+      diagonalLineColor: 'rgba(76, 175, 80, 0.5)',
+      diagonalLineWidth: 3,
+      diagonalLineDash: [2, 5],
       levelSettings: expect.arrayContaining([expect.objectContaining({ value: 0.25, color: '#abcdef' })]),
     })
   })

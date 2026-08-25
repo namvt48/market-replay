@@ -639,7 +639,7 @@ describe('evalAccountName', () => {
   const cases: { name: string; config: EvalConfig; want: string }[] = [
     { name: 'shows the firm in the eval phase', config: ftmo, want: 'FTMO 100K (static)' },
     { name: 'shows the firm for an explicit eval phase', config: { ...ftmo, phase: 'eval' }, want: 'FTMO 100K (static)' },
-    { name: 'appends Funded in the funded phase', config: fundedConfig(topstep), want: 'TopStep 50K (EOD trail) · Funded' },
+    { name: 'keeps the firm name for legacy funded data', config: fundedConfig(topstep), want: 'TopStep 50K (EOD trail)' },
   ]
   for (const tc of cases) {
     it(tc.name, () => {

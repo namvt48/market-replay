@@ -1,4 +1,5 @@
 import { useState, type PointerEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 interface TooltipData {
   title: string
@@ -12,16 +13,21 @@ interface InspectorProps {
 }
 
 function Inspector({ children, className, inspect }: InspectorProps) {
-  const [tooltip, setTooltip] = useState<(TooltipData & { x: number }) | null>(null)
+  const [tooltip, setTooltip] = useState<(TooltipData & { x: number; y: number; placement: 'above' | 'below' }) | null>(null)
   const onPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
     const bounds = event.currentTarget.getBoundingClientRect()
     const ratio = Math.min(1, Math.max(0, (event.clientX - bounds.left) / Math.max(1, bounds.width)))
-    setTooltip({ ...inspect(ratio), x: Math.min(88, Math.max(12, ratio * 100)) })
+    setTooltip({
+      ...inspect(ratio),
+      x: Math.min(window.innerWidth - 112, Math.max(112, event.clientX)),
+      y: event.clientY,
+      placement: event.clientY < 170 ? 'below' : 'above',
+    })
   }
   return (
     <div className={`relative ${className}`} onPointerMove={onPointerMove} onPointerLeave={() => setTooltip(null)}>
       {children}
-      {tooltip ? <div role="tooltip" style={{ left: `${tooltip.x}%` }} className="pointer-events-none absolute top-2 z-20 min-w-48 -translate-x-1/2 rounded-md border border-[#555b64] bg-[#0b0d10] px-3 py-2.5 shadow-[0_14px_36px_rgba(0,0,0,0.56)]"><p className="text-xs font-semibold text-white">{tooltip.title}</p><dl className="mt-2 space-y-1">{tooltip.rows.map((row) => <div key={`${row.label}-${row.value}`} className="flex justify-between gap-5 text-xs"><dt className="text-[#9ba2ad]">{row.label}</dt><dd className={`font-mono font-semibold ${row.tone === 'positive' ? 'text-profit-bright' : row.tone === 'negative' ? 'text-loss-bright' : 'text-white'}`}>{row.value}</dd></div>)}</dl></div> : null}
+      {tooltip && typeof document !== 'undefined' ? createPortal(<div role="tooltip" style={{ left: tooltip.x, top: tooltip.y }} className={`pointer-events-none fixed z-[140] min-w-48 -translate-x-1/2 rounded-md border border-[#626975] bg-[#090b0e] px-3 py-2.5 shadow-[0_16px_38px_rgba(0,0,0,0.72)] ${tooltip.placement === 'above' ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}><p className="text-xs font-semibold text-white">{tooltip.title}</p><dl className="mt-2 space-y-1">{tooltip.rows.map((row) => <div key={`${row.label}-${row.value}`} className="flex justify-between gap-5 text-xs"><dt className="text-[#9ba2ad]">{row.label}</dt><dd className={`font-mono font-semibold ${row.tone === 'positive' ? 'text-profit-bright' : row.tone === 'negative' ? 'text-loss-bright' : 'text-white'}`}>{row.value}</dd></div>)}</dl></div>, document.body) : null}
     </div>
   )
 }

@@ -66,6 +66,14 @@ afterEach(() => {
 })
 
 describe('eval session store', () => {
+  it('treats legacy demo outcome labels as status, not an account name', () => {
+    getEvalState().startEvaluation(ftmo, null, '2024-01-15', DAY0, 'America/New_York')
+    const stored = JSON.parse(localStorage.getItem(EVAL_ACCOUNTS_STORAGE_KEY) ?? '[]') as Array<Record<string, unknown>>
+    localStorage.setItem(EVAL_ACCOUNTS_STORAGE_KEY, JSON.stringify(stored.map((account) => ({ ...account, name: 'Eval - Passed' }))))
+
+    expect(loadEvalAccounts()).toEqual([expect.objectContaining({ name: null })])
+  })
+
   it('keeps a paused account financial snapshot isolated from the live replay fill', () => {
     getEvalState().startEvaluation(ftmo, 'NQ', '2024-01-15', DAY0)
     getEvalState().tick({ cursorTs: DAY0, fill: makeFill() })

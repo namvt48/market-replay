@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeIdxFixture(t *testing.T, raw map[string]idxEntry) string {
@@ -23,9 +24,9 @@ func writeIdxFixture(t *testing.T, raw map[string]idxEntry) string {
 }
 
 func TestCalendar_Resolve(t *testing.T) {
-	f, err := newBarFile(simpleFixture(10, 1000, 60))
+	f, err := newUTCIndexedBarFile(simpleFixture(10, 1000, 60))
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 
 	path := writeIdxFixture(t, map[string]idxEntry{"2024-01-01": {Offset: 2, Count: 3}})
@@ -44,9 +45,9 @@ func TestCalendar_Resolve(t *testing.T) {
 }
 
 func TestCalendar_OutOfBounds(t *testing.T) {
-	f, err := newBarFile(simpleFixture(10, 1000, 60))
+	f, err := newUTCIndexedBarFile(simpleFixture(10, 1000, 60))
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 
 	path := writeIdxFixture(t, map[string]idxEntry{"2024-01-01": {Offset: 8, Count: 5}}) // 8+5=13 > 10
@@ -61,9 +62,9 @@ func TestCalendar_OutOfBounds(t *testing.T) {
 }
 
 func TestCalendar_Range(t *testing.T) {
-	f, err := newBarFile(simpleFixture(20, 0, 60))
+	f, err := newUTCIndexedBarFile(simpleFixture(20, 0, 60))
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 	path := writeIdxFixture(t, map[string]idxEntry{
 		"2024-01-01": {Offset: 0, Count: 5},
@@ -89,9 +90,9 @@ func TestCalendar_Range(t *testing.T) {
 // only `ordered` differs, so any disagreement is the binary search's fault.
 func TestCalendar_RangeBinarySearchMatchesScan(t *testing.T) {
 	const sessions, barsPerSession = 40, 90
-	f, err := newBarFile(simpleFixture(sessions*barsPerSession, 1_700_000_000, 60))
+	f, err := newUTCIndexedBarFile(simpleFixture(sessions*barsPerSession, 1_700_000_000, 60))
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 	raw := make(map[string]idxEntry, sessions)
 	for i := 0; i < sessions; i++ {
@@ -105,7 +106,7 @@ func TestCalendar_RangeBinarySearchMatchesScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadCalendar: %v", err)
 	}
-	f.attachCalendarRollup(cal)
+	f.attachCalendarRollup(cal, indexPlan{rollups: true, location: time.UTC})
 	if !cal.ordered {
 		t.Fatal("calendar not marked ordered; the fast path would never run")
 	}

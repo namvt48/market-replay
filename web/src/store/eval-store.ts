@@ -13,6 +13,7 @@ import { preferenceStorage, type PreferenceStorage } from './preference-sync'
 import { evalConfigSchema, evalStatus, fundedConfig, logEvalAttempt, logPayout, newRuntime, payoutEligibility, sessionDate, syncPayoutRuntime, tickEval, verificationConfig } from '../eval/rules'
 import type { EvalConfig, EvalRuntime, EvalStatus, EvalTradeRecord, PayoutRecord } from '../eval/rules'
 import type { FillEngineState } from '../fill-engine/types'
+import { SOURCE_NAME_MAX_LENGTH, normalizedSourceName } from '../sources/source-name'
 
 export type EvalFillState = Pick<FillEngineState, 'realizedCents' | 'equityCents' | 'trades'>
 
@@ -24,9 +25,16 @@ export const EVAL_ACCOUNTS_STORAGE_KEY = 'replay:eval:accounts'
 const EVAL_SESSION_VERSION = 2
 const PERSIST_INTERVAL_MS = 1000
 
+function persistedEvalName(value: string | null | undefined): string | null {
+  const name = normalizedSourceName(value)
+  if (/^Eval - (?:In Progress|Failed|Passed)$/.test(name)) return null
+  return name || null
+}
+
 export interface EvalSessionState {
   phase: EvalPhase
   accountId: string | null
+  name: string | null
   /**
    * Backend session this eval account persists its trades into. Durable
    * (saved with the account) so resuming an account reuses its session
@@ -132,6 +140,7 @@ const persistedSessionSchema = z.object({
   version: z.literal(EVAL_SESSION_VERSION),
   phase: z.enum(['ready', 'paused', 'running', 'passed', 'failed']).optional(),
   accountId: z.string().min(1).optional(),
+  name: z.string().trim().max(SOURCE_NAME_MAX_LENGTH).nullable().optional().transform(persistedEvalName),
   sessionId: z.string().min(1).nullish(),
   config: evalConfigSchema,
   instrument: z.string().trim().min(1).nullable().optional().transform((instrument) => instrument ?? null),
@@ -201,6 +210,7 @@ function idleSession(): EvalSessionData {
   return {
     phase: 'idle',
     accountId: null,
+    name: null,
     sessionId: null,
     config: null,
     runtime: null,
@@ -287,6 +297,26 @@ export function deleteEvalAccount(accountId: string): string | null {
   return accountId
 }
 
+export function renameEvalAccount(accountId: string, name: string): SavedEvalAccount | null {
+  const storage = getBrowserStorage()
+  if (!storage) return null
+  const normalized = normalizedSourceName(name) || null
+  const accounts = loadEvalAccounts()
+  const account = accounts.find((item) => item.accountId === accountId)
+  if (!account) return null
+  const renamed: SavedEvalAccount = { ...account, name: normalized }
+  try {
+    storage.setItem(EVAL_ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts.map((item) => item.accountId === accountId ? renamed : item)))
+  } catch {
+    return null
+  }
+  if (getEvalState().accountId === accountId) {
+    useEvalStore.setState({ name: normalized })
+    persistImmediately(getEvalState())
+  }
+  return renamed
+}
+
 function loadPersistedSession(): z.infer<typeof persistedSessionSchema> | null {
   const storage = getBrowserStorage()
   if (!storage) return null
@@ -314,6 +344,7 @@ function hydratedSession(): EvalSessionData | null {
   return {
     phase,
     accountId: normalizedAccountId(persisted),
+    name: persisted.name ?? null,
     sessionId: persisted.sessionId ?? null,
     config: persisted.config,
     runtime: persisted.runtime,
@@ -344,6 +375,7 @@ function persistedPayload(state: EvalSessionState): PersistedEvalAccount | null 
     version: EVAL_SESSION_VERSION,
     phase: state.phase,
     accountId: state.accountId,
+    name: state.name,
     sessionId: state.sessionId,
     config: state.config,
     instrument: state.instrument,
@@ -445,6 +477,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     set({
       phase: 'ready',
       accountId: createAccountId(instrument, startTs),
+      name: null,
       sessionId: null,
       config: parsed.data,
       runtime: newRuntime(parsed.data, startTs),
@@ -474,6 +507,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     set({
       phase: 'running',
       accountId: createAccountId(instrument, startTs),
+      name: null,
       sessionId: null,
       config: parsed.data,
       runtime: newRuntime(parsed.data, startTs),
@@ -612,6 +646,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     set({
       phase,
       accountId: account.accountId,
+      name: account.name ?? null,
       sessionId: account.sessionId ?? null,
       config: account.config,
       runtime: account.runtime,
@@ -661,6 +696,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     set({
       phase: 'ready',
       accountId: createAccountId(state.instrument ?? 'eval', startTs),
+      name: null,
       sessionId: null,
       runtime: newRuntime(config, startTs),
       startTs,
@@ -691,6 +727,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     const startTs = state.runtime?.passedAt ?? state.lastCursorTs ?? state.startTs ?? 0
     set({
       accountId: createAccountId(state.instrument ?? 'verification', startTs),
+      name: null,
       sessionId: null,
       config: verification,
       runtime: newRuntime(verification, startTs),
@@ -719,6 +756,7 @@ export const useEvalStore = create<EvalSessionState>((set, get) => ({
     const startTs = state.runtime?.passedAt ?? state.lastCursorTs ?? state.startTs ?? 0
     set({
       accountId: createAccountId(state.instrument ?? 'funded', startTs),
+      name: null,
       sessionId: null,
       config: funded,
       runtime: newRuntime(funded, startTs),

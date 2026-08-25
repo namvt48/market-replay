@@ -12,7 +12,7 @@ const symbolSchema = z.object({
   defaultSlippageTicks: z.number().int().nonnegative(), ranges: z.record(z.string(), rangeSchema),
 })
 const sessionSchema = z.object({
-  id: z.string(), symbol: z.string(), tf: timeframeSchema,
+  id: z.string(), name: z.string().default(''), symbol: z.string(), tf: timeframeSchema,
   startTs: z.number(), cursorTs: z.number(), equityCents: z.number(),
   status: z.enum(['active', 'paused', 'stopped']),
   kind: z.enum(['replay', 'eval']),
@@ -296,11 +296,11 @@ export async function putWatchlist(symbols: string[]): Promise<string[]> {
 
 export async function createSession(
   symbol: string, tf: Timeframe, startTs: number,
-  opts?: { kind?: 'replay' | 'eval'; initialBalanceCents?: number },
+  opts?: { kind?: 'replay' | 'eval'; initialBalanceCents?: number; name?: string },
 ): Promise<string> {
   const response = await checkedFetch('/api/v1/sessions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol, tf, startTs, config: {}, kind: opts?.kind, initialBalanceCents: opts?.initialBalanceCents }),
+    body: JSON.stringify({ symbol, tf, startTs, config: {}, kind: opts?.kind, initialBalanceCents: opts?.initialBalanceCents, name: opts?.name }),
   })
   return z.object({ id: z.string() }).parse(await response.json()).id
 }
@@ -310,7 +310,7 @@ export async function fetchSessions(): Promise<ReplaySession[]> {
   return z.array(sessionSchema).parse(await response.json()) as ReplaySession[]
 }
 
-export async function patchSession(id: string, patch: Partial<Pick<ReplaySession, 'cursorTs' | 'equityCents' | 'status' | 'config'>>): Promise<void> {
+export async function patchSession(id: string, patch: Partial<Pick<ReplaySession, 'name' | 'cursorTs' | 'equityCents' | 'status' | 'config'>>): Promise<void> {
   await checkedFetch(`/api/v1/sessions/${encodeURIComponent(id)}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
   })

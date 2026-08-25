@@ -1,5 +1,6 @@
 import type { ReplaySession } from '../../api/types'
 import type { EngineTrade } from '../../fill-engine/types'
+import { replaySessionDisplayName } from '../../sources/source-name'
 
 function csvCell(value: string | number): string {
   const text = String(value)
@@ -8,11 +9,12 @@ function csvCell(value: string | number): string {
 
 export function tradeHistoryCsv(session: ReplaySession, trades: EngineTrade[]): string {
   const header = [
-    'session_id', 'symbol', 'side', 'quantity', 'entry_time', 'entry_price_ticks', 'exit_time',
+    'session_id', 'session_name', 'symbol', 'side', 'quantity', 'entry_time', 'entry_price_ticks', 'exit_time',
     'exit_price_ticks', 'realized_cents', 'fees_cents', 'mfe_ticks', 'mae_ticks', 'r_multiple',
   ]
   const rows = trades.map((trade) => [
     session.id,
+    replaySessionDisplayName(session),
     trade.symbol,
     trade.side,
     trade.qty,

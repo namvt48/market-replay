@@ -6,13 +6,13 @@ FIRST VIEWPORT: Compact report header, three-segment lens switch, then one domin
 FORM: A dense vertical trading report, faithfully extending the incumbent Replay Desk grammar.
 */
 import {
-  Activity, ArrowLeft, BarChart3, ChevronDown, CircleHelp, FlaskConical, Gauge, Tags,
+  Activity, ArrowLeft, BarChart3, ChevronDown, FlaskConical, Gauge, Tags,
   LineChart as LineChartIcon, TrendingDown,
 } from 'lucide-react'
-import { useCallback, useId, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
 import {
-  analyticsSourceTypeSchema, fetchAnalyticsDrawdown, fetchAnalyticsEdge, fetchAnalyticsExecution, fetchAnalyticsPerformance,
-  type AnalyticsSourceType,
+  analyticsSourceTypeSchema, fetchAnalyticsDrawdown, fetchAnalyticsEdge, fetchAnalyticsExecution, fetchAnalyticsPerformance, fetchAnalyticsSources,
+  type AnalyticsPerformance, type AnalyticsSource, type AnalyticsSourceType,
 } from '../../api/analytics'
 import {
   Donut, FrequencyChart, HorizontalDayBars, LineChart, Radar, SplitBars, VerticalBars, WinRateRings,
@@ -22,10 +22,15 @@ import { toAnalyticsReportView } from './analytics-view-model'
 import { DrawdownTab, SimulationTab } from './ConnectedAnalyticsTabs'
 import { EdgeTab } from './EdgeTab'
 import { ExecutionDisciplineTab } from './ExecutionDisciplineTab'
+import { EvalAnalyticsOverview } from './EvalAnalyticsOverview'
+import { AnalyticsInfoTip } from './AnalyticsFloatingTooltip'
+import { PerformanceCalendar } from './PerformanceCalendar'
 import { TagAnalyticsTab } from './TagAnalyticsTab'
 import { useAnalyticsResource, type ResourceState } from './use-analytics-resource'
 import { loadChartLayout } from '../../chart-workspace/layout-storage'
 import { chartTimezoneQueryValue } from '../../replay/chart-timezone'
+import { loadEvalAccounts, type SavedEvalAccount } from '../../store/eval-store'
+import { evaluationDisplayName } from '../../sources/source-name'
 
 type AnalyticsTab = 'performance' | 'drawdown' | 'simulation' | 'edge' | 'discipline' | 'tags'
 type TimeMetric = 'pnl' | 'rr' | 'profitPct' | 'winRate'
@@ -45,17 +50,7 @@ interface InfoTipProps {
 }
 
 function InfoTip({ label, children }: InfoTipProps) {
-  const id = useId()
-  return (
-    <span className="group relative inline-flex align-middle">
-      <button type="button" aria-label={`About ${label}`} aria-describedby={id} className="ml-1 inline-grid size-5 place-items-center rounded-control text-[#7f858e] transition-colors hover:bg-[#26292e] hover:text-[#d8dce2] focus-visible:text-white">
-        <CircleHelp size={12} strokeWidth={1.8} />
-      </button>
-      <span id={id} role="tooltip" className="pointer-events-none absolute left-1/2 top-7 z-40 hidden w-72 -translate-x-1/2 rounded-md border border-[#4b5058] bg-[#0d0f12] p-3 text-left text-xs font-normal leading-[1.55] text-[#c8ccd2] shadow-[0_10px_28px_rgba(0,0,0,0.46)] group-hover:block group-focus-within:block">
-        {children}
-      </span>
-    </span>
-  )
+  return <AnalyticsInfoTip label={label} className="ml-1">{children}</AnalyticsInfoTip>
 }
 
 interface SectionTitleProps {
@@ -77,23 +72,19 @@ interface MetricProps {
   label: string
   value: string
   detail?: string
-  tone?: 'default' | 'profit' | 'loss'
+  tone?: 'default' | 'profit' | 'loss' | 'active' | 'caution'
   info?: string
 }
 
 function Metric({ label, value, detail, tone = 'default', info }: MetricProps) {
-  const toneClass = tone === 'profit' ? 'text-profit-bright' : tone === 'loss' ? 'text-loss-bright' : 'text-ink'
+  const toneClass = tone === 'profit' ? 'text-profit-bright' : tone === 'loss' ? 'text-loss-bright' : tone === 'active' ? 'text-active-bright' : tone === 'caution' ? 'text-caution-bright' : 'text-ink'
+  const detailClass = tone === 'default' ? 'text-muted' : toneClass
   return (
-    <div className="group/metric relative min-w-0 rounded-md outline-none" tabIndex={0}>
+    <div className="min-w-0">
       <p className="flex items-center text-[13px] leading-5 text-[#b0b6bf]">{label}{info ? <InfoTip label={label}>{info}</InfoTip> : null}</p>
       <p className={`mt-0.5 flex flex-wrap items-baseline gap-2 text-[21px] font-semibold leading-7 tracking-[-0.02em] tabular-nums ${toneClass}`}>
-        {value}{detail ? <span className="font-mono text-xs font-medium tracking-normal text-profit-bright">{detail}</span> : null}
+        {value}{detail ? <span className={`font-mono text-xs font-medium tracking-normal ${detailClass}`}>{detail}</span> : null}
       </p>
-      <span role="tooltip" className="pointer-events-none absolute left-0 top-[calc(100%+6px)] z-30 hidden min-w-44 rounded-md border border-[#4b5058] bg-[#0d0f12] px-3 py-2 shadow-[0_10px_28px_rgba(0,0,0,0.46)] group-hover/metric:block group-focus/metric:block">
-        <span className="block text-xs text-[#9298a2]">{label}</span>
-        <span className={`mt-0.5 block whitespace-nowrap font-mono text-sm font-semibold tabular-nums ${toneClass}`}>{value}</span>
-        {detail ? <span className="mt-1 block whitespace-nowrap font-mono text-xs text-profit-bright">{detail}</span> : null}
-      </span>
     </div>
   )
 }
@@ -111,6 +102,7 @@ function PnlOverview({ report, onThresholdChange }: { report: AnalyticsReportVie
   const [period, setPeriod] = useState<'all' | 'day' | 'hour' | '15m'>('all')
   const [threshold, setThreshold] = useState('0')
   const [appliedThreshold, setAppliedThreshold] = useState(0)
+  const pnlTone = report.pnlPercent.startsWith('-') ? 'loss' as const : report.pnlPercent === '0.00%' ? 'default' as const : 'profit' as const
   return (
     <ReportPanel className="overflow-hidden p-4 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -125,9 +117,9 @@ function PnlOverview({ report, onThresholdChange }: { report: AnalyticsReportVie
         </div>
       </div>
       <div className="mt-5 grid gap-x-6 gap-y-5 sm:grid-cols-2 lg:grid-cols-[1.2fr_1.2fr_.72fr_.95fr_.75fr_1.15fr]">
-        <Metric label="Total PnL" value={report.totalPnl} detail={`▲ ${report.pnlPercent}`} />
-        <Metric label="Account Balance" value={report.balance} detail={`▲ ${report.pnlPercent}`} />
-        <Metric label="Win Rate" value={report.winRate} />
+        <Metric label="Total PnL" value={report.totalPnl} detail={report.pnlPercent} tone={pnlTone} />
+        <Metric label="Account Balance" value={report.balance} detail={report.pnlPercent} tone={pnlTone} />
+        <Metric label="Win Rate" value={report.winRate} tone="active" />
         <Metric label="Total Trades" value={String(report.totalTrades)} detail={`${report.longTrades} long · ${report.shortTrades} short`} info="Shows long trades, short trades, and the combined total." />
         <Metric label="Breakeven Trades" value={String(report.breakevenTrades)} />
         <form className="flex items-end gap-2" onSubmit={(event) => { event.preventDefault(); const value = Number(threshold) || 0; setAppliedThreshold(value); onThresholdChange(value) }}>
@@ -153,21 +145,21 @@ function RrSummary({ report }: { report: AnalyticsReportView }) {
     <section className="grid gap-3 lg:grid-cols-3">
       <ReportPanel className="overflow-hidden pt-5">
         <dl className="grid grid-cols-2 gap-4 px-5">
-          <Metric label="Average RR" value={report.averageRr} /><Metric label="Max RR" value={report.maxRr} />
+          <Metric label="Average RR" value={report.averageRr} tone={Number(report.averageRr) < 0 ? 'loss' : 'profit'} /><Metric label="Max RR" value={report.maxRr} tone="active" />
         </dl>
         <LineChart compact values={report.rrCurves.rr} valueLabel="Risk-reward" valueFormatter={(value) => `${value.toFixed(2)}R`} ariaLabel="Average and maximum risk reward distribution" />
       </ReportPanel>
       <ReportPanel className="overflow-hidden pt-5">
         <dl className="grid grid-cols-2 gap-4 px-5">
-          <Metric label="Ideal Average RR" value={report.idealAverageRr} info="The maximum profit each trade could have delivered if held for up to one week after entry, averaged across all trades. More peaks can indicate profits were taken too early." />
-          <Metric label="Max Ideal RR" value={report.maxIdealRr} />
+          <Metric label="Ideal Average RR" value={report.idealAverageRr} tone="active" info="The maximum profit each trade could have delivered if held for up to one week after entry, averaged across all trades. More peaks can indicate profits were taken too early." />
+          <Metric label="Max Ideal RR" value={report.maxIdealRr} tone="active" />
         </dl>
         <LineChart compact values={report.rrCurves.ideal} valueLabel="Ideal risk-reward" valueFormatter={(value) => `${value.toFixed(2)}R`} ariaLabel="Ideal risk reward distribution" />
       </ReportPanel>
       <ReportPanel className="overflow-hidden pt-5">
         <dl className="grid grid-cols-2 gap-4 px-5">
-          <Metric label="Could have profit/BE" value={String(report.couldHaveProfitOrBe)} info="Trades that reached more than 1.2R in unrealized profit but finished as a loss. A 5–15% share is typically reasonable; higher may indicate missed chances to reduce risk." />
-          <Metric label="Max Ideal RR" value={report.couldHaveMaxIdealRr} />
+          <Metric label="Could have profit/BE" value={String(report.couldHaveProfitOrBe)} tone={report.couldHaveProfitOrBe > 0 ? 'caution' : 'default'} info="Trades that reached more than 1.2R in unrealized profit but finished as a loss. A 5–15% share is typically reasonable; higher may indicate missed chances to reduce risk." />
+          <Metric label="Max Ideal RR" value={report.couldHaveMaxIdealRr} tone="active" />
         </dl>
         <LineChart compact values={report.rrCurves.missed} valueLabel="Potential R" valueFormatter={(value) => `${value.toFixed(2)}R`} ariaLabel="Missed profit or breakeven opportunities" />
       </ReportPanel>
@@ -181,15 +173,15 @@ function Expectancy({ report }: { report: AnalyticsReportView }) {
       <SectionTitle info="Expectancy estimates the average amount won or lost per trade from win rate, average win, loss rate, average loss, and breakeven trades.">Expectancy &amp; profit factor</SectionTitle>
       <div className="grid gap-3 lg:grid-cols-2">
         <ReportPanel className="grid min-h-28 items-center gap-6 p-5 sm:grid-cols-[1fr_1.3fr]">
-          <Metric label="Expectancy" value={report.expectancy} />
+          <Metric label="Expectancy" value={report.expectancy} tone={report.expectancy.startsWith('-') ? 'loss' : 'profit'} />
           <div>
-            <div className="grid h-4 grid-cols-[1.2fr_1fr] gap-1" aria-label={`Average win ${report.averageWin}, average loss ${report.averageLoss}`}><span title={`Average win ${report.averageWin}`} className="rounded-full border border-[#38bca3] bg-profit" /><span title={`Average loss ${report.averageLoss}`} className="rounded-full border border-[#f07167] bg-loss" /></div>
+            <div className="grid h-4 grid-cols-[1.2fr_1fr] gap-1" aria-label={`Average win ${report.averageWin}, average loss ${report.averageLoss}`}><span className="rounded-full border border-[#38bca3] bg-profit" /><span className="rounded-full border border-[#f07167] bg-loss" /></div>
             <div className="mt-1.5 flex justify-between font-mono text-[13px]"><span className="text-profit-bright">{report.averageWin}</span><span className="text-loss-bright">{report.averageLoss}</span></div>
           </div>
         </ReportPanel>
         <ReportPanel className="flex min-h-28 items-center justify-between p-5">
-          <Metric label="Profit factor" value={report.profitFactor} />
-          <div title={`Profit factor ${report.profitFactor}`} className="grid size-16 place-items-center rounded-full border-[6px] border-[#24272b] border-t-[#d7a600] font-mono text-xs text-[#c4c8ce]" aria-label={`Profit factor ${report.profitFactor}`}>{report.profitFactor}</div>
+          <Metric label="Profit factor" value={report.profitFactor} tone={Number(report.profitFactor) >= 1 ? 'profit' : Number(report.profitFactor) < 1 ? 'loss' : 'default'} />
+          <div className="grid size-16 place-items-center rounded-full border-[6px] border-[#24272b] border-t-[#d7a600] font-mono text-xs text-[#c4c8ce]" aria-label={`Profit factor ${report.profitFactor}`}>{report.profitFactor}</div>
         </ReportPanel>
       </div>
     </section>
@@ -202,13 +194,13 @@ function WinnersLosers({ report }: { report: AnalyticsReportView }) {
       <SectionTitle>Winners and losers</SectionTitle>
       <div className="grid gap-3 lg:grid-cols-2">
         {[
-          { title: 'Winners', rows: report.winnerRows, tone: 'border-profit' },
-          { title: 'Losers', rows: report.loserRows, tone: 'border-loss' },
-        ].map(({ title, rows, tone }) => (
-          <ReportPanel key={title} className={`p-6 ${tone}`}>
+          { title: 'Winners', rows: report.winnerRows, borderTone: 'border-profit', valueTone: 'text-profit-bright' },
+          { title: 'Losers', rows: report.loserRows, borderTone: 'border-loss', valueTone: 'text-loss-bright' },
+        ].map(({ title, rows, borderTone, valueTone }) => (
+          <ReportPanel key={title} className={`p-6 ${borderTone}`}>
             <h3 className="mb-3 text-[17px] font-semibold text-[#f1f3f5]">{title}</h3>
             <dl className="space-y-2">
-              {rows.map(({ label, value }) => <div key={label} title={`${label}: ${value}`} className="flex items-center justify-between gap-4 rounded px-0.5 transition-colors hover:bg-white/[0.025]"><dt className="text-[14px] leading-5 text-[#b0b6bf]">{label}</dt><dd className="font-mono text-[14px] font-semibold leading-5 text-[#edf0f3]">{value}</dd></div>)}
+              {rows.map(({ label, value }) => <div key={label} className="flex items-center justify-between gap-4 rounded px-0.5 transition-colors hover:bg-white/[0.025]"><dt className="text-[14px] leading-5 text-muted">{label}</dt><dd className={`font-mono text-[14px] font-semibold leading-5 ${valueTone}`}>{value}</dd></div>)}
             </dl>
           </ReportPanel>
         ))}
@@ -298,37 +290,7 @@ function PerformanceByMonth({ report }: { report: AnalyticsReportView }) {
           <div className="grid grid-cols-[70px_repeat(13,minmax(62px,1fr))] gap-3">
             <div /><>{labels.map((label) => <div key={label} className="grid h-14 place-items-center rounded-xl border border-[#3c4046] bg-[#15181c] text-[14px] font-semibold text-[#f0f2f4]">{label}</div>)}</>
             <div className="grid h-14 place-items-center rounded-xl border border-[#3c4046] bg-[#15181c] font-mono text-[14px] font-semibold text-[#f0f2f4]">2025</div>
-            {report.monthlyValues.map((value, index) => <div key={`${labels[index]}-${value}`} title={`${labels[index]} 2025: ${value}`} className={`grid h-14 place-items-center rounded-xl border border-[#454a52] bg-[#30343a] font-mono text-[14px] font-semibold ${value.startsWith('+') ? 'text-profit-bright' : value.startsWith('-') ? 'text-loss-bright' : 'text-[#aeb4bd]'}`}>{value}</div>)}
-          </div>
-        </div>
-      </ReportPanel>
-    </section>
-  )
-}
-
-function PerformanceCalendar({ report }: { report: AnalyticsReportView }) {
-  const weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-  return (
-    <section>
-      <SectionTitle>Performance calendar</SectionTitle>
-      <ReportPanel className="overflow-x-auto p-4">
-        <div className="min-w-[820px]">
-          <div className="mb-4 flex items-center justify-between gap-4">
-            <label className="relative"><span className="sr-only">Calendar metric</span><select className="h-9 appearance-none rounded-lg border border-[#464a51] bg-[#090a0c] pl-3 pr-8 text-xs font-medium text-[#eef0f3]"><option>Dollar profit</option><option>R multiple</option><option>Win rate</option></select><ChevronDown size={13} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted" /></label>
-            <p className="text-ui-meta text-muted">○ Initial balance <span className="ml-3 text-active-bright">● Current balance</span></p>
-          </div>
-          <div className="mb-3 flex items-center gap-5"><strong className="text-lg text-ink">‹ &nbsp; {report.calendarMonth} &nbsp; ›</strong><strong className="text-lg text-ink">‹ &nbsp; {report.calendarYear} &nbsp; ›</strong></div>
-          <div className="grid grid-cols-7 gap-1">
-            {weekDays.map((day) => <div key={day} className="pb-2 text-center text-ui-body text-muted">{day}</div>)}
-            {report.calendarDays.map((datum, index) => {
-              const active = datum.trades > 0 && !datum.outside
-              const tone = datum.pnl > 0 ? 'border-profit/60 bg-profit/15' : datum.pnl < 0 ? 'border-loss/60 bg-loss/15' : 'border-line-strong bg-surface-0'
-              return <div key={`${datum.day}-${index}`} tabIndex={active || datum.outside ? 0 : undefined} className={`group/calendar relative flex h-20 flex-col justify-between rounded-md border p-2 transition-colors hover:brightness-110 ${datum.outside ? 'border-line bg-surface-2 opacity-45' : tone}`}>
-                <div className="flex justify-between text-ui-meta"><span className="text-muted">{datum.trades > 0 ? `${datum.trades} trade${datum.trades === 1 ? '' : 's'}` : ''}</span><strong className="font-mono text-ink">{datum.day}</strong></div>
-                {active || datum.outside ? <strong className={`font-mono text-ui-body ${datum.pnl >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{money.format(datum.pnl)}</strong> : null}
-                {active || datum.outside ? <span role="tooltip" className="pointer-events-none absolute bottom-[calc(100%+7px)] left-1/2 z-20 hidden min-w-36 -translate-x-1/2 rounded-md border border-[#4b5058] bg-[#0d0f12] px-3 py-2 text-xs shadow-[0_10px_28px_rgba(0,0,0,0.46)] group-hover/calendar:block group-focus/calendar:block"><span className="block text-[#b9bec6]">{report.calendarMonth} {datum.day}</span><span className="mt-1 flex justify-between gap-4 text-[#9298a2]"><span>Trades</span><b className="font-mono text-white">{datum.trades}</b></span><span className="mt-0.5 flex justify-between gap-4 text-[#9298a2]"><span>P&amp;L</span><b className={`font-mono ${datum.pnl >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{money.format(datum.pnl)}</b></span></span> : null}
-              </div>
-            })}
+            {report.monthlyValues.map((value, index) => <div key={`${labels[index]}-${value}`} aria-label={`${labels[index]} 2025: ${value}`} className={`grid h-14 place-items-center rounded-xl border border-[#454a52] bg-[#30343a] font-mono text-[14px] font-semibold ${value.startsWith('+') ? 'text-profit-bright' : value.startsWith('-') ? 'text-loss-bright' : 'text-[#aeb4bd]'}`}>{value}</div>)}
           </div>
         </div>
       </ReportPanel>
@@ -350,10 +312,9 @@ function TradeFrequency({ report }: { report: AnalyticsReportView }) {
   )
 }
 
-function PerformanceContent({ report, onThresholdChange }: { report: AnalyticsReportView; onThresholdChange: (value: number) => void }) {
+function PerformanceDetails({ report }: { report: AnalyticsReportView }) {
   return (
     <div className="space-y-11">
-      <PnlOverview report={report} onThresholdChange={onThresholdChange} />
       <RrSummary report={report} />
       <Expectancy report={report} />
       <WinnersLosers report={report} />
@@ -362,10 +323,25 @@ function PerformanceContent({ report, onThresholdChange }: { report: AnalyticsRe
       <PerformanceByTime report={report} />
       <PerformanceByDay report={report} />
       <PerformanceByMonth report={report} />
-      <PerformanceCalendar report={report} />
+      <PerformanceCalendar entries={report.calendarEntries} initialDate={report.calendarInitialDate} />
       <TradeFrequency report={report} />
     </div>
   )
+}
+
+function PerformanceContent({ report, onThresholdChange }: { report: AnalyticsReportView; onThresholdChange: (value: number) => void }) {
+  return <div className="space-y-11"><PnlOverview report={report} onThresholdChange={onThresholdChange} /><PerformanceDetails report={report} /></div>
+}
+
+interface EvaluationPerformanceContentProps {
+  performance: AnalyticsPerformance
+  account: SavedEvalAccount | null
+  report: AnalyticsReportView
+  onThresholdChange: (value: number) => void
+}
+
+function EvaluationPerformanceContent({ performance, account, report, onThresholdChange }: EvaluationPerformanceContentProps) {
+  return <div className="space-y-11"><EvalAnalyticsOverview performance={performance} account={account} onThresholdChange={onThresholdChange} /><PerformanceDetails report={report} /></div>
 }
 
 function ResourcePanel<T>({ state, children }: { state: ResourceState<T>; children: (data: T) => ReactNode }) {
@@ -382,6 +358,10 @@ export function AnalyticsScreen() {
   const parsedType = analyticsSourceTypeSchema.safeParse(params.get('sourceType'))
   const sourceType: AnalyticsSourceType | null = parsedType.success ? parsedType.data : null
   const validSource = sourceId.length > 0 && sourceType !== null
+  const evalAccounts = useMemo(() => loadEvalAccounts(), [])
+  const evalAccount = useMemo(() => sourceType === 'evaluation'
+    ? evalAccounts.find((account) => account.sessionId === sourceId) ?? null
+    : null, [evalAccounts, sourceId, sourceType])
   const workspaceTimezone = useMemo(() => chartTimezoneQueryValue(loadChartLayout().timezone), [])
   const loadPerformance = useCallback((signal: AbortSignal) => {
     if (!sourceType) return Promise.reject(new Error('Missing analytics source type'))
@@ -399,11 +379,13 @@ export function AnalyticsScreen() {
     if (!sourceType) return Promise.reject(new Error('Missing analytics source type'))
     return fetchAnalyticsExecution(sourceType, sourceId, signal)
   }, [sourceId, sourceType])
+  const loadSources = useCallback((signal: AbortSignal) => fetchAnalyticsSources(signal), [])
   const performance = useAnalyticsResource(validSource, loadPerformance)
   const drawdown = useAnalyticsResource(validSource && tab === 'drawdown', loadDrawdown)
   const edge = useAnalyticsResource(validSource && tab === 'edge', loadEdge)
   const execution = useAnalyticsResource(validSource && tab === 'discipline', loadExecution)
-  const report = performance.status === 'success' ? toAnalyticsReportView(performance.data) : null
+  const sources = useAnalyticsResource(true, loadSources)
+  const report = performance.status === 'success' ? toAnalyticsReportView(performance.data, workspaceTimezone) : null
   const tabs = [
     { id: 'performance' as const, label: 'Performance', icon: LineChartIcon },
     { id: 'drawdown' as const, label: 'Drawdown', icon: TrendingDown },
@@ -412,12 +394,33 @@ export function AnalyticsScreen() {
     { id: 'discipline' as const, label: 'Execution & Discipline', icon: Activity },
     { id: 'tags' as const, label: 'Tags', icon: Tags },
   ]
+  const sourceName = (source: AnalyticsSource): string => {
+    if (source.type !== 'evaluation') return source.title
+    const account = evalAccounts.find((candidate) => candidate.sessionId === source.id)
+    return account ? evaluationDisplayName(account) : source.title
+  }
+  const switchSource = (event: ChangeEvent<HTMLSelectElement>): void => {
+    const selected = sources.status === 'success' ? sources.data.find((source) => `${source.type}:${source.id}` === event.target.value) : undefined
+    if (!selected) return
+    window.location.assign(`/?analytics=${encodeURIComponent(selected.id)}&sourceType=${selected.type}`)
+  }
+  const groupedSources = sources.status === 'success' ? {
+    evaluations: sources.data.filter((source) => source.type === 'evaluation'),
+    sessions: sources.data.filter((source) => source.type === 'session'),
+  } : { evaluations: [], sessions: [] }
   return (
-    <div className="h-full overflow-y-auto bg-[#070809] font-sans text-ink">
+    <div className="scrollbar-gutter-stable h-full overflow-y-auto bg-[#070809] font-sans text-ink">
       <header className="sticky top-0 z-30 border-b border-[#292c31] bg-[#0d0f11]/95 backdrop-blur-sm">
-        <div className="mx-auto flex min-h-14 max-w-[1500px] items-center gap-3 px-3 sm:px-6">
+        <div className="mx-auto flex min-h-14 max-w-[1500px] flex-wrap items-center gap-2 px-3 py-2 sm:flex-nowrap sm:gap-3 sm:px-6">
           <a href="/" className="tool-button shrink-0" aria-label="Back to replay workspace"><ArrowLeft size={18} /></a>
-          <div className="min-w-0 flex-1 border-l border-[#34373c] pl-3"><h1 className="truncate text-[16px] font-semibold leading-5 tracking-[-0.01em] text-[#f4f5f7]">{report?.title ?? 'Analytics report'}</h1><p className="mt-0.5 truncate text-xs leading-4 text-[#8f959f]">Analytics{report ? ` · ${report.subtitle}` : ''}</p></div>
+          <div className="min-w-0 flex-1 border-l border-[#34373c] pl-3"><h1 className="truncate text-[16px] font-semibold leading-5 tracking-[-0.01em] text-[#f4f5f7]">{evalAccount ? evaluationDisplayName(evalAccount) : report?.title ?? 'Analytics report'}</h1><p className="mt-0.5 truncate text-xs leading-4 text-[#8f959f]">Analytics{report ? ` · ${report.subtitle}` : ''}</p></div>
+          <label className="flex min-w-0 basis-full items-center gap-2 sm:basis-auto">
+            <span className="shrink-0 text-xs font-medium text-[#9ba2ad]">Report</span>
+            <select aria-label="Analytics source" value={sourceType ? `${sourceType}:${sourceId}` : ''} onChange={switchSource} disabled={sources.status !== 'success' || sources.data.length === 0} className="h-9 min-w-0 flex-1 rounded-lg border border-[#454a52] bg-[#090b0d] px-3 text-sm font-medium text-[#edf0f3] outline-none transition-colors hover:border-[#626873] focus:border-active disabled:opacity-50 sm:w-64">
+              {groupedSources.evaluations.length > 0 ? <optgroup label="Eval accounts">{groupedSources.evaluations.map((source) => <option key={`evaluation:${source.id}`} value={`evaluation:${source.id}`}>{sourceName(source)}</option>)}</optgroup> : null}
+              {groupedSources.sessions.length > 0 ? <optgroup label="Replay sessions">{groupedSources.sessions.map((source) => <option key={`session:${source.id}`} value={`session:${source.id}`}>{sourceName(source)}</option>)}</optgroup> : null}
+            </select>
+          </label>
         </div>
       </header>
       <main className="mx-auto max-w-[1500px] px-3 py-5 sm:px-6 sm:py-7">
@@ -426,7 +429,12 @@ export function AnalyticsScreen() {
         </nav>
         <div className="mt-6" role="tabpanel" id={`analytics-panel-${tab}`} aria-labelledby={`analytics-tab-${tab}`}>
           {!validSource ? <ReportPanel className="p-8 text-center"><p className="text-base font-semibold text-white">Choose an analytics source</p><p className="mt-2 text-sm text-[#9299a3]">Open a replay session or evaluation account from the Analytics sidebar.</p><a href="/" className="mt-5 inline-flex rounded-lg bg-active px-4 py-2 text-sm font-medium text-white">Back to workspace</a></ReportPanel> : null}
-          {validSource && tab === 'performance' ? <ResourcePanel state={performance}>{(data) => <PerformanceContent report={toAnalyticsReportView(data)} onThresholdChange={setBreakevenThreshold} />}</ResourcePanel> : null}
+          {validSource && tab === 'performance' ? <ResourcePanel state={performance}>{(data) => {
+            const performanceReport = toAnalyticsReportView(data, workspaceTimezone)
+            return sourceType === 'evaluation'
+              ? <EvaluationPerformanceContent performance={data} account={evalAccount} report={performanceReport} onThresholdChange={setBreakevenThreshold} />
+              : <PerformanceContent report={performanceReport} onThresholdChange={setBreakevenThreshold} />
+          }}</ResourcePanel> : null}
           {validSource && tab === 'drawdown' ? <ResourcePanel state={drawdown}>{(data) => <DrawdownTab report={data} />}</ResourcePanel> : null}
           {validSource && tab === 'simulation' ? <ResourcePanel state={performance}>{(data) => sourceType ? <SimulationTab source={{ id: sourceId, type: sourceType }} performance={data} /> : null}</ResourcePanel> : null}
           {validSource && tab === 'edge' ? <ResourcePanel state={edge}>{(data) => <EdgeTab report={data} />}</ResourcePanel> : null}

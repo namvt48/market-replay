@@ -5,7 +5,10 @@ import "encoding/json"
 // Session is one replay/paper-trading session: symbol+timeframe+cursor
 // state, persisted so the user can resume across restarts.
 type Session struct {
-	ID          string `json:"id"`
+	ID string `json:"id"`
+	// Name is an optional owner-defined label. An empty value means the UI
+	// and analytics surfaces use the session's stable display hash.
+	Name        string `json:"name"`
 	Symbol      string `json:"symbol"`
 	Tf          string `json:"tf"`
 	StartTs     int64  `json:"startTs"`
@@ -29,6 +32,7 @@ type Session struct {
 // PATCH /api/v1/sessions/{id}. Pointer fields distinguish "not provided"
 // (nil) from "set to the zero value".
 type SessionPatch struct {
+	Name        *string          `json:"name"`
 	CursorTs    *int64           `json:"cursorTs"`
 	EquityCents *int64           `json:"equityCents"`
 	Status      *string          `json:"status"`

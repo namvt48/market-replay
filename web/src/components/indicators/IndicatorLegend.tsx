@@ -5,7 +5,14 @@ import { useReplaySelector } from '../../replay/use-replay'
 import { IndicatorSettingsDialog } from './IndicatorSettingsDialog'
 import { useIndicatorCatalog } from './use-indicator-catalog'
 
-export function IndicatorLegend(): ReactElement | null {
+interface IndicatorLegendProps {
+  /** Same value as the chart's "Price & time text" appearance setting
+   * (ChartAppearanceSettings.textColor), so an active indicator's name
+   * matches the price/time axis labels instead of a fixed Tailwind shade. */
+  textColor: string
+}
+
+export function IndicatorLegend({ textColor }: IndicatorLegendProps): ReactElement | null {
   const state = useReplaySelector((snapshot) => ({ indicators: snapshot.indicators, loading: snapshot.indicatorLoading }))
   const catalog = useIndicatorCatalog()
   const [settingsId, setSettingsId] = useState<string | null>(null)
@@ -21,7 +28,7 @@ export function IndicatorLegend(): ReactElement | null {
         const canConfigure = catalog.descriptors.some((item) => item.id === indicator.scriptId)
         return (
           <div key={indicator.id} className="relative flex h-7 max-w-full items-center text-ui-meta text-muted">
-            <span className={`max-w-72 truncate pl-1 pr-1.5 ${indicator.visible ? 'text-muted' : 'text-dim line-through'}`}>{indicator.name}</span>
+            <span className={`max-w-72 truncate pl-1 pr-1.5 ${indicator.visible ? '' : 'text-dim line-through'}`} style={indicator.visible ? { color: textColor } : undefined}>{indicator.name}</span>
             {state.loading && indicator.visible ? <span className="grid size-7 place-items-center" aria-label={`${indicator.name} loading`}><LoaderCircle size={13} className="animate-spin motion-reduce:animate-none" /></span> : null}
             <button type="button" onClick={() => replayEngine.setIndicatorVisibility(indicator.id, !indicator.visible)} className="grid size-7 place-items-center rounded-control hover:bg-surface-2 hover:text-ink" aria-label={`${indicator.visible ? 'Hide' : 'Show'} ${indicator.name}`}>{indicator.visible ? <Eye size={14} /> : <EyeOff size={14} />}</button>
             <button type="button" disabled={!canConfigure} onClick={() => setSettingsId(indicator.id)} className="grid size-7 place-items-center rounded-control hover:bg-surface-2 hover:text-ink disabled:opacity-35" aria-label={`Settings for ${indicator.name}`}><Settings size={14} /></button>

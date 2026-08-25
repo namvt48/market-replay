@@ -27,7 +27,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks() })
 describe('IndicatorLegend', () => {
   it('offers the chart-level visibility, settings, remove and more actions', async () => {
     const user = userEvent.setup()
-    render(<IndicatorLegend />)
+    render(<IndicatorLegend textColor="#a3a6af" />)
 
     await user.click(screen.getByRole('button', { name: 'Hide GB69 CBMOR' }))
     expect(mocks.setIndicatorVisibility).toHaveBeenCalledWith('gb69-cbmor', false)
@@ -43,5 +43,23 @@ describe('IndicatorLegend', () => {
 
     await user.click(screen.getByRole('button', { name: 'Remove GB69 CBMOR' }))
     expect(mocks.removeIndicator).toHaveBeenCalledWith('gb69-cbmor')
+  })
+
+  it('renders a visible indicator name in the configured price & time text color', () => {
+    render(<IndicatorLegend textColor="#ff8800" />)
+    expect(screen.getByText('GB69 CBMOR')).toHaveStyle({ color: '#ff8800' })
+  })
+
+  it('leaves a hidden indicator name dimmed rather than tinted', () => {
+    const original = mocks.snapshot.indicators
+    mocks.snapshot.indicators = [{ ...original[0], id: 'hidden', name: 'Hidden Indicator', visible: false }]
+    try {
+      render(<IndicatorLegend textColor="#ff8800" />)
+      const name = screen.getByText('Hidden Indicator')
+      expect(name).toHaveClass('text-dim')
+      expect(name).not.toHaveStyle({ color: '#ff8800' })
+    } finally {
+      mocks.snapshot.indicators = original
+    }
   })
 })

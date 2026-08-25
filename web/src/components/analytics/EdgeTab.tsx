@@ -67,7 +67,7 @@ export function EdgeTab({ report }: EdgeTabProps) {
         <DecisionPanel className="grid gap-3 p-4 sm:p-6 lg:grid-cols-[260px_1fr] lg:items-center">
           <div className="border-b border-[#343940] pb-5 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-6">
             <p className="text-[13px] text-[#aeb5bf]">Observed expectancy</p>
-            <p className="mt-1 font-mono text-[34px] font-semibold tracking-[-0.03em] text-profit-bright tabular-nums">{model.edge.expectancyR.toFixed(3)}R</p>
+            <p className={`mt-1 font-mono text-[34px] font-semibold tracking-[-0.03em] tabular-nums ${model.edge.expectancyR >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{model.edge.expectancyR.toFixed(3)}R</p>
             <p className="mt-2 text-xs leading-5 text-[#8f97a3]">The bootstrap interval runs from <span className="font-mono text-[#cbd0d7]">{model.bootstrap.expectancyR.lower.toFixed(3)}R</span> to <span className="font-mono text-[#cbd0d7]">{model.bootstrap.expectancyR.upper.toFixed(3)}R</span>.</p>
           </div>
           <div className="overflow-x-auto"><ConfidenceBand lower={model.bootstrap.expectancyR.lower} median={model.bootstrap.expectancyR.median} upper={model.bootstrap.expectancyR.upper} actual={model.edge.expectancyR} /></div>
@@ -79,17 +79,17 @@ export function EdgeTab({ report }: EdgeTabProps) {
         <div className="grid gap-3 lg:grid-cols-3">
           <DecisionPanel className="p-5">
             <div className="flex items-center justify-between"><h3 className="text-[16px] font-semibold text-white">Hit rate × payoff</h3><Scale size={17} className="text-active-bright" /></div>
-            <p className="mt-5 font-mono text-[28px] font-semibold text-white">{model.decomposition.payoffAsymmetry.toFixed(2)}×</p>
+            <p className="mt-5 font-mono text-[28px] font-semibold text-active-bright">{model.decomposition.payoffAsymmetry.toFixed(2)}×</p>
             <p className="mt-2 text-xs leading-5 text-[#99a1ab]">Average win <span className="font-mono text-profit-bright">{model.edge.averageWinR.toFixed(2)}R</span> versus average loss <span className="font-mono text-loss-bright">{model.edge.averageLossR.toFixed(2)}R</span>.</p>
           </DecisionPanel>
           <DecisionPanel className="p-5">
             <div className="flex items-center justify-between"><h3 className="text-[16px] font-semibold text-white">Timing edge</h3><TrendingUp size={17} className="text-active-bright" /></div>
-            <p className="mt-5 text-[20px] font-semibold text-white">{timingLabel}</p>
+            <p className="mt-5 text-[20px] font-semibold text-active-bright">{timingLabel}</p>
             <p className="mt-2 text-xs leading-5 text-[#99a1ab]">Captures <span className="font-mono text-[#dce1e7]">{percentage(model.decomposition.captureRatio)}</span> of average MFE; average MAE is <span className="font-mono text-[#dce1e7]">{model.decomposition.averageMaeR.toFixed(2)}R</span>.</p>
           </DecisionPanel>
           <DecisionPanel className="p-5">
             <div className="flex items-center justify-between"><h3 className="text-[16px] font-semibold text-white">Profit concentration</h3><FlaskConical size={17} className="text-active-bright" /></div>
-            <p className="mt-5 font-mono text-[28px] font-semibold text-white">{model.decomposition.topNConcentrationPercent.toFixed(1)}%</p>
+            <p className={`mt-5 font-mono text-[28px] font-semibold ${model.decomposition.concentrationFlag === 'diversified' ? 'text-profit-bright' : 'text-caution-bright'}`}>{model.decomposition.topNConcentrationPercent.toFixed(1)}%</p>
             <p className="mt-2 text-xs leading-5 text-[#99a1ab]">Top {model.decomposition.topN} wins contribute this share of gross winning R. Status: <span className="font-medium text-[#dce1e7]">{model.decomposition.concentrationFlag}</span>.</p>
           </DecisionPanel>
         </div>
@@ -101,7 +101,7 @@ export function EdgeTab({ report }: EdgeTabProps) {
           <div className="grid gap-6 lg:grid-cols-[1fr_1.2fr]">
             <div>
               <dl className="grid grid-cols-2 gap-5">
-                <DecisionMetric label="In-sample E[R]" value={`${model.robustness.inSample.expectancyR.toFixed(3)}R`} note={`${model.robustness.inSample.trades} trades`} />
+                <DecisionMetric label="In-sample E[R]" value={`${model.robustness.inSample.expectancyR.toFixed(3)}R`} note={`${model.robustness.inSample.trades} trades`} tone={model.robustness.inSample.expectancyR > 0 ? 'positive' : 'negative'} />
                 <DecisionMetric label="Out-of-sample E[R]" value={`${model.robustness.outOfSample.expectancyR.toFixed(3)}R`} note={`${model.robustness.outOfSample.trades} latest trades`} tone={model.robustness.outOfSample.expectancyR > 0 ? 'positive' : 'negative'} />
                 <DecisionMetric label="OOS retention" value={percentage(model.robustness.retentionRatio)} tone={model.robustness.retentionRatio >= 0.65 ? 'positive' : 'warning'} />
                 <DecisionMetric label="Sensitivity" value={sensitivity ? (sensitivity.shape === 'plateau' ? 'Broad plateau' : 'Knife-edge peak') : 'Unavailable'} tone={sensitivity?.shape === 'plateau' ? 'positive' : 'warning'} />
@@ -110,14 +110,14 @@ export function EdgeTab({ report }: EdgeTabProps) {
             </div>
             <div className="overflow-x-auto border-t border-[#343940] pt-4 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0"><StabilityChart windows={model.robustness.windows} /></div>
           </div>
-          {sensitivity ? <div className="mt-6 border-t border-[#343940] pt-5"><div className="mb-3 flex items-center justify-between gap-3"><h3 className="text-[15px] font-semibold text-white">SL / TP sensitivity</h3><SignalBadge label={sensitivity.shape === 'plateau' ? 'Stable plateau' : 'Parameter-sensitive'} tone={sensitivity.shape === 'plateau' ? 'positive' : 'warning'} /></div><div className="overflow-x-auto"><div className="grid min-w-[650px] grid-cols-7 gap-1.5">{sensitivity.points.map((point) => <div key={`${point.stopDeltaPercent}-${point.targetDeltaPercent}`} title={`Stop ${point.stopDeltaPercent}%, target ${point.targetDeltaPercent}%: ${point.expectancyR.toFixed(3)}R`} className={`grid h-11 place-items-center rounded-md border font-mono text-[11px] tabular-nums ${sensitivityTone(point.expectancyR, sensitivityMinimum, sensitivityMaximum)}`}>{point.expectancyR.toFixed(2)}R</div>)}</div></div></div> : <p className="mt-6 border-t border-[#343940] pt-4 text-xs text-[#858d98]">Sensitivity requires sufficient initial-risk and market-data coverage.</p>}
+          {sensitivity ? <div className="mt-6 border-t border-[#343940] pt-5"><div className="mb-3 flex items-center justify-between gap-3"><h3 className="text-[15px] font-semibold text-white">SL / TP sensitivity</h3><SignalBadge label={sensitivity.shape === 'plateau' ? 'Stable plateau' : 'Parameter-sensitive'} tone={sensitivity.shape === 'plateau' ? 'positive' : 'warning'} /></div><div className="overflow-x-auto"><div className="grid min-w-[650px] grid-cols-7 gap-1.5">{sensitivity.points.map((point) => <div key={`${point.stopDeltaPercent}-${point.targetDeltaPercent}`} aria-label={`Stop ${point.stopDeltaPercent}%, target ${point.targetDeltaPercent}%: ${point.expectancyR.toFixed(3)}R`} className={`grid h-11 place-items-center rounded-md border font-mono text-[11px] tabular-nums ${sensitivityTone(point.expectancyR, sensitivityMinimum, sensitivityMaximum)}`}>{point.expectancyR.toFixed(2)}R</div>)}</div></div></div> : <p className="mt-6 border-t border-[#343940] pt-4 text-xs text-[#858d98]">Sensitivity requires sufficient initial-risk and market-data coverage.</p>}
         </DecisionPanel>
       </section>
 
       <section>
         <DecisionSectionTitle info="Kelly sizing is hidden unless the edge verdict passes every guardrail. The recommendation uses one-quarter Kelly and is capped at 2% account risk per trade.">Position sizing</DecisionSectionTitle>
         <DecisionPanel className="p-5 sm:p-7">
-          {model.sizing ? <div className="grid gap-7 lg:grid-cols-[1.2fr_1fr] lg:items-center"><div><div className="flex items-center gap-3"><ShieldCheck size={22} className="text-profit-bright" /><h3 className="text-[20px] font-semibold text-white">Sizing unlocked by evidence</h3></div><p className="mt-3 max-w-[68ch] text-[13px] leading-6 text-[#aeb5bf]">Fractional Kelly translates the measured edge into a conservative risk budget. The product cap remains the final guardrail.</p></div><dl className="grid grid-cols-2 gap-5"><DecisionMetric label="Full Kelly" value={percentage(model.sizing.fullKelly)} /><DecisionMetric label="Fractional Kelly" value={percentage(model.sizing.fractionalKelly)} /><DecisionMetric label="Suggested risk / trade" value={percentage(model.sizing.suggestedRiskPerTrade)} tone="positive" /><DecisionMetric label="Risk cap" value={percentage(model.sizing.maxRiskCap)} note={model.sizing.capped ? 'Recommendation capped' : 'Cap not binding'} /></dl></div> : <div className="flex items-start gap-4"><ShieldCheck size={22} className="mt-0.5 text-[#e4b740]" /><div><h3 className="text-[18px] font-semibold text-white">Sizing remains locked</h3><p className="mt-2 text-[13px] leading-6 text-[#aeb5bf]">Kelly output is withheld until sample size, statistical evidence, and breakeven guardrails all pass.</p></div></div>}
+          {model.sizing ? <div className="grid gap-7 lg:grid-cols-[1.2fr_1fr] lg:items-center"><div><div className="flex items-center gap-3"><ShieldCheck size={22} className="text-profit-bright" /><h3 className="text-[20px] font-semibold text-ink">Sizing unlocked by evidence</h3></div><p className="mt-3 max-w-[68ch] text-ui-body leading-6 text-muted">Fractional Kelly translates the measured edge into a conservative risk budget. The product cap remains the final guardrail.</p></div><dl className="grid grid-cols-2 gap-5"><DecisionMetric label="Full Kelly" value={percentage(model.sizing.fullKelly)} /><DecisionMetric label="Fractional Kelly" value={percentage(model.sizing.fractionalKelly)} /><DecisionMetric label="Suggested risk / trade" value={percentage(model.sizing.suggestedRiskPerTrade)} tone="positive" /><DecisionMetric label="Risk cap" value={percentage(model.sizing.maxRiskCap)} note={model.sizing.capped ? 'Recommendation capped' : 'Cap not binding'} /></dl></div> : <div className="flex items-start gap-4"><ShieldCheck size={22} className="mt-0.5 text-caution-bright" /><div><h3 className="text-[18px] font-semibold text-ink">Sizing remains locked</h3><p className="mt-2 text-ui-body leading-6 text-muted">Kelly output is withheld until sample size, statistical evidence, and breakeven guardrails all pass.</p></div></div>}
         </DecisionPanel>
       </section>
     </div>

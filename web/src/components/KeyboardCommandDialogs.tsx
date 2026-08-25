@@ -1,5 +1,5 @@
 import { CalendarDays, Check, CircleSlash2, Search, X } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { HotkeyDialogState, ShortcutCategory } from '../hooks/tradingview-shortcuts'
 import { TRADINGVIEW_SHORTCUTS } from '../hooks/tradingview-shortcuts'
@@ -10,7 +10,7 @@ import { BUILT_IN_TIMEFRAMES, timeframePreferenceStore } from '../replay/timefra
 import { useReplaySelector } from '../replay/use-replay'
 import { useEvalStore } from '../store/eval-store'
 import { useUiStore } from '../store/ui-store'
-import { SymbolBrowserDialog } from './symbols/SymbolBrowserDialog'
+const SymbolBrowserDialog = lazy(() => import('./symbols/SymbolBrowserDialog').then((module) => ({ default: module.SymbolBrowserDialog })))
 import { useChartWorkspace } from '../chart-workspace/use-chart-workspace'
 import { chartTimezoneDateValue, timezoneLabel } from '../replay/chart-timezone'
 
@@ -106,7 +106,7 @@ function ShortcutHelp({ onClose }: { onClose: () => void }) {
 function SymbolSearch({ initialQuery, onClose }: { initialQuery: string; onClose: () => void }) {
   const replay = useReplaySelector((snapshot) => ({ symbols: snapshot.symbols, symbol: snapshot.symbol?.symbol ?? '' }))
   const evalLocked = useEvalStore((store) => store.phase === 'running')
-  return <SymbolBrowserDialog symbols={replay.symbols} activeSymbol={replay.symbol} initialQuery={initialQuery} onClose={onClose} onSelect={(symbol) => { if (!evalLocked) void replayEngine.selectSymbol(symbol.symbol); onClose() }} />
+  return <Suspense fallback={null}><SymbolBrowserDialog symbols={replay.symbols} activeSymbol={replay.symbol} initialQuery={initialQuery} onClose={onClose} onSelect={(symbol) => { if (!evalLocked) void replayEngine.selectSymbol(symbol.symbol); onClose() }} /></Suspense>
 }
 
 function IntervalSearch({ initialQuery, onClose }: { initialQuery: string; onClose: () => void }) {

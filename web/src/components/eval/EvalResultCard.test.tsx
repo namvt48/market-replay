@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EVAL_PRESETS, evalStatus, fundedConfig, newRuntime } from '../../eval/rules'
+import { EVAL_PRESETS, evalStatus, newRuntime } from '../../eval/rules'
 import { EvalResultCard } from './EvalResultCard'
 
 afterEach(cleanup)
@@ -11,7 +11,7 @@ const runtime = { ...newRuntime(config), outcome: 'failed' as const, failReason:
 const status = evalStatus(config, runtime, { balance: 95_000, equity: 95_000, trades: [] })
 
 function resultCard(onClose = vi.fn()) {
-  return <EvalResultCard verdict="failed" failReason="daily" config={config} runtime={runtime} status={status} endingEquity={95_000} onRetry={vi.fn()} onGoFunded={vi.fn()} onAbandon={vi.fn()} onClose={onClose} />
+  return <EvalResultCard verdict="failed" failReason="daily" config={config} runtime={runtime} status={status} endingEquity={95_000} onRetry={vi.fn()} onAbandon={vi.fn()} onClose={onClose} />
 }
 
 describe('EvalResultCard', () => {
@@ -41,38 +41,34 @@ describe('EvalResultCard', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('continues a passed two-step challenge to verification', async () => {
-    const user = userEvent.setup()
+  it('treats a pass as the terminal evaluation outcome', () => {
     const challenge = { ...EVAL_PRESETS[0], minTradingDays: 0 }
     const passedRuntime = { ...newRuntime(challenge), outcome: 'passed' as const, passedAt: 200 }
     const passedStatus = evalStatus(challenge, passedRuntime, { balance: 110000, equity: 110000, trades: [] })
-    const onGoVerification = vi.fn()
-    render(<EvalResultCard verdict="passed" failReason={null} config={challenge} runtime={passedRuntime} status={passedStatus} endingEquity={110000} onRetry={vi.fn()} onGoVerification={onGoVerification} onGoFunded={vi.fn()} onAbandon={vi.fn()} onClose={vi.fn()} />)
+    render(<EvalResultCard verdict="passed" failReason={null} config={challenge} runtime={passedRuntime} status={passedStatus} endingEquity={110000} onRetry={vi.fn()} onAbandon={vi.fn()} onClose={vi.fn()} />)
 
-    await user.click(screen.getByRole('button', { name: /Continue to verification/i }))
-    expect(onGoVerification).toHaveBeenCalledOnce()
+    expect(screen.getByText('EVALUATION PASSED')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Start new evaluation' })).toBeVisible()
+    expect(screen.queryByText(/verification|funded|payout/i)).not.toBeInTheDocument()
   })
 
-  it('shows funded payout history in the terminal outcome', () => {
-    const funded = fundedConfig(EVAL_PRESETS[2])
-    const fundedRuntime = { ...newRuntime(funded, 1), outcome: 'failed' as const, failReason: 'total' as const, failedAt: 300, payoutsTaken: 1 }
-    const fundedStatus = evalStatus(funded, fundedRuntime, { balance: 49000, equity: 49000, trades: [] })
+  it('shows only the failed outcome and recovery actions', () => {
+    const failedRuntime = { ...newRuntime(config, 1), outcome: 'failed' as const, failReason: 'total' as const, failedAt: 300 }
+    const failedStatus = evalStatus(config, failedRuntime, { balance: 89000, equity: 89000, trades: [] })
     render(<EvalResultCard
       verdict="failed"
       failReason="total"
-      config={funded}
-      runtime={fundedRuntime}
-      status={fundedStatus}
-      endingEquity={49000}
-      payoutHistory={[{ id: 'p-1', firm: funded.firm, requestedAt: 200, grossAmount: 1000, traderAmount: 1000, profitSplit: 100, balanceAfter: 52600, payoutNumber: 1 }]}
+      config={config}
+      runtime={failedRuntime}
+      status={failedStatus}
+      endingEquity={89000}
       onRetry={vi.fn()}
-      onGoFunded={vi.fn()}
       onAbandon={vi.fn()}
       onClose={vi.fn()}
     />)
 
-    expect(screen.getByText('FUNDED ACCOUNT FAILED')).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Payout history' })).toBeVisible()
-    expect(screen.getByText('$1,000')).toBeVisible()
+    expect(screen.getByText('EVALUATION FAILED')).toBeVisible()
+    expect(screen.getByRole('button', { name: /Retry same rules/ })).toBeVisible()
+    expect(screen.queryByText(/funded|payout/i)).not.toBeInTheDocument()
   })
 })

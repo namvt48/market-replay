@@ -37,6 +37,7 @@ vi.mock('../../replay/replay-engine', () => ({ replayEngine: {
 } }))
 vi.mock('../../store/eval-store', () => ({
   useEvalStore: (selector: (state: { accountId: null }) => unknown) => selector({ accountId: null }),
+  loadEvalAccounts: () => [],
 }))
 
 beforeEach(() => {
@@ -75,8 +76,13 @@ describe('Sidebar economic calendar tab', () => {
 
     await user.click(screen.getByRole('button', { name: 'Analytics' }))
 
-    expect(await screen.findByRole('link', { name: 'Open Verified journal analytics' })).toHaveAttribute('href', '/?analytics=journal-1&sourceType=session')
-    expect(screen.getByRole('link', { name: 'Open 50K evaluation analytics' })).toHaveAttribute('href', '/?analytics=eval-1&sourceType=evaluation')
+    expect(await screen.findByRole('link', { name: 'Open replay session Verified journal analytics' })).toHaveAttribute('href', '/?analytics=journal-1&sourceType=session')
+    expect(screen.getByRole('link', { name: 'Open evaluation 50K evaluation analytics' })).toHaveAttribute('href', '/?analytics=eval-1&sourceType=evaluation')
+    expect(screen.getByRole('heading', { name: 'Eval accounts' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Replay sessions' })).toBeVisible()
+    expect(screen.queryByText('Evaluation')).not.toBeInTheDocument()
+    expect(screen.queryByText('Replay session')).not.toBeInTheDocument()
+    expect(document.querySelector('[aria-label="Analytics"] svg')).not.toBeInTheDocument()
   })
 
   it('keeps Review contextual and removes the obsolete Trade tab', () => {

@@ -1,5 +1,5 @@
 import { Activity, Keyboard, PanelRightClose, PanelRightOpen, Rewind } from 'lucide-react'
-import { useState, type ReactElement } from 'react'
+import { lazy, Suspense, useState, type ReactElement } from 'react'
 import type { Timeframe } from '../api/types'
 import { replayEngine } from '../replay/replay-engine'
 import { parseTimeframe, sortTimeframes } from '../replay/timeframe'
@@ -15,7 +15,9 @@ import { IndicatorMenu } from './indicators/IndicatorMenu'
 import { paneIds } from '../chart-workspace/layout-presets'
 import { ReplayBrandMark } from './ReplayBrandMark'
 import { WorkspaceTimezoneMenu } from './chart/WorkspaceTimezoneMenu'
-import { SymbolBrowserDialog } from './symbols/SymbolBrowserDialog'
+// Opened by a keystroke or a click, never on first paint — so its symbol
+// table, filters and search index stay out of the initial download.
+const SymbolBrowserDialog = lazy(() => import('./symbols/SymbolBrowserDialog').then((module) => ({ default: module.SymbolBrowserDialog })))
 
 interface TopBarProps {
   layoutMenuRequest?: number
@@ -109,13 +111,13 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
           {sidebarOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
         </button>
       </div>
-      {symbolBrowserOpen ? <SymbolBrowserDialog symbols={replay.symbols} activeSymbol={replay.symbol} onClose={() => setSymbolBrowserOpen(false)} onSelect={(meta) => {
+      {symbolBrowserOpen ? <Suspense fallback={null}><SymbolBrowserDialog symbols={replay.symbols} activeSymbol={replay.symbol} onClose={() => setSymbolBrowserOpen(false)} onSelect={(meta) => {
         if (!targetPaneId) return
         dispatchChartWorkspace({ type: 'set-pane-symbol', paneId: targetPaneId, symbol: meta.symbol })
         setSymbolBrowserOpen(false)
         if (evalLocked) replayEngine.requestChartViewSymbol(targetPaneId, meta.symbol)
         else void replayEngine.selectSymbol(meta.symbol).then(() => replayEngine.requestChartViewSymbol(targetPaneId, meta.symbol))
-      }} /> : null}
+      }} /></Suspense> : null}
     </header>
   )
 }

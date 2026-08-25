@@ -1,6 +1,29 @@
 package bars
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"time"
+)
+
+// newIndexedBarFile lays a BarFile over data and runs the single index()
+// pass the registry runs, so a test file reaches the same state a published
+// dataset is in: ts validated, hourly and RTH indexes built.
+func newIndexedBarFile(data []byte, location *time.Location) (*BarFile, error) {
+	file, err := newBarFile(data)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := file.index(indexPlan{rollups: true, location: location}); err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
+// newUTCIndexedBarFile is newIndexedBarFile for the fixtures whose bars
+// carry no session timezone of their own.
+func newUTCIndexedBarFile(data []byte) (*BarFile, error) {
+	return newIndexedBarFile(data, time.UTC)
+}
 
 // buildFixture constructs a minimal valid RBR1 byte buffer from parallel
 // column slices, for tests that need precise control over bar values

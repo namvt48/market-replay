@@ -156,7 +156,7 @@ func TestAggregateCalendarChartWindowDeepHistorySkipsWeekends(t *testing.T) {
 		vol = append(vol, uint32(len(ts)))
 		price++
 	}
-	file, err := newBarFile(buildFixture(ts, open, high, low, closeCol, vol))
+	file, err := newUTCIndexedBarFile(buildFixture(ts, open, high, low, closeCol, vol))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestAggregateCalendarChartWindowMatchesBucketAnchorAcrossMarketGap(t *testi
 	}
 	julyBar := time.Date(2026, time.July, 31, 16, 0, 0, 0, location).Unix()
 	augustBar := time.Date(2026, time.August, 3, 10, 0, 0, 0, location).Unix()
-	file, err := newBarFile(buildFixture(
+	file, err := newUTCIndexedBarFile(buildFixture(
 		[]uint32{uint32(julyBar), uint32(augustBar)},
 		[]int32{100, 200}, []int32{110, 210}, []int32{90, 190}, []int32{105, 205}, []uint32{10, 20},
 	))

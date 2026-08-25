@@ -27,6 +27,7 @@ func (s *Store) CreateSession(ctx context.Context, in model.Session) (model.Sess
 	}
 	sess := model.Session{
 		ID:                  uuid.NewString(),
+		Name:                in.Name,
 		Symbol:              in.Symbol,
 		Tf:                  in.Tf,
 		StartTs:             in.StartTs,
@@ -51,9 +52,9 @@ func (s *Store) CreateSession(ctx context.Context, in model.Session) (model.Sess
 		return model.Session{}, fmt.Errorf("sqlite: create session: pause previous: %w", err)
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, sess.ID, sess.Symbol, sess.Tf, sess.StartTs, sess.CursorTs, sess.EquityCents, sess.Status, sess.Kind, sess.InitialBalanceCents, string(sess.Config), sess.CreatedAt, sess.UpdatedAt)
+		INSERT INTO sessions (id, name, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, sess.ID, sess.Name, sess.Symbol, sess.Tf, sess.StartTs, sess.CursorTs, sess.EquityCents, sess.Status, sess.Kind, sess.InitialBalanceCents, string(sess.Config), sess.CreatedAt, sess.UpdatedAt)
 	if err != nil {
 		return model.Session{}, fmt.Errorf("sqlite: create session: %w", err)
 	}
@@ -80,7 +81,7 @@ func (s *Store) UpdateSession(ctx context.Context, id string, patch model.Sessio
 	defer tx.Rollback()
 
 	row := tx.QueryRowContext(ctx, `
-		SELECT id, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
+		SELECT id, name, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
 		FROM sessions WHERE id = ?
 	`, id)
 	current, err := scanSession(row)
@@ -92,6 +93,9 @@ func (s *Store) UpdateSession(ctx context.Context, id string, patch model.Sessio
 	}
 
 	previousCursor := current.CursorTs
+	if patch.Name != nil {
+		current.Name = *patch.Name
+	}
 	if patch.CursorTs != nil {
 		current.CursorTs = *patch.CursorTs
 	}
@@ -121,8 +125,8 @@ func (s *Store) UpdateSession(ctx context.Context, id string, patch model.Sessio
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE sessions SET cursor_ts=?, equity_cents=?, status=?, config_json=?, updated_at=? WHERE id=?
-	`, current.CursorTs, current.EquityCents, current.Status, string(current.Config), current.UpdatedAt, id); err != nil {
+		UPDATE sessions SET name=?, cursor_ts=?, equity_cents=?, status=?, config_json=?, updated_at=? WHERE id=?
+	`, current.Name, current.CursorTs, current.EquityCents, current.Status, string(current.Config), current.UpdatedAt, id); err != nil {
 		return fmt.Errorf("sqlite: update session %s: %w", id, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -215,7 +219,7 @@ func (s *Store) DeleteEmptySessions(ctx context.Context) (int64, error) {
 
 func (s *Store) GetSession(ctx context.Context, id string) (model.Session, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
+		SELECT id, name, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
 		FROM sessions WHERE id = ?
 	`, id)
 	sess, err := scanSession(row)
@@ -230,7 +234,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (model.Session, error
 
 func (s *Store) ListSessions(ctx context.Context) ([]model.Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
+		SELECT id, name, symbol, tf, start_ts, cursor_ts, equity_cents, status, kind, initial_balance_cents, config_json, created_at, updated_at
 		FROM sessions ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -263,7 +267,7 @@ func scanSession(row rowScanner) (model.Session, error) {
 	var sess model.Session
 	var configJSON string
 	var initialBalanceCents sql.NullInt64
-	if err := row.Scan(&sess.ID, &sess.Symbol, &sess.Tf, &sess.StartTs, &sess.CursorTs, &sess.EquityCents, &sess.Status, &sess.Kind, &initialBalanceCents, &configJSON, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
+	if err := row.Scan(&sess.ID, &sess.Name, &sess.Symbol, &sess.Tf, &sess.StartTs, &sess.CursorTs, &sess.EquityCents, &sess.Status, &sess.Kind, &initialBalanceCents, &configJSON, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
 		return model.Session{}, err
 	}
 	if initialBalanceCents.Valid {

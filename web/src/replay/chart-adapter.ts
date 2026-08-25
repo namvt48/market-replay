@@ -51,6 +51,8 @@ export type DrawingNudgeDirection = 'left' | 'right' | 'up' | 'down'
 
 export type PriceScaleToggle = 'logarithmic' | 'percentage'
 
+export type ChartCursorMode = 'cross' | 'dot' | 'arrow' | 'demonstration' | 'eraser'
+
 export interface TradeMarker {
   time: number
   price: number
@@ -149,6 +151,7 @@ export interface ChartAdapter {
   onChartOrder(handler: (side: 'buy' | 'sell', type: 'limit' | 'stop', price: number) => void): void
 
   drawingTools(): DrawingToolDefinition[]
+  setCursorMode(mode: ChartCursorMode): void
   setDrawingTool(tool: string | null): void
   deselectDrawing(): void
   deleteSelectedDrawing(): void

@@ -57,18 +57,29 @@ func TestHandleSimulationMonteCarlo_Success(t *testing.T) {
 func TestHandleSimulationMonteCarlo_SeedOmittedIsGeneratedAndEchoed(t *testing.T) {
 	s := newTestServer(t)
 	body := `{"simulationCount":5,"tradesPerSimulation":5,"startBalance":1000,"averageGain":10,"averageLoss":10,"winRatePercent":50}`
+	for attempt := 0; attempt < 8; attempt++ {
+		rec := serve(t, s, http.MethodPost, "/api/v1/analytics/simulations/monte-carlo", body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Seed int64 `json:"seed"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Seed <= 0 || resp.Seed > int64(1<<53-1) {
+			t.Fatalf("seed = %d, want a positive JavaScript safe integer", resp.Seed)
+		}
+	}
+}
+
+func TestHandleSimulationMonteCarlo_RejectsUnsafeSeed(t *testing.T) {
+	s := newTestServer(t)
+	body := `{"simulationCount":5,"tradesPerSimulation":5,"startBalance":1000,"averageGain":10,"averageLoss":10,"winRatePercent":50,"seed":9007199254740992}`
 	rec := serve(t, s, http.MethodPost, "/api/v1/analytics/simulations/monte-carlo", body)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Seed int64 `json:"seed"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Seed == 0 {
-		t.Errorf("seed = 0, want a generated nonzero seed")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an unsafe JavaScript seed, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

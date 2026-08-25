@@ -105,6 +105,31 @@ func TestHandleSimulationStopLoss_SuccessEvaluation(t *testing.T) {
 	}
 }
 
+func TestHandleSimulationStopLoss_UsesOneMinuteBarsForAggregatedSessionTimeframe(t *testing.T) {
+	s := newTestServer(t) // fixture deliberately contains NQ/1m only
+	create := serve(t, s, http.MethodPost, "/api/v1/sessions", `{"symbol":"NQ","tf":"5m","startTs":1600000000,"config":{}}`)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", create.Code, create.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	entryTs := int64(testFixtureStart) + 60
+	exitTs := int64(testFixtureStart) + 300
+	journal := fmt.Sprintf(`[{"id":"t1","symbol":"NQ","side":"long","qty":1,"entryTs":%d,"entryPriceTicks":110,"exitTs":%d,"exitPriceTicks":112,"realizedCents":5000,"feesCents":0,"mfeTicks":10,"maeTicks":5,"initialStopTicks":95,"createdAt":%d}]`, entryTs, exitTs, exitTs)
+	putTestTrades(t, s, created.ID, journal)
+	advanceCursor(t, s, created.ID, exitTs)
+
+	body := `{"sourceType":"session","sourceId":"` + created.ID + `","reductionsPercent":[0,20]}`
+	rec := serve(t, s, http.MethodPost, "/api/v1/analytics/simulations/stop-loss", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleSimulationStopLoss_MissingSourceType(t *testing.T) {
 	s := newTestServer(t)
 	rec := serve(t, s, http.MethodPost, "/api/v1/analytics/simulations/stop-loss", `{"sourceId":"whatever","reductionsPercent":[0]}`)

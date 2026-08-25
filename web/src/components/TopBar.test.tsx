@@ -104,7 +104,7 @@ describe('TopBar timeframe visibility', () => {
     const symbol = screen.getByRole('button', { name: 'Change symbol, current NQ' })
     expect(symbol).toBeEnabled()
     await user.click(symbol)
-    await user.click(screen.getByRole('button', { name: /Select ES, E-mini S&P 500 Futures/i }))
+    await user.click(await screen.findByRole('button', { name: /Select ES, E-mini S&P 500 Futures/i }))
     expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-pane-symbol', paneId: 'pane-1', symbol: 'ES' })
     expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-1', 'ES')
   })
@@ -115,10 +115,19 @@ describe('TopBar timeframe visibility', () => {
     render(<TopBar />)
 
     await user.click(screen.getByRole('button', { name: 'Change symbol, current NQ' }))
-    await user.click(screen.getByRole('button', { name: /Select ES, E-mini S&P 500 Futures/i }))
+    await user.click(await screen.findByRole('button', { name: /Select ES, E-mini S&P 500 Futures/i }))
 
     expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-pane-symbol', paneId: 'pane-2', symbol: 'ES' })
     await waitFor(() => expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-2', 'ES'))
+  })
+
+  it('removes the heavy blue focus outline from the symbol browser search field', async () => {
+    const user = userEvent.setup()
+    render(<TopBar />)
+
+    await user.click(screen.getByRole('button', { name: 'Change symbol, current NQ' }))
+
+    expect(await screen.findByRole('textbox', { name: 'Search symbols' })).toHaveClass('focus-visible:!outline-none')
   })
 
   it('falls back to the top-left chart when the stored active chart is unavailable', async () => {
@@ -127,7 +136,7 @@ describe('TopBar timeframe visibility', () => {
     render(<TopBar />)
 
     await user.click(screen.getByRole('button', { name: 'Change symbol, current NQ' }))
-    await user.click(screen.getByRole('button', { name: /Select ES, E-mini S&P 500 Futures/i }))
+    await user.click(await screen.findByRole('button', { name: /Select ES, E-mini S&P 500 Futures/i }))
 
     expect(workspaceMocks.dispatch).toHaveBeenCalledWith({ type: 'set-pane-symbol', paneId: 'pane-1', symbol: 'ES' })
     await waitFor(() => expect(replayMocks.requestChartViewSymbol).toHaveBeenCalledWith('pane-1', 'ES'))

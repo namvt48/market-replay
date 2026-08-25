@@ -36,6 +36,7 @@ describe('TradeHistoryTable', () => {
     render(<TradeHistoryTable headingId="trade-history-heading" trades={trades} timezone={{ kind: 'preset', id: 'UTC' }} />)
 
     const table = screen.getByRole('table', { name: 'Trade history' })
+    expect(table).toHaveClass('min-w-[26rem]')
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Trade',
       'Time',

@@ -6,7 +6,16 @@ export interface SessionDatum { label: string; values: number[] }
 
 interface OutcomeRow { label: string; value: string }
 interface FrequencyDatum { title: string; average: string; labels: string[]; values: number[] }
-interface CalendarDatum { day: number; trades: number; pnl: number; outside?: boolean }
+export interface CalendarDatum {
+  date: string
+  trades: number
+  wins: number
+  losses: number
+  breakeven: number
+  pnl: number
+  pnlPercent: number
+  riskReward: number | null
+}
 
 export interface AnalyticsReportView {
   id: string
@@ -45,14 +54,12 @@ export interface AnalyticsReportView {
   performanceByTime: Record<'pnl' | 'rr' | 'profitPct' | 'winRate', PointDatum[] | SplitPointDatum[]>
   dayData: Array<{ label: string; profit: number; loss: number; winRate: number | null }>
   monthlyValues: string[]
-  calendarMonth: string
-  calendarYear: number
-  calendarDays: CalendarDatum[]
+  calendarInitialDate: string
+  calendarEntries: CalendarDatum[]
   frequencyData: FrequencyDatum[]
 }
 
 const currency = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
-const monthFormatter = new Intl.DateTimeFormat('en-US', { month: 'long', timeZone: 'UTC' })
 const shortDate = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' })
 
 function duration(seconds: number): string {
@@ -80,23 +87,35 @@ function curveLabels(report: AnalyticsPerformance): string[] {
   return indexes.map((index) => shortDate.format(dates[index]))
 }
 
-function buildCalendar(report: AnalyticsPerformance): { month: string; year: number; days: CalendarDatum[] } {
-  const latest = report.calendar.at(-1)
-  const focus = latest ? new Date(`${latest.date}T00:00:00Z`) : new Date()
-  const year = focus.getUTCFullYear()
-  const monthIndex = focus.getUTCMonth()
-  const first = new Date(Date.UTC(year, monthIndex, 1))
-  const mondayOffset = (first.getUTCDay() + 6) % 7
-  const start = new Date(Date.UTC(year, monthIndex, 1 - mondayOffset))
-  const values = new Map(report.calendar.map((item) => [item.date, item]))
-  const days = Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(start)
-    date.setUTCDate(start.getUTCDate() + index)
-    const key = date.toISOString().slice(0, 10)
-    const item = values.get(key)
-    return { day: date.getUTCDate(), trades: item?.trades ?? 0, pnl: item?.pnl ?? 0, outside: date.getUTCMonth() !== monthIndex }
+function calendarDateKey(timestamp: string, timeZone: string): string {
+  const date = new Date(timestamp)
+  const offset = /^UTC([+-])(\d{2}):(\d{2})$/.exec(timeZone)
+  const offsetMinutes = offset
+    ? (offset[1] === '+' ? 1 : -1) * (Number(offset[2]) * 60 + Number(offset[3]))
+    : 0
+  const displayDate = offset ? new Date(date.getTime() + offsetMinutes * 60_000) : date
+  const parts = new Intl.DateTimeFormat('en-US', {
+    year: 'numeric', month: '2-digit', day: '2-digit', timeZone: offset ? 'UTC' : timeZone,
+  }).formatToParts(displayDate)
+  const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((item) => item.type === type)?.value ?? ''
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+
+function buildCalendar(report: AnalyticsPerformance, timeZone: string): { initialDate: string; entries: CalendarDatum[] } {
+  const rrByDate = new Map<string, number>()
+  report.riskReward.series.actual.forEach((point) => {
+    if (!point.closedAt) return
+    const date = calendarDateKey(point.closedAt, timeZone)
+    rrByDate.set(date, (rrByDate.get(date) ?? 0) + point.rr)
   })
-  return { month: monthFormatter.format(focus), year, days }
+  const initialDate = report.calendar.at(-1)?.date ?? calendarDateKey(new Date().toISOString(), timeZone)
+  return {
+    initialDate,
+    entries: report.calendar.map((item) => ({
+      ...item,
+      riskReward: rrByDate.get(item.date) ?? null,
+    })),
+  }
 }
 
 function monthValues(report: AnalyticsPerformance): string[] {
@@ -114,8 +133,8 @@ function monthValues(report: AnalyticsPerformance): string[] {
   return [...values, percent(report.overview.pnlPercent, true)]
 }
 
-export function toAnalyticsReportView(report: AnalyticsPerformance): AnalyticsReportView {
-  const calendar = buildCalendar(report)
+export function toAnalyticsReportView(report: AnalyticsPerformance, timeZone = 'UTC'): AnalyticsReportView {
+  const calendar = buildCalendar(report, timeZone)
   const buyTotal = report.bySide.buy.trades + report.bySide.sell.trades
   const frequencyWeekdays = report.frequency.byWeekday
   return {
@@ -177,9 +196,8 @@ export function toAnalyticsReportView(report: AnalyticsPerformance): AnalyticsRe
     },
     dayData: report.byDay.map((item) => ({ label: item.day.slice(0, 3), profit: item.profit, loss: item.loss, winRate: item.totalTrades > 0 ? item.winRate : null })),
     monthlyValues: monthValues(report),
-    calendarMonth: calendar.month,
-    calendarYear: calendar.year,
-    calendarDays: calendar.days,
+    calendarInitialDate: calendar.initialDate,
+    calendarEntries: calendar.entries,
     frequencyData: [
       { title: 'Trades / day', average: report.frequency.averageTradesPerDay.toFixed(2), labels: frequencyWeekdays.map((item) => item.day.slice(0, 2)), values: frequencyWeekdays.map((item) => item.averageTrades) },
       { title: 'Trades / week', average: report.frequency.averageTradesPerWeek.toFixed(2), labels: report.frequency.byWeek.map((_, index) => String(index + 1)), values: report.frequency.byWeek.map((item) => item.totalTrades) },

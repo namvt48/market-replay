@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"math"
 
 	"market-replay/internal/analytics"
@@ -12,6 +13,19 @@ import (
 // locking.
 type barsMarketData struct {
 	registry *bars.Registry
+}
+
+// withDataset uses the source timeframe when it exists. Replay sessions can
+// also use client-side aggregate timeframes (5m, 1h, ...), while the server
+// stores raw analytics data at 1m. Falling back to that finer dataset keeps
+// intrabar simulations accurate instead of treating every aggregated-source
+// trade as uncovered market data.
+func (m *barsMarketData) withDataset(symbol, timeframe string, fn func(f *bars.BarFile, cal *bars.Calendar, tag string) error) error {
+	err := m.registry.WithDataset(symbol, timeframe, fn)
+	if !errors.Is(err, bars.ErrUnknownSymbolTF) || timeframe == "1m" {
+		return err
+	}
+	return m.registry.WithDataset(symbol, "1m", fn)
 }
 
 func (m *barsMarketData) TickValueCents(symbol string) (float64, bool) {
@@ -30,7 +44,7 @@ func (m *barsMarketData) TickValueCents(symbol string) (float64, bool) {
 // bars leaves the corresponding entry at its Found:false zero value.
 func (m *barsMarketData) ForwardExtremesBatch(symbol, timeframe string, windows []analytics.TimeWindow) []analytics.ForwardExtreme {
 	out := make([]analytics.ForwardExtreme, len(windows))
-	_ = m.registry.WithDataset(symbol, timeframe, func(f *bars.BarFile, _ *bars.Calendar, _ string) error {
+	_ = m.withDataset(symbol, timeframe, func(f *bars.BarFile, _ *bars.Calendar, _ string) error {
 		for i, w := range windows {
 			win, _ := f.RangeWindow(w.FromTs, w.ToTs, f.Count())
 			if win.Len() == 0 {
@@ -60,7 +74,7 @@ func (m *barsMarketData) ForwardExtremesBatch(symbol, timeframe string, windows 
 // scenario). An unknown dataset or an empty window leaves Found:false.
 func (m *barsMarketData) PriceBarsBatch(symbol, timeframe string, windows []analytics.TimeWindow) []analytics.PriceWindow {
 	out := make([]analytics.PriceWindow, len(windows))
-	_ = m.registry.WithDataset(symbol, timeframe, func(f *bars.BarFile, _ *bars.Calendar, _ string) error {
+	_ = m.withDataset(symbol, timeframe, func(f *bars.BarFile, _ *bars.Calendar, _ string) error {
 		for i, w := range windows {
 			win, _ := f.RangeWindow(w.FromTs, w.ToTs, f.Count())
 			if win.Len() == 0 {

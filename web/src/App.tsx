@@ -2,7 +2,6 @@ import { lazy, Suspense } from 'react'
 import { ChartWorkspace } from './components/chart/ChartWorkspace'
 import { KeyboardCommandDialogs } from './components/KeyboardCommandDialogs'
 import { EvalProgressPanel } from './components/eval/EvalProgressPanel'
-import { EvalSetupScreen } from './components/eval/EvalSetupScreen'
 import { Sidebar } from './components/panels/Sidebar'
 import { TopBar } from './components/TopBar'
 import { useHotkeys } from './hooks/use-hotkeys'
@@ -11,6 +10,9 @@ import { useEvalTicker } from './replay/use-eval-session'
 import { EconomicCalendarChartSync } from './components/calendar/EconomicCalendarChartSync'
 
 const AnalyticsScreen = lazy(() => import('./components/analytics/AnalyticsScreen').then((module) => ({ default: module.AnalyticsScreen })))
+// The /start setup screen and the chart workspace are never both on screen,
+// so neither should be in the other's download.
+const EvalSetupScreen = lazy(() => import('./components/eval/EvalSetupScreen').then((module) => ({ default: module.EvalSetupScreen })))
 
 // Layout shell matching docs §16.5: chart+toolbar on the left, position/
 // orders/watchlist/study-list stack on the right, replay transport strip
@@ -60,7 +62,7 @@ function App() {
     return <Suspense fallback={<div className="grid h-full place-items-center bg-surface-0 text-ui-body text-muted" role="status">Loading analytics…</div>}><AnalyticsScreen /></Suspense>
   }
   if (path.startsWith('/start')) {
-    return <EvalSetupScreen />
+    return <Suspense fallback={<div className="grid h-full place-items-center bg-surface-0 text-ui-body text-muted" role="status">Loading setup…</div>}><EvalSetupScreen /></Suspense>
   }
   return <Workspace />
 }

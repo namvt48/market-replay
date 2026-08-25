@@ -7,7 +7,21 @@ import type {
   Time,
 } from 'lightweight-charts'
 import type { IDrawing } from 'lightweight-charts-drawing'
-import { colorWithOpacity, getDrawingAppearance, type DrawingWorkbenchOptions } from './drawing-appearance'
+import { colorWithOpacity, getDrawingAppearance, LINE_TOOL_TYPES, type DrawingWorkbenchOptions } from './drawing-appearance'
+
+// Every line tool renders its own text inline, directly on the line with a
+// stroke gap (see the vendor's pane renderers) instead of this floating box —
+// skip them here or the same text draws twice.
+const DRAWINGS_WITH_INLINE_TEXT = new Set<string>([
+  ...LINE_TOOL_TYPES,
+  'rectangle',
+  'text-annotation',
+  'anchored-text',
+  'note',
+  'price-note',
+  'callout',
+  'comment',
+])
 import { finiteMinMax } from './number-range'
 
 interface LabelBounds {
@@ -15,6 +29,11 @@ interface LabelBounds {
   right: number
   top: number
   bottom: number
+}
+
+interface PanePoint {
+  x: number
+  y: number
 }
 
 export interface DrawingPriceLevel {
@@ -40,6 +59,7 @@ const DRAWINGS_WITHOUT_PRICE_LABELS = new Set([
   'double-curve',
   'anchored-text',
   'note',
+  'price-note',
   'flag-mark',
   'pin',
   'comment',
@@ -60,6 +80,8 @@ function uniqueLevels(levels: readonly DrawingPriceLevel[]): DrawingPriceLevel[]
 export function drawingPriceLevels(drawing: IDrawing): DrawingPriceLevel[] {
   if (drawing.options.visible === false || DRAWINGS_WITHOUT_PRICE_LABELS.has(drawing.type)) return []
   const appearance = getDrawingAppearance(drawing)
+  const workbench = (drawing.options as DrawingWorkbenchOptions).workbench
+  if (DRAWINGS_WITH_INLINE_TEXT.has(drawing.type) && workbench?.showPriceLabels === false) return []
   if (drawing.type === 'fib-retracement' && drawing.anchors.length >= 2) {
     const [first, second] = drawing.anchors
     const priceRange = second.price - first.price
@@ -123,10 +145,51 @@ class DrawingLabelsRenderer implements IPrimitivePaneRenderer {
   draw(target: Parameters<IPrimitivePaneRenderer['draw']>[0]): void {
     target.useBitmapCoordinateSpace((scope) => {
       const { context, horizontalPixelRatio, verticalPixelRatio, bitmapSize } = scope
+      const paneWidth = bitmapSize.width / horizontalPixelRatio
+      const paneHeight = bitmapSize.height / verticalPixelRatio
       for (const drawing of this.primitive.drawings()) {
+        if (drawing.options.visible === false) continue
         const appearance = getDrawingAppearance(drawing)
+        const anchorPoints = this.primitive.anchorPoints(drawing)
+        const primaryLine = this.primaryLine(drawing, anchorPoints, appearance.extendLeft, appearance.extendRight, paneWidth, paneHeight)
+        if (primaryLine && (appearance.lineStartStyle === 'arrow' || appearance.lineEndStyle === 'arrow' || appearance.showMiddlePoint)) {
+          const { start, end } = primaryLine
+          const startIsVisuallyFirst = start.x < end.x || (start.x === end.x && start.y <= end.y)
+          const visualStart = startIsVisuallyFirst ? start : end
+          const visualEnd = startIsVisuallyFirst ? end : start
+          const drawArrow = (from: { x: number; y: number }, to: { x: number; y: number }): void => {
+            const angle = Math.atan2(to.y - from.y, to.x - from.x)
+            const size = 9 * horizontalPixelRatio
+            const x = to.x * horizontalPixelRatio
+            const y = to.y * verticalPixelRatio
+            context.beginPath()
+            context.moveTo(x, y)
+            context.lineTo(x - size * Math.cos(angle - Math.PI / 6), y - size * Math.sin(angle - Math.PI / 6))
+            context.moveTo(x, y)
+            context.lineTo(x - size * Math.cos(angle + Math.PI / 6), y - size * Math.sin(angle + Math.PI / 6))
+            context.stroke()
+          }
+
+          context.save()
+          context.strokeStyle = drawing.style.lineColor
+          context.lineWidth = Math.max(1, drawing.style.lineWidth * horizontalPixelRatio)
+          context.lineCap = 'round'
+          context.setLineDash([])
+          if (appearance.lineStartStyle === 'arrow') drawArrow(visualEnd, visualStart)
+          if (appearance.lineEndStyle === 'arrow') drawArrow(visualStart, visualEnd)
+          if (appearance.showMiddlePoint) {
+            const x = ((start.x + end.x) / 2) * horizontalPixelRatio
+            const y = ((start.y + end.y) / 2) * verticalPixelRatio
+            context.beginPath()
+            context.arc(x, y, 4 * horizontalPixelRatio, 0, Math.PI * 2)
+            context.fillStyle = '#131722'
+            context.fill()
+            context.stroke()
+          }
+          context.restore()
+        }
         const text = appearance.text.trim()
-        if (!text || drawing.options.visible === false || (drawing.type === 'fib-retracement' && !appearance.fibonacciTextVisible)) continue
+        if (!text || DRAWINGS_WITH_INLINE_TEXT.has(drawing.type) || (drawing.type === 'fib-retracement' && !appearance.fibonacciTextVisible)) continue
         const bounds = this.primitive.bounds(drawing)
         if (!bounds) continue
 
@@ -156,8 +219,11 @@ class DrawingLabelsRenderer implements IPrimitivePaneRenderer {
           : appearance.verticalAlign === 'bottom'
             ? bounds.bottom * verticalPixelRatio + 8 * verticalPixelRatio
             : ((bounds.top + bounds.bottom) / 2) * verticalPixelRatio - boxHeight / 2
-        const boxX = Math.max(4 * ratio, Math.min(bitmapSize.width - boxWidth - 4 * ratio, requestedX))
-        const boxY = Math.max(4 * verticalPixelRatio, Math.min(bitmapSize.height - boxHeight - 4 * verticalPixelRatio, requestedY))
+        // Keep the label attached to the drawing while the chart pans. The
+        // canvas clips coordinates outside the pane naturally; clamping here
+        // makes a departing label appear stuck to the chart edge.
+        const boxX = requestedX
+        const boxY = requestedY
 
         if (appearance.backgroundOpacity > 0) {
           context.fillStyle = colorWithOpacity(appearance.backgroundColor, appearance.backgroundOpacity)
@@ -180,6 +246,32 @@ class DrawingLabelsRenderer implements IPrimitivePaneRenderer {
         context.restore()
       }
     })
+  }
+
+  private primaryLine(
+    drawing: IDrawing,
+    anchorPoints: readonly PanePoint[],
+    extendLeft: boolean,
+    extendRight: boolean,
+    paneWidth: number,
+    paneHeight: number,
+  ): { start: PanePoint; end: PanePoint } | null {
+    if (!DRAWINGS_WITH_INLINE_TEXT.has(drawing.type) || anchorPoints.length === 0) return null
+    if (anchorPoints.length >= 2) return { start: anchorPoints[0], end: anchorPoints[1] }
+
+    const anchor = anchorPoints[0]
+    if (drawing.type === 'horizontal-line' || drawing.type === 'cross-line') {
+      return { start: { x: 0, y: anchor.y }, end: { x: paneWidth, y: anchor.y } }
+    }
+    if (drawing.type === 'vertical-line') {
+      return { start: { x: anchor.x, y: 0 }, end: { x: anchor.x, y: paneHeight } }
+    }
+    if (drawing.type === 'horizontal-ray') {
+      if (extendLeft && extendRight) return { start: { x: 0, y: anchor.y }, end: { x: paneWidth, y: anchor.y } }
+      if (extendLeft) return { start: { x: 0, y: anchor.y }, end: anchor }
+      return { start: anchor, end: { x: paneWidth, y: anchor.y } }
+    }
+    return null
   }
 }
 
@@ -218,6 +310,16 @@ export class DrawingLabelsPrimitive implements ISeriesPrimitive<Time> {
     return coordinate !== null && Number.isFinite(coordinate) ? coordinate : null
   }
 
+  anchorPoints(drawing: IDrawing): Array<{ x: number; y: number }> {
+    const params = this.attachedParams
+    if (!params) return []
+    return drawing.anchors.flatMap((anchor) => {
+      const x = params.chart.timeScale().timeToCoordinate(anchor.time)
+      const y = params.series.priceToCoordinate(anchor.price)
+      return x === null || y === null ? [] : [{ x, y }]
+    })
+  }
+
   private rebuildPriceAxisViews(): void {
     const levels = this.getDrawings()
       .filter((drawing) => drawing.id !== '__drawing-preview__' && (drawing.state === 'selected' || drawing.state === 'editing'))
@@ -231,11 +333,7 @@ export class DrawingLabelsPrimitive implements ISeriesPrimitive<Time> {
   bounds(drawing: IDrawing): LabelBounds | null {
     const params = this.attachedParams
     if (!params || drawing.anchors.length === 0) return null
-    const points = drawing.anchors.flatMap((anchor) => {
-      const x = params.chart.timeScale().timeToCoordinate(anchor.time)
-      const y = params.series.priceToCoordinate(anchor.price)
-      return x === null || y === null ? [] : [{ x, y }]
-    })
+    const points = this.anchorPoints(drawing)
     if (points.length === 0) return null
     const xRange = finiteMinMax(points.map((point) => point.x))
     const yRange = finiteMinMax(points.map((point) => point.y))

@@ -45,11 +45,26 @@ func main() {
 		MaxJournalTrades:              cfg.Limits.MaxJournalTrades,
 	})
 
+	// Startup is the one part of this process a user waits on with nothing
+	// being served, and it is dominated by work whose cost scales with the
+	// data on disk — so each phase reports its own duration. Without this the
+	// only visible number is "the server took a while to come up", which is
+	// exactly what let bar indexing quietly grow from 356 ms to 9 s as
+	// datasets were added.
+	boot := time.Now()
+	phase := boot
+	took := func(name string) {
+		now := time.Now()
+		log.Printf("startup: %s in %s", name, now.Sub(phase).Round(time.Millisecond))
+		phase = now
+	}
+
 	reg, err := bars.NewRegistry(cfg.DataDir)
 	if err != nil {
 		log.Fatalf("bars: %v", err)
 	}
 	defer reg.Close()
+	took("bars registry")
 	// Non-fatal data problems: a stale advertised range, or an .idx no session
 	// index could be built from. Both serve correct bars, so they must not stop
 	// the server — but neither may they stay invisible, since one sends the
@@ -65,6 +80,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("econ: %v", err)
 	}
+	took("economic calendar")
 
 	store, err := sqlite.Open(cfg.DBPath)
 	if err != nil {
@@ -74,11 +90,13 @@ func main() {
 	if err := store.Init(context.Background()); err != nil {
 		log.Fatalf("storage init: %v", err)
 	}
+	took("sqlite open+migrate")
 
 	ind := indicators.NewEngine()
 	if err := indicators.RegisterBuiltins(ind); err != nil {
 		log.Fatalf("indicators: %v", err)
 	}
+	took("indicator scripts")
 
 	srv := &httpapi.Server{Registry: reg, Store: store, Econ: calendar, Indicators: ind, WebFS: web.DistFS}
 	httpServer := &http.Server{
@@ -88,7 +106,8 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("market-replay listening on %s (data=%s)", cfg.HTTPAddr, cfg.DataDir)
+		log.Printf("market-replay listening on %s (data=%s) after %s",
+			cfg.HTTPAddr, cfg.DataDir, time.Since(boot).Round(time.Millisecond))
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http server: %v", err)
 		}

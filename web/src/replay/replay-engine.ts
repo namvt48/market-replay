@@ -44,8 +44,9 @@ import {
   type SessionWorkspaceSnapshot,
 } from './session-workspace-snapshot'
 import { pruneSymbolCache } from './symbol-cache'
-import type { ChartAdapter, DisplayBar, EconomicEventMarker, IndicatorRenderResult, OrderLine, OrderLineAction, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDemand, ViewportDirection } from './chart-adapter'
+import type { ChartAdapter, ChartCursorMode, DisplayBar, EconomicEventMarker, IndicatorRenderResult, OrderLine, OrderLineAction, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDemand, ViewportDirection } from './chart-adapter'
 import type { ChartPaneSettings } from './chart-settings-store'
+import { shortEvalAccountHash } from '../eval/rules'
 import { ChartViewController } from './chart-view-controller'
 import { ChartViewRegistry } from './chart-view-registry'
 import type { DrawingAppearance, DrawingAppearancePatch } from './drawing-appearance'
@@ -79,6 +80,20 @@ function replayBaseTimeframe(symbol: SymbolMeta): Timeframe {
 }
 const HIGH_THROUGHPUT_BARS_PER_SECOND = 100
 const TIMEFRAME_SWITCH_SETTLE_MS = 48
+/**
+ * How often indicators recompute while the replay is playing.
+ *
+ * Every built-in script anchors its output to session or display-bucket
+ * boundaries, so the content only actually changes at a bucket rollover —
+ * two passes a second is comfortably inside "follows the replay" without
+ * pretending to more resolution than the data has. It is also close to free:
+ * on a coarse timeframe the server quantises every cursor inside a bucket to
+ * the same request and answers from its LRU, and on the base timeframe the
+ * suspended-Runtime session advances only the bars newly crossed rather than
+ * replaying the window. For comparison, scheduleSecondsPaneRefresh already
+ * accepted a 1s interval for the heavier job of refetching a whole viewport.
+ */
+const INDICATOR_PLAYBACK_REFRESH_MS = 500
 const MAX_REPLAY_CONTRACTS = 1_000
 // The fill engine's fixed paper bankroll ($10,000). Now also reported to the
 // server as a session's initialBalanceCents, so the two must not drift.
@@ -122,6 +137,7 @@ export interface ReplaySnapshot {
   frameMetrics: FrameMetrics
   lastBar: Bar1m | null
   drawingMode: DrawingMode
+  cursorMode: ChartCursorMode
   activeDrawingTool: string | null
   selectedDrawing: DrawingAppearance | null
   drawingInspectorOpen: boolean
@@ -141,7 +157,7 @@ const initialSnapshot: ReplaySnapshot = {
   status: 'idle', error: null, symbols: [], symbol: null, activeSymbol: null, timeframe: '1m', cursorTs: 0,
   replayMode: 'inactive', replayStartTs: null, playing: false, speed: 1, stepTimeframe: '1m', qty: 1, eagerState: 'idle', viewportCachedBars: 0, sessionId: null, sessionStatus: null, fill: null, evalFill: null,
   stats: EMPTY_STATS, frameMetrics: { p50: 0, p95: 0, max: 0, samples: 0 }, lastBar: null,
-  drawingMode: 'replay', activeDrawingTool: null, selectedDrawing: null, drawingInspectorOpen: false,
+  drawingMode: 'replay', cursorMode: 'cross', activeDrawingTool: null, selectedDrawing: null, drawingInspectorOpen: false,
   keepDrawing: false, drawingsLocked: false, drawingsHidden: false, indicatorsHidden: false, areaZoomSelecting: false, areaZoomed: false,
   persistencePending: false,
   indicators: [], indicatorLoading: false, indicatorError: null,
@@ -255,6 +271,15 @@ export class ReplayEngine {
   private indicatorResultCursors = new Map<string, { cursorTs: number; symbol: string; timeframe: Timeframe }>()
   private indicatorControllers = new Map<string, AbortController>()
   private indicatorRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  private indicatorPlaybackTimer: ReturnType<typeof setInterval> | null = null
+  /**
+   * How many user-initiated indicator runs are outstanding. Only these drive
+   * indicatorLoading: a background playback refresh registers an
+   * AbortController like any other run — that is what makes preemption work —
+   * but blinking the legend spinner twice a second would be worse than the
+   * freeze this whole mechanism exists to fix.
+   */
+  private indicatorForegroundRuns = 0
   private indicatorVisibilityBeforeHide = new Map<string, boolean>()
   /**
    * Seconds-unit panes (5s/15s/30s) can't use the normal pushRawBars live
@@ -284,6 +309,7 @@ export class ReplayEngine {
     adapter.setKeepDrawing(this.snapshot.keepDrawing)
     adapter.setAllDrawingsLocked(this.snapshot.drawingsLocked)
     adapter.setDrawingsHidden(this.snapshot.drawingsHidden)
+    adapter.setCursorMode(this.snapshot.cursorMode)
     this.bindView(view)
     if (!this.bootstrapPromise && this.snapshot.symbols.length === 0) this.bootstrapPromise = this.bootstrap()
     if (this.bootstrapPromise) await this.bootstrapPromise
@@ -332,6 +358,7 @@ export class ReplayEngine {
     const fill = symbol ? this.ensureSymbolFill(symbol) : null
     const source = symbol ? this.sourceForSymbol(symbol.symbol) : null
     const lastBar = source ? this.barAtCursor(source) : null
+    view.adapter.setCursorMode(this.snapshot.cursorMode)
     this.setSnapshot({ activeSymbol: symbol, timeframe: view.timeframe, fill, evalFill: isEvalActive() ? this.aggregateEvaluationFill() : null, lastBar, stats: fill ? calculateTradeStats(fill.trades) : EMPTY_STATS, selectedDrawing: null, drawingInspectorOpen: false, activeDrawingTool: null, areaZoomSelecting: areaZoom.selecting, areaZoomed: areaZoom.zoomed }, true)
     this.syncChartTradingState(true)
   }
@@ -484,7 +511,7 @@ export class ReplayEngine {
     await this.refreshIndicatorGroup([view])
   }
 
-  private async refreshIndicatorGroup(views: readonly ChartViewController[]): Promise<void> {
+  private async refreshIndicatorGroup(views: readonly ChartViewController[], options: { background?: boolean } = {}): Promise<void> {
     const active = this.snapshot.indicators.filter((indicator) => indicator.visible)
     const firstView = views[0]
     const symbol = firstView?.symbol() ?? null
@@ -516,33 +543,50 @@ export class ReplayEngine {
       abortListeners.set(controller, handleAbort)
       controller.signal.addEventListener('abort', handleAbort, { once: true })
     }
-    this.setSnapshot({ indicatorLoading: true }, false)
+    // Read once. The request used to take the dispatch-time cursor while
+    // indicatorResultCursors recorded the post-await one; with a background
+    // refresh running while the cursor keeps moving those diverge by hundreds
+    // of bars, and the rewind detector's baseline would then describe
+    // something other than the data it is guarding.
+    const requestedCursorTs = this.snapshot.cursorTs
+    if (!options.background) {
+      this.indicatorForegroundRuns += 1
+      this.setSnapshot({ indicatorLoading: true }, false)
+    }
     try {
       const results = await Promise.all(active.map(async (indicator): Promise<IndicatorRenderResult> => ({
         indicatorId: indicator.id,
-        ...await runIndicator(symbol.symbol, firstView.timeframe, indicator.scriptId, this.snapshot.cursorTs, indicator.inputs, sharedController.signal),
+        ...await runIndicator(symbol.symbol, firstView.timeframe, indicator.scriptId, requestedCursorTs, indicator.inputs, sharedController.signal),
       })))
       for (const [view, controller] of controllers) {
         if (controller.signal.aborted || this.indicatorControllers.get(view.id) !== controller) continue
         this.indicatorResults.set(view.id, new Map(results.map((result) => [result.indicatorId, result])))
-        this.indicatorResultCursors.set(view.id, { cursorTs: this.snapshot.cursorTs, symbol: symbol.symbol, timeframe: firstView.timeframe })
+        this.indicatorResultCursors.set(view.id, { cursorTs: requestedCursorTs, symbol: symbol.symbol, timeframe: firstView.timeframe })
         this.publishIndicatorResults(view.id)
       }
       if (this.snapshot.indicatorError) this.setSnapshot({ indicatorError: null }, true)
     } catch (error) {
       if (sharedController.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return
-      this.setSnapshot({ indicatorError: error instanceof Error ? error.message : 'Indicator could not be calculated' }, true)
+      const message = error instanceof Error ? error.message : 'Indicator could not be calculated'
+      // A script that keeps failing would otherwise re-emit the same message
+      // twice a second, re-rendering every snapshot subscriber for no change
+      // in what is on screen.
+      if (this.snapshot.indicatorError !== message) this.setSnapshot({ indicatorError: message }, true)
     } finally {
       for (const [view, controller] of controllers) {
         const listener = abortListeners.get(controller)
         if (listener) controller.signal.removeEventListener('abort', listener)
         if (this.indicatorControllers.get(view.id) === controller) this.indicatorControllers.delete(view.id)
       }
-      this.setSnapshot({ indicatorLoading: this.indicatorControllers.size > 0 }, true)
+      if (!options.background) {
+        this.indicatorForegroundRuns -= 1
+        this.setSnapshot({ indicatorLoading: this.indicatorForegroundRuns > 0 }, true)
+      }
     }
   }
 
-  private async refreshIndicators(): Promise<void> {
+  /** Panes that share a symbol and timeframe, so one run can serve them all. */
+  private indicatorRefreshGroups(): ChartViewController[][] {
     const groups = new Map<string, ChartViewController[]>()
     for (const view of this.views.all()) {
       const symbol = view.symbol()
@@ -551,7 +595,61 @@ export class ReplayEngine {
       if (group) group.push(view)
       else groups.set(key, [view])
     }
-    await Promise.all([...groups.values()].map((views) => this.refreshIndicatorGroup(views)))
+    return [...groups.values()]
+  }
+
+  private async refreshIndicators(): Promise<void> {
+    await Promise.all(this.indicatorRefreshGroups().map((views) => this.refreshIndicatorGroup(views)))
+  }
+
+  /**
+   * Keeps indicator output following the cursor during continuous playback.
+   *
+   * scheduleIndicatorRefresh is a trailing debounce and advance() calls it on
+   * every processed tick — once a second at speed 1, every ~60 ms at speed 16
+   * — so its timer was always cleared before it could fire, and indicators
+   * only ever recomputed once the replay stopped. This is the same shape
+   * scheduleSecondsPaneRefresh uses for the same reason: an interval armed
+   * once by play() that nothing downstream resets.
+   */
+  private scheduleIndicatorPlaybackRefresh(): void {
+    if (this.indicatorPlaybackTimer) return
+    this.indicatorPlaybackTimer = setInterval(
+      () => void this.refreshIndicatorsForPlayback(),
+      INDICATOR_PLAYBACK_REFRESH_MS,
+    )
+  }
+
+  private clearIndicatorPlaybackRefresh(): void {
+    if (!this.indicatorPlaybackTimer) return
+    clearInterval(this.indicatorPlaybackTimer)
+    this.indicatorPlaybackTimer = null
+  }
+
+  /**
+   * One background pass.
+   *
+   * A group whose previous run is still in flight is skipped, not preempted.
+   * refreshIndicatorGroup aborts the outstanding controller on entry, so
+   * restarting every 500 ms against a symbol whose runs take longer than that
+   * would mean no run ever completes — the same freeze as before, now with
+   * continuous server load. Output is a pure function of the cursor, so a
+   * skipped tick costs one interval of staleness and the next tick asks for a
+   * strictly fresher cursor. User actions still preempt instantly, because
+   * the foreground paths keep their unconditional abort.
+   */
+  private async refreshIndicatorsForPlayback(): Promise<void> {
+    // Self-healing: not every path out of playback goes through pause(), so
+    // the timer stops itself rather than relying on each of them to remember.
+    if (!this.snapshot.playing) {
+      this.clearIndicatorPlaybackRefresh()
+      return
+    }
+    if (this.snapshot.status !== 'ready' || this.snapshot.indicatorsHidden) return
+    if (this.snapshot.indicators.every((indicator) => !indicator.visible)) return
+    const idle = this.indicatorRefreshGroups()
+      .filter((views) => views.every((view) => !this.indicatorControllers.has(view.id)))
+    await Promise.all(idle.map((views) => this.refreshIndicatorGroup(views, { background: true })))
   }
 
   private scheduleIndicatorRefresh(delay = 1_000): void {
@@ -641,6 +739,8 @@ export class ReplayEngine {
     if (this.transientErrorTimer) clearTimeout(this.transientErrorTimer)
     if (this.indicatorRefreshTimer) clearTimeout(this.indicatorRefreshTimer)
     if (this.secondsPaneRefreshTimer) clearInterval(this.secondsPaneRefreshTimer)
+    this.clearIndicatorPlaybackRefresh()
+    this.indicatorForegroundRuns = 0
     this.indicatorControllers.forEach((controller) => controller.abort())
     this.indicatorControllers.clear()
     this.indicatorResults.clear()
@@ -789,11 +889,13 @@ export class ReplayEngine {
     this.ensureCursorViewport()
     this.lastFrameAt = performance.now()
     this.setSnapshot({ playing: true }, true)
+    this.scheduleIndicatorPlaybackRefresh()
     cancelAnimationFrame(this.animationFrame)
     this.animationFrame = requestAnimationFrame(this.frame)
   }
   pause(): void {
     const wasPlaying = this.snapshot.playing
+    this.clearIndicatorPlaybackRefresh()
     cancelAnimationFrame(this.animationFrame)
     this.views.flushRawBars()
     this.highSpeedChartFrame = 0
@@ -1118,11 +1220,20 @@ export class ReplayEngine {
   }
 
   drawingTools(): DrawingToolDefinition[] { return this.views.active()?.adapter.drawingTools() ?? [] }
+  setCursorMode(mode: ChartCursorMode): void {
+    this.setDrawingTool(null)
+    this.views.all().forEach((view) => {
+      view.adapter.deselectDrawing()
+      view.adapter.setCursorMode(mode)
+    })
+    this.setSnapshot({ cursorMode: mode, activeDrawingTool: null, selectedDrawing: null, drawingInspectorOpen: false }, true)
+  }
   setDrawingTool(tool: string | null): void {
     if (tool) this.pause()
     if (tool && this.snapshot.drawingsHidden) this.setDrawingsHidden(false)
+    if (tool && this.snapshot.cursorMode !== 'cross') this.views.all().forEach((view) => view.adapter.setCursorMode('cross'))
     this.views.active()?.adapter.setDrawingTool(tool)
-    this.setSnapshot({ activeDrawingTool: tool, areaZoomSelecting: false }, true)
+    this.setSnapshot({ cursorMode: tool ? 'cross' : this.snapshot.cursorMode, activeDrawingTool: tool, areaZoomSelecting: false }, true)
   }
   deselectDrawing(): void { this.views.active()?.adapter.deselectDrawing() }
   deleteSelectedDrawing(): void { this.views.active()?.adapter.deleteSelectedDrawing() }
@@ -1300,6 +1411,7 @@ export class ReplayEngine {
         sessionId = await createSession(symbol.symbol, this.views.active()?.timeframe ?? this.snapshot.timeframe, evaluation.startTs, {
           kind: 'eval',
           initialBalanceCents: Math.round(evaluation.config.accountSize * 100),
+          name: evaluation.name?.trim() || (evaluation.accountId ? `#${shortEvalAccountHash(evaluation.accountId)}` : undefined),
         })
         evaluation.attachSession(sessionId)
       }

@@ -483,8 +483,6 @@ export function evalAccountId(config: EvalConfig): string {
 }
 
 export function evalAccountName(config: EvalConfig): string {
-  if (config.phase === 'funded') return `${config.firm} · Funded`
-  if (config.phase === 'verification') return `${config.firm} · Verification`
   return config.firm
 }
 

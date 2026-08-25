@@ -35,7 +35,7 @@ describe('DrawingInspector', () => {
     render(<Harness onChange={() => undefined} />)
 
     const tabs = screen.getByRole('tablist', { name: 'Drawing property sections' })
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Style', 'Fill', 'Text', 'Templates'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Style', 'Fill', 'Text', 'Coordinates', 'Visibility', 'Templates'])
     expect(screen.getByRole('tab', { name: 'Style' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('spinbutton', { name: /Thickness/i })).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: 'Label' })).not.toBeInTheDocument()
@@ -47,7 +47,8 @@ describe('DrawingInspector', () => {
 
     screen.getByRole('tab', { name: 'Text' }).focus()
     await user.keyboard('{ArrowRight}')
-    expect(screen.getByRole('tab', { name: 'Templates' })).toHaveFocus()
+    expect(screen.getByRole('tab', { name: 'Coordinates' })).toHaveFocus()
+    await user.click(screen.getByRole('tab', { name: 'Templates' }))
     expect(screen.getByRole('textbox', { name: 'Template name' })).toBeInTheDocument()
     expect(tabs).toBeInTheDocument()
   })

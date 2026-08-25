@@ -1,11 +1,17 @@
 import {
+  Anchor,
+  Copy,
   GripVertical,
   LayoutGrid,
   Lock,
+  LockOpen,
+  Minus,
+  MoreHorizontal,
+  PaintBucket,
   PencilLine,
   Plus,
-  Settings,
   Trash2,
+  Type,
   type LucideIcon,
 } from 'lucide-react'
 import {
@@ -19,7 +25,8 @@ import {
   type ReactElement,
 } from 'react'
 import { useDismissableLayer, type DismissReason } from '../../hooks/use-dismissable-layer'
-import type { DrawingAppearance, DrawingAppearancePatch } from '../../replay/drawing-appearance'
+import { LINE_TOOL_TYPES } from '../../replay/drawing-appearance'
+import type { DrawingAppearance, DrawingAppearancePatch, DrawingBorderStyle } from '../../replay/drawing-appearance'
 import {
   loadContextualDrawingToolbarPosition,
   persistContextualDrawingToolbarPosition,
@@ -27,8 +34,8 @@ import {
 } from '../../replay/drawing-toolbar-position'
 import type { DrawingTemplate } from '../../replay/drawing-templates'
 
-type ContextMenu = 'color' | 'templates' | 'width' | null
-type DrawingColorTarget = 'stroke' | 'text'
+type ContextMenu = 'color' | 'fill' | 'fontSize' | 'positionTarget' | 'positionStop' | 'templates' | 'width' | 'text' | 'lineStyle' | 'overflow' | null
+type DrawingColorTarget = 'stroke' | 'fill' | 'text' | 'positionTarget' | 'positionStop'
 
 interface SelectedDrawingToolbarConfig {
   colorTarget: DrawingColorTarget
@@ -44,6 +51,7 @@ interface SelectedDrawingToolbarProps {
   onApplyTemplate: (template: DrawingTemplate) => void
   onChange: (patch: DrawingAppearancePatch) => void
   onDelete: () => void
+  onDuplicate: () => void
   onLock: () => void
   onOpenProperties: () => void
   onSaveTemplate: (name: string) => void
@@ -61,6 +69,12 @@ interface DragState {
 const TOOLBAR_BOUNDARY = 8
 const TOOLBAR_DEFAULT_TOP = 8
 const LINE_WIDTHS = [1, 2, 3, 4] as const
+const TEXT_FONT_SIZES = [8, 10, 11, 12, 14, 16, 18, 20, 22, 24, 28, 32, 40] as const
+const BORDER_STYLE_OPTIONS: readonly { value: DrawingBorderStyle; label: string; css: 'solid' | 'dashed' | 'dotted' }[] = [
+  { value: 'solid', label: '— Line', css: 'solid' },
+  { value: 'dashed', label: '- - Dashed line', css: 'dashed' },
+  { value: 'dotted', label: '··· Dotted line', css: 'dotted' },
+]
 const COLOR_ROWS = [
   ['#f2f3f5', '#dedfe3', '#c5c7cc', '#a9abb1', '#85878d', '#6b6d73', '#515359', '#393b40', '#232529', '#090a0c'],
   ['#f23645', '#ff9800', '#ffca28', '#4caf50', '#26a69a', '#26c6da', '#2962ff', '#7e57c2', '#ab47bc', '#ec407a'],
@@ -77,6 +91,8 @@ const BUTTON_CLASS = 'relative grid size-10 shrink-0 place-items-center rounded-
 const DRAWING_TOOLBAR_CONFIG: Readonly<Record<string, SelectedDrawingToolbarConfig>> = {
   'text-annotation': { colorTarget: 'text', lineWidth: false },
   'arrow-marker': { colorTarget: 'stroke', lineWidth: false },
+  'long-position': { colorTarget: 'stroke', lineWidth: false },
+  'short-position': { colorTarget: 'stroke', lineWidth: false },
 }
 
 function toolbarConfigFor(type: string): SelectedDrawingToolbarConfig {
@@ -92,6 +108,15 @@ function MenuButton({ icon: Icon, label, onClick }: { icon: LucideIcon; label: s
   )
 }
 
+function LinePropertiesIcon(): ReactElement {
+  return (
+    <svg data-icon="line-properties" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 3.5h8l5 8.5-5 8.5H8L3 12z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  )
+}
+
 export function SelectedDrawingToolbar({
   drawing,
   drawingName,
@@ -101,11 +126,18 @@ export function SelectedDrawingToolbar({
   onApplyTemplate,
   onChange,
   onDelete,
+  onDuplicate,
   onLock,
   onOpenProperties,
   onSaveTemplate,
 }: SelectedDrawingToolbarProps): ReactElement {
   const config = toolbarConfigFor(drawing.type)
+  const isLineTool = (LINE_TOOL_TYPES as readonly string[]).includes(drawing.type)
+  const isRectangle = drawing.type === 'rectangle'
+  const isCurve = drawing.type === 'curve'
+  const isRange = drawing.type === 'price-range' || drawing.type === 'date-range'
+  const isPosition = drawing.type === 'long-position' || drawing.type === 'short-position'
+  const isTextAnnotation = drawing.type === 'text-annotation'
   const matchingTemplates = templates.filter((template) => template.toolType === drawing.type)
   const currentColor = config.colorTarget === 'text' ? drawing.textColor : drawing.strokeColor
   const currentOpacity = config.colorTarget === 'text' ? drawing.textOpacity : drawing.strokeOpacity
@@ -113,6 +145,7 @@ export function SelectedDrawingToolbar({
   const [openMenu, setOpenMenu] = useState<ContextMenu>(null)
   const [savingTemplate, setSavingTemplate] = useState<boolean>(false)
   const [templateName, setTemplateName] = useState<string>('')
+  const [menuAnchorLeft, setMenuAnchorLeft] = useState<number>(0)
   const layerRef = useRef<HTMLDivElement>(null)
   const positionRef = useRef<DrawingToolbarPosition | null>(null)
   const dragRef = useRef<DragState | null>(null)
@@ -174,6 +207,7 @@ export function SelectedDrawingToolbar({
 
   const toggleMenu = (menu: Exclude<ContextMenu, null>, trigger: HTMLButtonElement): void => {
     lastTriggerRef.current = trigger
+    setMenuAnchorLeft(trigger.offsetLeft)
     setOpenMenu((current) => current === menu ? null : menu)
     setSavingTemplate(false)
     setTemplateName('')
@@ -235,13 +269,26 @@ export function SelectedDrawingToolbar({
     commitPosition()
   }
 
-  const changeColor = (color: string): void => {
-    onChange(config.colorTarget === 'text' ? { textColor: color } : { strokeColor: color })
+  const changeColor = (target: DrawingColorTarget, color: string): void => {
+    if (target === 'text') onChange({ textColor: color })
+    else if (target === 'fill') onChange({ fillColor: color, fillOpacity: drawing.fillOpacity > 0 ? drawing.fillOpacity : 0.12 })
+    else if (target === 'positionTarget') onChange({ positionTargetColor: color, positionTargetOpacity: drawing.positionTargetOpacity > 0 ? drawing.positionTargetOpacity : 0.3 })
+    else if (target === 'positionStop') onChange({ positionStopColor: color, positionStopOpacity: drawing.positionStopOpacity > 0 ? drawing.positionStopOpacity : 0.3 })
+    else onChange({ strokeColor: color })
     setOpenMenu(null)
   }
 
-  const changeOpacity = (opacity: number): void => {
-    onChange(config.colorTarget === 'text' ? { textOpacity: opacity } : { strokeOpacity: opacity })
+  const changeOpacity = (target: DrawingColorTarget, opacity: number): void => {
+    if (target === 'text') onChange({ textOpacity: opacity })
+    else if (target === 'fill') onChange({ fillOpacity: opacity })
+    else if (target === 'positionTarget') onChange({ positionTargetOpacity: opacity })
+    else if (target === 'positionStop') onChange({ positionStopOpacity: opacity })
+    else onChange({ strokeOpacity: opacity })
+  }
+
+  const changeBorderStyle = (borderStyle: DrawingBorderStyle): void => {
+    onChange({ borderStyle })
+    setOpenMenu(null)
   }
 
   const submitTemplate = (event: FormEvent<HTMLFormElement>): void => {
@@ -278,10 +325,39 @@ export function SelectedDrawingToolbar({
           <Plus aria-hidden="true" className="absolute bottom-1 right-1 rounded-sm bg-[#191a1d]" size={9} strokeWidth={2} />
         </button>
 
-        <button type="button" aria-label="Drawing color" aria-expanded={openMenu === 'color'} onClick={(event) => toggleMenu('color', event.currentTarget)} className={BUTTON_CLASS} title="Drawing color">
+        {!isPosition && !isTextAnnotation ? <button type="button" aria-label="Drawing color" aria-expanded={openMenu === 'color'} onClick={(event) => toggleMenu('color', event.currentTarget)} className={BUTTON_CLASS} title="Drawing color">
           <PencilLine size={18} strokeWidth={1.5} />
           <span aria-hidden="true" className="absolute bottom-1 h-0.5 w-5 rounded-sm" style={{ backgroundColor: currentColor }} />
-        </button>
+        </button> : null}
+
+        {isRectangle || isCurve || isRange ? (
+          <button type="button" aria-label="Drawing fill" aria-expanded={openMenu === 'fill'} onClick={(event) => toggleMenu('fill', event.currentTarget)} className={BUTTON_CLASS} title="Drawing fill">
+            <PaintBucket size={18} strokeWidth={1.5} />
+            <span aria-hidden="true" className="absolute bottom-1 h-0.5 w-5 rounded-sm" style={{ backgroundColor: drawing.fillColor, opacity: Math.max(0.25, drawing.fillOpacity) }} />
+          </button>
+        ) : null}
+
+        {isLineTool || isRectangle || isRange || isPosition || isTextAnnotation ? (
+          <button type="button" aria-label="Drawing text" aria-expanded={openMenu === 'text'} onClick={(event) => toggleMenu('text', event.currentTarget)} className={BUTTON_CLASS} title="Drawing text">
+            <Type size={18} strokeWidth={1.5} />
+            <span data-color-indicator="text" aria-hidden="true" className="absolute bottom-1 h-0.5 w-5 rounded-sm" style={{ backgroundColor: drawing.textColor }} />
+          </button>
+        ) : null}
+
+        {isTextAnnotation ? <button type="button" aria-label="Font size" aria-expanded={openMenu === 'fontSize'} onClick={(event) => toggleMenu('fontSize', event.currentTarget)} className={`${BUTTON_CLASS} w-12 font-mono text-ui-control text-ink`} title="Font size">{drawing.fontSize}</button> : null}
+
+        {isPosition ? (
+          <>
+            <button type="button" aria-label="Position target color" aria-expanded={openMenu === 'positionTarget'} onClick={(event) => toggleMenu('positionTarget', event.currentTarget)} className={BUTTON_CLASS} title="Target color">
+              <PaintBucket size={18} strokeWidth={1.5} />
+              <span aria-hidden="true" className="absolute bottom-1 h-0.5 w-5 rounded-sm" style={{ backgroundColor: drawing.positionTargetColor, opacity: Math.max(0.3, drawing.positionTargetOpacity) }} />
+            </button>
+            <button type="button" aria-label="Position stop color" aria-expanded={openMenu === 'positionStop'} onClick={(event) => toggleMenu('positionStop', event.currentTarget)} className={BUTTON_CLASS} title="Stop color">
+              <PaintBucket size={18} strokeWidth={1.5} />
+              <span aria-hidden="true" className="absolute bottom-1 h-0.5 w-5 rounded-sm" style={{ backgroundColor: drawing.positionStopColor, opacity: Math.max(0.3, drawing.positionStopOpacity) }} />
+            </button>
+          </>
+        ) : null}
 
         {config.lineWidth ? (
           <button type="button" aria-label="Line thickness" aria-expanded={openMenu === 'width'} onClick={(event) => toggleMenu('width', event.currentTarget)} className={`${BUTTON_CLASS} w-[4.4rem] grid-cols-[1.4rem_1fr] gap-1 px-1.5 font-mono text-ui-control text-ink sm:w-[4.1rem]`} title="Line thickness">
@@ -290,13 +366,32 @@ export function SelectedDrawingToolbar({
           </button>
         ) : null}
 
-        <button type="button" aria-label="Drawing properties" onClick={onOpenProperties} className={BUTTON_CLASS} title="Drawing properties"><Settings size={18} strokeWidth={1.5} /></button>
-        <button type="button" aria-label="Lock drawing" onClick={onLock} className={BUTTON_CLASS} title="Lock drawing"><Lock size={18} strokeWidth={1.5} /></button>
+        {isLineTool || isRectangle || isCurve || isRange ? (
+          <button type="button" aria-label="Line style" aria-expanded={openMenu === 'lineStyle'} onClick={(event) => toggleMenu('lineStyle', event.currentTarget)} className={BUTTON_CLASS} title="Line style">
+            <Minus size={18} strokeWidth={1.5} />
+          </button>
+        ) : null}
+
+        <button type="button" aria-label="Drawing properties" onClick={onOpenProperties} className={BUTTON_CLASS} title="Drawing properties">
+          <LinePropertiesIcon />
+        </button>
+        <button type="button" aria-label={drawing.locked ? 'Unlock drawing' : 'Lock drawing'} aria-pressed={drawing.locked} onClick={onLock} className={`${BUTTON_CLASS} group`} title={drawing.locked ? 'Unlock drawing' : 'Lock drawing'}>
+          {drawing.locked
+            ? <Lock key="locked-state" className="animate-drawing-lock-swap transition-transform duration-100 group-active:scale-90 motion-reduce:transition-none" size={18} strokeWidth={1.5} />
+            : <LockOpen key="unlocked-state" className="animate-drawing-lock-swap transition-transform duration-100 group-active:scale-90 motion-reduce:transition-none" size={18} strokeWidth={1.5} />}
+        </button>
+        {isTextAnnotation ? <button type="button" aria-label={drawing.textAnchored ? 'Unanchor drawing' : 'Anchor drawing'} aria-pressed={drawing.textAnchored} onClick={() => onChange({ textAnchored: !drawing.textAnchored })} className={`${BUTTON_CLASS} aria-pressed:bg-surface-3 aria-pressed:text-active-bright`} title={drawing.textAnchored ? 'Unanchor from pane' : 'Anchor to pane'}><Anchor size={18} strokeWidth={1.5} /></button> : null}
         <button type="button" aria-label="Remove drawing" onClick={onDelete} className={`${BUTTON_CLASS} hover:bg-loss/10 hover:text-loss-bright`} title="Remove drawing"><Trash2 size={18} strokeWidth={1.5} /></button>
+
+        {isLineTool || isRectangle || isPosition || isTextAnnotation ? (
+          <button type="button" aria-label="More drawing actions" aria-expanded={openMenu === 'overflow'} onClick={(event) => toggleMenu('overflow', event.currentTarget)} className={BUTTON_CLASS} title="More actions">
+            <MoreHorizontal size={18} strokeWidth={1.5} />
+          </button>
+        ) : null}
       </div>
 
       {openMenu === 'templates' ? (
-        <div role="menu" aria-label="Drawing templates menu" className="absolute left-0 top-[calc(100%+0.25rem)] w-[17rem] rounded-panel border border-line bg-[#191a1d] p-1 shadow-overlay">
+        <div role="menu" aria-label="Drawing templates menu" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-[17rem] rounded-panel border border-line bg-[#191a1d] p-1 shadow-overlay">
           {savingTemplate ? (
             <form onSubmit={submitTemplate} className="p-2">
               <label className="field-label">Template name<input autoFocus value={templateName} maxLength={80} onChange={(event) => setTemplateName(event.target.value)} className="field-input mt-1 h-9" placeholder="e.g. Breakout" /></label>
@@ -317,29 +412,96 @@ export function SelectedDrawingToolbar({
         </div>
       ) : null}
 
+      {openMenu === 'fontSize' ? (
+        <div role="menu" aria-label="Font size menu" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-12 overflow-hidden rounded-panel border border-line bg-[#191a1d] py-1 shadow-overlay">
+          {TEXT_FONT_SIZES.map((fontSize) => <button key={fontSize} type="button" role="menuitemradio" aria-checked={drawing.fontSize === fontSize} onClick={() => { onChange({ fontSize }); setOpenMenu(null) }} className="grid h-8 w-full place-items-center font-mono text-ui-control text-muted hover:bg-surface-3 hover:text-ink aria-checked:bg-[#ededed] aria-checked:text-[#171717]">{fontSize}</button>)}
+        </div>
+      ) : null}
+
       {openMenu === 'color' ? (
-        <div role="menu" aria-label="Drawing color palette" className="absolute left-0 top-[calc(100%+0.25rem)] w-[18.5rem] rounded-panel border border-line bg-[#191a1d] p-3 shadow-overlay">
+        <div role="menu" aria-label="Drawing color palette" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-[18.5rem] rounded-panel border border-line bg-[#191a1d] p-3 shadow-overlay">
           <div className="grid grid-cols-10 gap-1.5">
             {COLOR_ROWS.flat().map((color, index) => (
-              <button key={`${color}-${index}`} type="button" role="menuitemradio" aria-checked={currentColor.toLocaleLowerCase() === color} aria-label={`Set drawing color ${color}`} onClick={() => changeColor(color)} className="grid size-5 place-items-center rounded-[2px] outline-none ring-offset-2 ring-offset-[#191a1d] focus-visible:ring-2 focus-visible:ring-active" style={{ backgroundColor: color }}>
+              <button key={`${color}-${index}`} type="button" role="menuitemradio" aria-checked={currentColor.toLocaleLowerCase() === color} aria-label={`Set drawing color ${color}`} onClick={() => changeColor(config.colorTarget, color)} className="grid size-5 place-items-center rounded-[2px] outline-none ring-offset-2 ring-offset-[#191a1d] focus-visible:ring-2 focus-visible:ring-active" style={{ backgroundColor: color }}>
                 {currentColor.toLocaleLowerCase() === color ? <span aria-hidden="true" className="size-4 rounded-[2px] border-2 border-[#191a1d] ring-1 ring-ink" /> : null}
               </button>
             ))}
           </div>
           <div className="my-3 h-px bg-line" />
           <label className="flex items-center justify-between text-ui-meta text-muted"><span>Opacity</span><output className="rounded-control border border-line px-2 py-1 font-mono text-ink">{Math.round(currentOpacity * 100)}%</output></label>
-          <input aria-label="Drawing opacity" type="range" min="0" max="100" value={Math.round(currentOpacity * 100)} onChange={(event) => changeOpacity(Number(event.target.value) / 100)} className="mt-2 h-5 w-full accent-active" />
+          <input aria-label="Drawing opacity" type="range" min="0" max="100" value={Math.round(currentOpacity * 100)} onChange={(event) => changeOpacity(config.colorTarget, Number(event.target.value) / 100)} className="mt-2 h-5 w-full accent-active" />
+        </div>
+      ) : null}
+
+      {openMenu === 'fill' ? (
+        <div role="menu" aria-label="Drawing fill color palette" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-[18.5rem] rounded-panel border border-line bg-[#191a1d] p-3 shadow-overlay">
+          <div className="grid grid-cols-10 gap-1.5">
+            {COLOR_ROWS.flat().map((color, index) => (
+              <button key={`${color}-${index}`} type="button" role="menuitemradio" aria-checked={drawing.fillColor.toLocaleLowerCase() === color} aria-label={`Set drawing fill color ${color}`} onClick={() => changeColor('fill', color)} className="grid size-5 place-items-center rounded-[2px] outline-none ring-offset-2 ring-offset-[#191a1d] focus-visible:ring-2 focus-visible:ring-active" style={{ backgroundColor: color }}>
+                {drawing.fillColor.toLocaleLowerCase() === color ? <span aria-hidden="true" className="size-4 rounded-[2px] border-2 border-[#191a1d] ring-1 ring-ink" /> : null}
+              </button>
+            ))}
+          </div>
+          <div className="my-3 h-px bg-line" />
+          <label className="flex items-center justify-between text-ui-meta text-muted"><span>Opacity</span><output className="rounded-control border border-line px-2 py-1 font-mono text-ink">{Math.round(drawing.fillOpacity * 100)}%</output></label>
+          <input aria-label="Drawing fill opacity" type="range" min="0" max="100" value={Math.round(drawing.fillOpacity * 100)} onChange={(event) => changeOpacity('fill', Number(event.target.value) / 100)} className="mt-2 h-5 w-full accent-active" />
+        </div>
+      ) : null}
+
+      {openMenu === 'positionTarget' ? (
+        <div role="menu" aria-label="Position target color palette" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-[18.5rem] rounded-panel border border-line bg-[#191a1d] p-3 shadow-overlay">
+          <div className="grid grid-cols-10 gap-1.5">{COLOR_ROWS.flat().map((color, index) => <button key={`${color}-${index}`} type="button" role="menuitemradio" aria-checked={drawing.positionTargetColor.toLowerCase() === color} aria-label={`Set position target color ${color}`} onClick={() => changeColor('positionTarget', color)} className="grid size-5 place-items-center rounded-[2px] outline-none focus-visible:ring-2 focus-visible:ring-active" style={{ backgroundColor: color }}>{drawing.positionTargetColor.toLowerCase() === color ? <span aria-hidden="true" className="size-4 rounded-[2px] border-2 border-[#191a1d] ring-1 ring-ink" /> : null}</button>)}</div>
+          <div className="my-3 h-px bg-line" /><label className="flex items-center justify-between text-ui-meta text-muted"><span>Opacity</span><output className="rounded-control border border-line px-2 py-1 font-mono text-ink">{Math.round(drawing.positionTargetOpacity * 100)}%</output></label><input aria-label="Position target opacity" type="range" min="0" max="100" value={Math.round(drawing.positionTargetOpacity * 100)} onChange={(event) => changeOpacity('positionTarget', Number(event.target.value) / 100)} className="mt-2 h-5 w-full accent-active" />
+        </div>
+      ) : null}
+
+      {openMenu === 'positionStop' ? (
+        <div role="menu" aria-label="Position stop color palette" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-[18.5rem] rounded-panel border border-line bg-[#191a1d] p-3 shadow-overlay">
+          <div className="grid grid-cols-10 gap-1.5">{COLOR_ROWS.flat().map((color, index) => <button key={`${color}-${index}`} type="button" role="menuitemradio" aria-checked={drawing.positionStopColor.toLowerCase() === color} aria-label={`Set position stop color ${color}`} onClick={() => changeColor('positionStop', color)} className="grid size-5 place-items-center rounded-[2px] outline-none focus-visible:ring-2 focus-visible:ring-active" style={{ backgroundColor: color }}>{drawing.positionStopColor.toLowerCase() === color ? <span aria-hidden="true" className="size-4 rounded-[2px] border-2 border-[#191a1d] ring-1 ring-ink" /> : null}</button>)}</div>
+          <div className="my-3 h-px bg-line" /><label className="flex items-center justify-between text-ui-meta text-muted"><span>Opacity</span><output className="rounded-control border border-line px-2 py-1 font-mono text-ink">{Math.round(drawing.positionStopOpacity * 100)}%</output></label><input aria-label="Position stop opacity" type="range" min="0" max="100" value={Math.round(drawing.positionStopOpacity * 100)} onChange={(event) => changeOpacity('positionStop', Number(event.target.value) / 100)} className="mt-2 h-5 w-full accent-active" />
         </div>
       ) : null}
 
       {openMenu === 'width' ? (
-        <div role="menu" aria-label="Line thickness menu" className="absolute left-0 top-[calc(100%+0.25rem)] w-28 rounded-panel border border-line bg-[#191a1d] p-1 shadow-overlay">
+        <div role="menu" aria-label="Line thickness menu" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-28 rounded-panel border border-line bg-[#191a1d] p-1 shadow-overlay">
           {LINE_WIDTHS.map((width) => (
             <button key={width} type="button" role="menuitemradio" aria-checked={drawing.lineWidth === width} aria-label={`${width}px`} onClick={() => { onChange({ lineWidth: width }); setOpenMenu(null) }} className="grid min-h-10 w-full grid-cols-[1.5rem_1fr] items-center gap-2 rounded-control px-2 text-left font-mono text-ui-control text-muted outline-none hover:bg-surface-3 hover:text-ink focus-visible:bg-surface-3 focus-visible:text-ink">
               <span aria-hidden="true" className="block w-5 rounded-full bg-current" style={{ height: `${width}px` }} />
               <span>{width}px</span>
             </button>
           ))}
+        </div>
+      ) : null}
+
+      {openMenu === 'text' ? (
+        <div role="menu" aria-label="Drawing text color palette" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-[18.5rem] rounded-panel border border-line bg-[#191a1d] p-3 shadow-overlay">
+          <div className="grid grid-cols-10 gap-1.5">
+            {COLOR_ROWS.flat().map((color, index) => (
+              <button key={`${color}-${index}`} type="button" role="menuitemradio" aria-checked={drawing.textColor.toLocaleLowerCase() === color} aria-label={`Set drawing text color ${color}`} onClick={() => changeColor('text', color)} className="grid size-5 place-items-center rounded-[2px] outline-none ring-offset-2 ring-offset-[#191a1d] focus-visible:ring-2 focus-visible:ring-active" style={{ backgroundColor: color }}>
+                {drawing.textColor.toLocaleLowerCase() === color ? <span aria-hidden="true" className="size-4 rounded-[2px] border-2 border-[#191a1d] ring-1 ring-ink" /> : null}
+              </button>
+            ))}
+          </div>
+          <div className="my-3 h-px bg-line" />
+          <label className="flex items-center justify-between text-ui-meta text-muted"><span>Opacity</span><output className="rounded-control border border-line px-2 py-1 font-mono text-ink">{Math.round(drawing.textOpacity * 100)}%</output></label>
+          <input aria-label="Drawing text opacity" type="range" min="0" max="100" value={Math.round(drawing.textOpacity * 100)} onChange={(event) => changeOpacity('text', Number(event.target.value) / 100)} className="mt-2 h-5 w-full accent-active" />
+        </div>
+      ) : null}
+
+      {openMenu === 'lineStyle' ? (
+        <div role="menu" aria-label="Line style menu" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-48 rounded-panel border border-line bg-[#191a1d] p-1 shadow-overlay">
+          {BORDER_STYLE_OPTIONS.map((option) => (
+            <button key={option.value} type="button" role="menuitemradio" aria-checked={drawing.borderStyle === option.value} onClick={() => changeBorderStyle(option.value)} className="grid min-h-10 w-full grid-cols-[1.75rem_1fr] items-center gap-2 rounded-control px-2 text-left text-ui-control text-muted outline-none hover:bg-surface-3 hover:text-ink focus-visible:bg-surface-3 focus-visible:text-ink">
+              <span aria-hidden="true" className="block w-6 border-t-2 border-current" style={{ borderTopStyle: option.css }} />
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {openMenu === 'overflow' ? (
+        <div role="menu" aria-label="More drawing actions" style={{ left: menuAnchorLeft }} className="absolute top-[calc(100%+0.25rem)] w-44 rounded-panel border border-line bg-[#191a1d] p-1 shadow-overlay">
+          <MenuButton icon={Copy} label="Duplicate" onClick={() => { onDuplicate(); setOpenMenu(null) }} />
         </div>
       ) : null}
     </div>

@@ -6,11 +6,29 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"market-replay/internal/model"
 )
 
 var timeframePattern = regexp.MustCompile(`^(\d+)(s|m|h|d|w|M)$`)
+
+const maxSessionNameRunes = 80
+
+func normalizeSessionName(value string) (string, error) {
+	name := strings.TrimSpace(value)
+	if utf8.RuneCountInString(name) > maxSessionNameRunes {
+		return "", fmt.Errorf("%w: name must be at most %d characters", errBadRequest, maxSessionNameRunes)
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("%w: name must not contain control characters", errBadRequest)
+		}
+	}
+	return name, nil
+}
 
 func validTimeframe(value string) bool {
 	match := timeframePattern.FindStringSubmatch(value)
@@ -44,6 +62,7 @@ type createSessionRequest struct {
 	Tf      string          `json:"tf"`
 	StartTs int64           `json:"startTs"`
 	Config  json.RawMessage `json:"config"`
+	Name    string          `json:"name"`
 	// Kind and InitialBalanceCents are optional so pre-existing clients keep
 	// working unchanged: an empty Kind defaults to model.SessionKindReplay
 	// (see storage.Store.CreateSession), matching every session created
@@ -73,9 +92,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, fmt.Errorf("%w: kind must be %q or %q", errBadRequest, model.SessionKindReplay, model.SessionKindEval))
 		return
 	}
+	name, err := normalizeSessionName(req.Name)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 
 	sess, err := s.Store.CreateSession(r.Context(), model.Session{
-		Symbol: req.Symbol, Tf: req.Tf, StartTs: req.StartTs, Config: req.Config,
+		Name: name, Symbol: req.Symbol, Tf: req.Tf, StartTs: req.StartTs, Config: req.Config,
 		Kind: req.Kind, InitialBalanceCents: req.InitialBalanceCents,
 	})
 	if err != nil {
@@ -117,6 +141,14 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	if patch.Status != nil && !model.ValidSessionStatus(*patch.Status) {
 		writeError(w, fmt.Errorf("%w: status must be active, paused, or stopped", errBadRequest))
 		return
+	}
+	if patch.Name != nil {
+		name, err := normalizeSessionName(*patch.Name)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		patch.Name = &name
 	}
 	if patch.Config != nil && !json.Valid(*patch.Config) {
 		writeError(w, fmt.Errorf("%w: config must be valid JSON", errBadRequest))

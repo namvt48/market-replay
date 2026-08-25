@@ -212,7 +212,7 @@ export interface MonteCarloRequest {
   seed?: number
 }
 export const monteCarloSchema = z.object({
-  seed: z.number().int(), paths: arrayOrEmpty(z.object({ simulationIndex: z.number().int().nonnegative(), balances: arrayOrEmpty(z.number()) })),
+  seed: z.number().int().safe(), paths: arrayOrEmpty(z.object({ simulationIndex: z.number().int().nonnegative(), balances: arrayOrEmpty(z.number()) })),
   summary: z.object({
     averageEndingBalance: z.number(), maxEndingBalance: z.number(), minEndingBalance: z.number(), averageProfitFactor: z.number().nullable(),
     averageProfitFactorNote: z.string().optional(), maxConsecutiveWins: z.number().int().nonnegative(), maxConsecutiveLosses: z.number().int().nonnegative(),

@@ -3,6 +3,7 @@ import {
   ColorType,
   CrosshairMode,
   HistogramSeries,
+  LineStyle,
   LineSeries,
   PriceScaleMode,
   createChart,
@@ -28,8 +29,8 @@ import {
   type IDrawing,
   type SerializedDrawing,
 } from 'lightweight-charts-drawing'
-import type { SymbolMeta, Timeframe } from '../api/types'
-import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, DisplayBar, DrawingNudgeDirection, EconomicEventMarker, HistoryUpdateOptions, IndicatorRenderResult, OrderLine, OrderLineAction, PriceScaleToggle, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDemand } from './chart-adapter'
+import type { IndicatorDrawIntent, IndicatorPlotPoint, SymbolMeta, Timeframe } from '../api/types'
+import type { ChartAdapter, ChartCrosshairSync, ChartCursorMode, ChartViewportSync, DisplayBar, DrawingNudgeDirection, EconomicEventMarker, HistoryUpdateOptions, IndicatorRenderResult, OrderLine, OrderLineAction, PriceScaleToggle, ReplaySelectionState, TradeConnection, TradeMarker, ViewportDemand } from './chart-adapter'
 import {
   DEFAULT_DRAWING_METADATA,
   appearanceOptions,
@@ -39,6 +40,8 @@ import {
   mergeDrawingAppearance,
   type DrawingAppearance,
   type DrawingAppearancePatch,
+  type RangeStatKey,
+  type DrawingVisibilityUnit,
   type DrawingWorkbenchOptions,
 } from './drawing-appearance'
 import { DrawingLabelsPrimitive } from './drawing-labels-primitive'
@@ -47,7 +50,7 @@ import { IndicatorDrawingsPrimitive } from './indicator-drawings-primitive'
 import { projectDrawingsToHistory } from './drawing-projection'
 import { DEFAULT_CHART_APPEARANCE, type ChartAppearanceSettings } from './chart-settings'
 import { DEFAULT_CHART_TIMEZONE, formatChartTime, type ChartTimezone } from './chart-timezone'
-import { parseTimeframe } from './timeframe'
+import { parseTimeframe, timeframeSeconds } from './timeframe'
 import {
   IDLE_DRAWING_PLACEMENT,
   cancelDrawingPlacement,
@@ -67,8 +70,20 @@ const PREVIEW_ID = '__drawing-preview__'
 const UI_FONT_FAMILY = '"Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
 const MAX_ADAPTER_HISTORY_BARS = 6_000
 const BULK_PUSH_BARS = 32
+const CURSOR_MODE_CLASSES = ['chart-cursor-cross', 'chart-cursor-dot', 'chart-cursor-arrow', 'chart-cursor-demonstration', 'chart-cursor-eraser'] as const
 const MAX_PRICE_LABEL_CACHE = 4_096
 const INDICATOR_PLOT_COLORS = ['#5b8cff', '#22ab94', '#ffb74d', '#c084fc', '#ff5563'] as const
+/**
+ * A plot suffix this long or longer is applied as one setData instead of a
+ * run of update() calls — the same threshold and the same reason as
+ * BULK_PUSH_BARS: update()'s cost is nowhere near constant, so a large batch
+ * turns into the storm pushBars documents, and one mutation per series per
+ * flush is the rule this adapter holds itself to.
+ */
+const BULK_INDICATOR_POINTS = 32
+const TIMEFRAME_VISIBILITY_UNITS: Record<'s' | 'm' | 'h' | 'd' | 'w' | 'M', DrawingVisibilityUnit> = {
+  s: 'seconds', m: 'minutes', h: 'hours', d: 'days', w: 'weeks', M: 'months',
+}
 
 interface DrawingDragState {
   drawingId: string
@@ -80,6 +95,44 @@ interface DrawingDragState {
   anchors: Anchor[]
   moved: boolean
   cloneOnDrag: boolean
+  screenAnchor?: { x: number; y: number }
+}
+
+interface PersistentRangeGesture {
+  pointerId: number
+  tool: 'price-range' | 'date-range'
+  anchor: PlacementAnchor
+  startX: number
+  startY: number
+  dragged: boolean
+}
+
+type InlineEditorVariant = 'callout' | 'comment' | 'note' | 'text'
+
+interface InlineEditorConfig {
+  anchorIndex: number
+  label: string
+  variant: InlineEditorVariant
+}
+
+const INLINE_EDITOR_CONFIGS: Readonly<Record<string, InlineEditorConfig>> = {
+  'text-annotation': { anchorIndex: 0, label: 'text', variant: 'text' },
+  'anchored-text': { anchorIndex: 1, label: 'Anchored Text', variant: 'note' },
+  note: { anchorIndex: 1, label: 'Note', variant: 'note' },
+  callout: { anchorIndex: 1, label: 'Callout', variant: 'callout' },
+  comment: { anchorIndex: 0, label: 'Comment', variant: 'comment' },
+}
+
+const EMPTY_TEXT_REMOVAL_TYPES = new Set(Object.keys(INLINE_EDITOR_CONFIGS))
+const LEADER_ANNOTATION_TOOLS = new Set(['anchored-text', 'note', 'price-note', 'callout'])
+
+interface LeaderAnnotationGesture {
+  pointerId: number
+  tool: string
+  anchor: PlacementAnchor
+  startX: number
+  startY: number
+  dragged: boolean
 }
 
 interface ProtectionDragState {
@@ -156,6 +209,100 @@ function toVolume(bar: DisplayBar): HistogramData<Time> {
   return { time: toTime(bar.time), value: bar.volume, color: bar.close >= bar.open ? '#08998166' : '#f2364566' }
 }
 
+/** What the previous setIndicators call actually put on the chart. */
+interface RenderedIndicator {
+  /**
+   * The exact arrays last rendered, kept by reference so the next call can
+   * diff raw point-to-point. Diffing the payload rather than derived LineData
+   * is the point: the dominant cost of the previous implementation was
+   * allocating one object per plot point *before* it knew anything had moved.
+   */
+  plots: readonly IndicatorPlotPoint[]
+  draws: readonly IndicatorDrawIntent[]
+  /** Every "<indicatorId>:<plotKey>" series this indicator owns. */
+  seriesKeys: Set<string>
+}
+
+/**
+ * The only style keys IndicatorDrawingsRenderer paints with — see
+ * indicator-drawings-primitive.ts. Comparing this fixed set is exact with
+ * respect to what can reach a pixel, and it keeps an unchanged frame at a
+ * handful of primitive compares per draw with no allocation at all. A string
+ * digest was the alternative and is worse: for a script emitting ~1,000
+ * draws it would allocate thousands of short strings on every call, which
+ * costs more than the setData it is trying to avoid.
+ *
+ * Keep in sync with the renderer. A key added there and forgotten here
+ * simply stops repainting — see the test that documents this boundary.
+ */
+const DRAW_STYLE_KEYS = [
+  'linecolor', 'color', 'backgroundColor', 'textcolor',
+  'linewidth', 'linestyle', 'extendRight', 'showLabel',
+] as const
+
+function sameIndicatorResults(next: readonly IndicatorRenderResult[], previous: readonly IndicatorRenderResult[]): boolean {
+  if (next === previous) return true
+  if (next.length !== previous.length) return false
+  for (let index = 0; index < next.length; index += 1) {
+    if (next[index] !== previous[index]) return false
+  }
+  return true
+}
+
+/** Handles both scalars and the {r,g,b,a} literals scripts pass for colors. */
+function sameStyleValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) return false
+  const a = left as Record<string, unknown>
+  const b = right as Record<string, unknown>
+  return a.r === b.r && a.g === b.g && a.b === b.b && a.a === b.a
+}
+
+function sameIndicatorDraws(next: readonly IndicatorDrawIntent[], previous: readonly IndicatorDrawIntent[] | undefined): boolean {
+  if (next === previous) return true
+  if (!previous || next.length !== previous.length) return false
+  for (let index = 0; index < next.length; index += 1) {
+    const a = next[index]
+    const b = previous[index]
+    if (a === b) continue
+    if (a.id !== b.id || a.kind !== b.kind || a.t0 !== b.t0 || a.y0 !== b.y0
+      || a.t1 !== b.t1 || a.y1 !== b.y1 || a.label !== b.label) return false
+    for (const key of DRAW_STYLE_KEYS) {
+      if (!sameStyleValue(a.style[key], b.style[key])) return false
+    }
+  }
+  return true
+}
+
+type PlotDelta = { kind: 'identical' } | { kind: 'append'; from: number } | { kind: 'replace' }
+
+function samePlotPoint(a: IndicatorPlotPoint, b: IndicatorPlotPoint): boolean {
+  return a === b || (a.time === b.time && a.value === b.value && a.key === b.key)
+}
+
+/**
+ * Classifies a new plot stream against the rendered one.
+ *
+ * The point that used to be last is checked first, on its own: if it no
+ * longer matches, the stream was recomputed rather than extended, which is
+ * the rewind and timeframe-change case, and the full walk would only confirm
+ * that the slow way. When it does match the prefix is still walked in full —
+ * an input change can alter mid-series values while leaving the first and
+ * last point identical, and that has to land on 'replace' rather than being
+ * silently skipped.
+ */
+function plotDelta(previous: readonly IndicatorPlotPoint[] | undefined, next: readonly IndicatorPlotPoint[]): PlotDelta {
+  if (!previous) return next.length === 0 ? { kind: 'identical' } : { kind: 'replace' }
+  if (next === previous) return { kind: 'identical' }
+  if (next.length < previous.length) return { kind: 'replace' }
+  const boundary = previous.length - 1
+  if (boundary >= 0 && !samePlotPoint(previous[boundary], next[boundary])) return { kind: 'replace' }
+  for (let index = 0; index < boundary; index += 1) {
+    if (!samePlotPoint(previous[index], next[index])) return { kind: 'replace' }
+  }
+  return next.length === previous.length ? { kind: 'identical' } : { kind: 'append', from: previous.length }
+}
+
 export class LwcAdapter implements ChartAdapter {
   private chart: IChartApi | null = null
   private candles: ISeriesApi<'Candlestick'> | null = null
@@ -176,6 +323,20 @@ export class LwcAdapter implements ChartAdapter {
   readonly economicEventMarkersPrimitive = new EconomicEventMarkersPrimitive()
   readonly indicatorDrawingsPrimitive = new IndicatorDrawingsPrimitive()
   private indicatorSeries = new Map<string, ISeriesApi<'Line'>>()
+  /** Newest rendered timestamp per series key — what update() must stay ahead of. */
+  private indicatorSeriesTail = new Map<string, number>()
+  /** Color slot per series key, assigned once and never released. */
+  private indicatorPlotColors = new Map<string, number>()
+  private renderedIndicators = new Map<string, RenderedIndicator>()
+  private renderedIndicatorResults: readonly IndicatorRenderResult[] = []
+  /**
+   * The chart the three maps above describe. A destroy()/init() cycle — which
+   * is exactly what popping a pane out does — leaves the memo describing a
+   * chart that no longer exists, and an unchanged payload would then render
+   * nothing at all. Comparing chart identity carries that invariant in the
+   * data instead of trusting every teardown path to remember it.
+   */
+  private renderedIndicatorChart: IChartApi | null = null
   private replaySelectionPrimitive = new ReplaySelectionPrimitive()
   private replaySelectionState: ReplaySelectionState = { mode: 'inactive' }
   private replaySelectionHandler: (timestamp: number) => void = () => undefined
@@ -204,19 +365,27 @@ export class LwcAdapter implements ChartAdapter {
     (price) => price.toFixed(this.pricePrecision),
   )
   private activeTool: string | null = null
+  private cursorMode: ChartCursorMode = 'cross'
+  private cursorIndicator: HTMLDivElement | null = null
   private placement: DrawingPlacementState = IDLE_DRAWING_PLACEMENT
   private pathAnchors: PlacementAnchor[] = []
   private freehandGesture: FreehandGesture | null = null
+  private leaderAnnotationGesture: LeaderAnnotationGesture | null = null
   private suppressNextDrawingClick = false
   private suppressNextDrawingDoubleClick = false
   private preview: IDrawing | null = null
   private measurementGesture: { pointerId: number; startX: number; startY: number; dragged: boolean; transient: boolean } | null = null
+  private persistentRangeGesture: PersistentRangeGesture | null = null
   private measurementClickAnchored = false
   private measurementPreviewPinned = false
   private draggingOrder: OrderLine | null = null
   private protectionDrag: ProtectionDragState | null = null
   private suppressNextOrderActionClick = false
   private quantityEditor: HTMLDivElement | null = null
+  private textEditor: HTMLInputElement | null = null
+  private textEditorDrawingId: string | null = null
+  private textEditorOriginalText = ''
+  private textEditorDirty = false
   private draggingDrawing: DrawingDragState | null = null
   private drawingPriceScaleLock: DrawingPriceScaleLock | null = null
   private drawingsHidden = false
@@ -240,6 +409,7 @@ export class LwcAdapter implements ChartAdapter {
   private appearance: ChartAppearanceSettings = { ...DEFAULT_CHART_APPEARANCE }
   private displayTimezone: ChartTimezone = DEFAULT_CHART_TIMEZONE
   private secondsVisible = false
+  private currentTimeframe: Timeframe = '1m'
   private volumePaneHeight = 100
   private hoverUnsubscribe: (() => void) | null = null
   private readonly hoverStore: HoverBarStore
@@ -256,16 +426,19 @@ export class LwcAdapter implements ChartAdapter {
       hidden: this.drawingsHidden,
       locked: this.drawingsLocked,
       keepDrawing: this.keepDrawing,
+      cursorMode: this.cursorMode,
     }
     this.destroy()
     this.drawingsHidden = drawingControls.hidden
     this.drawingsLocked = drawingControls.locked
     this.keepDrawing = drawingControls.keepDrawing
+    this.cursorMode = drawingControls.cursorMode
     this.drawingManager = new DrawingManager()
     this.container = element
     this.pricePrecision = symbol.priceDecimals
     this.tickSize = symbol.tickSize
     this.symbolCode = symbol.symbol
+    this.currentTimeframe = timeframe
     this.secondsVisible = parseTimeframe(timeframe)?.unit === 's'
     const existingChildren = new Set(element.children)
     this.chart = createChart(element, {
@@ -335,6 +508,7 @@ export class LwcAdapter implements ChartAdapter {
       this.chart?.resize(width, height, true)
       this.fillChartContainer()
     })
+    this.positionInlineTextEditor()
   }
 
   setSymbol(symbol: SymbolMeta): void {
@@ -590,43 +764,184 @@ export class LwcAdapter implements ChartAdapter {
     this.economicEventMarkersPrimitive.setMarkers(markers)
   }
 
+  /**
+   * Publishes one refresh's indicator output.
+   *
+   * Called far more often than its output changes: every pane sharing a
+   * symbol and timeframe gets the same results, toggling one indicator
+   * republishes all of them, and while the replay is playing the cursor keeps
+   * moving inside a display bucket whose closed-bar output is by definition
+   * identical. So the first job is to notice that nothing moved and touch
+   * nothing — no repaint request, no setData, no allocation. The second is to
+   * treat the forward case as what it is, an append, rather than replacing
+   * ~1,500 points per series to add one.
+   */
   setIndicators(results: IndicatorRenderResult[]): void {
-    const draws = results.flatMap((result) => result.draws)
-    this.indicatorDrawingsPrimitive.setDraws(draws)
-    if (!this.chart) return
+    const chart = this.chart
+    if (!chart) {
+      // The primitive holds state without a canvas; series cannot. Push the
+      // drawings and deliberately memoize nothing, so the first call after
+      // init() still builds every series from scratch.
+      this.indicatorDrawingsPrimitive.setDraws(results.flatMap((result) => result.draws))
+      return
+    }
+    const rebuiltChart = chart !== this.renderedIndicatorChart
+    if (rebuiltChart) {
+      // The handles belong to a chart that is gone; removeSeries on the new
+      // one would throw. Drop them and rebuild.
+      this.indicatorSeries.clear()
+      this.indicatorSeriesTail.clear()
+      this.renderedIndicators.clear()
+    } else if (sameIndicatorResults(results, this.renderedIndicatorResults)) {
+      return
+    }
 
-    const grouped = new Map<string, Map<number, LineData<Time>>>()
+    const drawsChanged = rebuiltChart
+      || results.length !== this.renderedIndicators.size
+      || results.some((result) => !sameIndicatorDraws(result.draws, this.renderedIndicators.get(result.indicatorId)?.draws))
+    if (drawsChanged) this.indicatorDrawingsPrimitive.setDraws(results.flatMap((result) => result.draws))
+
+    const present = new Set<string>()
     for (const result of results) {
-      for (const point of result.plots) {
-        if (!Number.isFinite(point.time) || !Number.isFinite(point.value)) continue
-        const key = `${result.indicatorId}:${point.key}`
-        const points = grouped.get(key) ?? new Map<number, LineData<Time>>()
-        points.set(point.time, { time: toTime(point.time), value: point.value })
-        grouped.set(key, points)
+      present.add(result.indicatorId)
+      const rendered = this.renderedIndicators.get(result.indicatorId)
+      const delta = plotDelta(rendered?.plots, result.plots)
+      if (delta.kind === 'identical') {
+        // Geometry may still have moved, so the memoized draws have to
+        // advance even though no series is touched.
+        if (rendered) this.renderedIndicators.set(result.indicatorId, { ...rendered, draws: result.draws })
+        else this.renderedIndicators.set(result.indicatorId, { plots: result.plots, draws: result.draws, seriesKeys: new Set() })
+        continue
       }
+      if (delta.kind === 'append') this.appendIndicatorPlots(result, delta.from)
+      else this.replaceIndicatorPlots(result)
     }
+    for (const [indicatorId, rendered] of this.renderedIndicators) {
+      if (present.has(indicatorId)) continue
+      for (const key of rendered.seriesKeys) this.removeIndicatorSeries(key)
+      this.renderedIndicators.delete(indicatorId)
+    }
+    this.renderedIndicatorResults = results
+    this.renderedIndicatorChart = chart
+  }
 
-    for (const [key, series] of this.indicatorSeries) {
-      if (grouped.has(key)) continue
-      this.chart.removeSeries(series)
-      this.indicatorSeries.delete(key)
+  /**
+   * The forward case: the new stream is the rendered one plus a suffix, so
+   * only the suffix reaches the chart.
+   *
+   * The whole suffix is validated before anything mutates. update() throws on
+   * a timestamp older than a series' last point, and a one-pass version could
+   * half-mutate before discovering that and then rebuild — mutating a series
+   * twice in one frame. A suffix that is out of order, lands on a series that
+   * does not exist yet, or is BULK_INDICATOR_POINTS or longer falls back to
+   * one setData per series instead.
+   */
+  private appendIndicatorPlots(result: IndicatorRenderResult, from: number): void {
+    const suffix = new Map<string, LineData<Time>[]>()
+    for (let index = from; index < result.plots.length; index += 1) {
+      const point = result.plots[index]
+      if (!Number.isFinite(point.time) || !Number.isFinite(point.value)) continue
+      const key = `${result.indicatorId}:${point.key}`
+      const points = suffix.get(key) ?? []
+      points.push({ time: toTime(point.time), value: point.value })
+      suffix.set(key, points)
     }
-    let colorIndex = 0
-    for (const [key, points] of grouped) {
-      let series = this.indicatorSeries.get(key)
-      if (!series) {
-        series = this.chart.addSeries(LineSeries, {
-          color: INDICATOR_PLOT_COLORS[colorIndex % INDICATOR_PLOT_COLORS.length],
-          lineWidth: 2,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        })
-        this.indicatorSeries.set(key, series)
+    for (const points of suffix.values()) {
+      points.sort((left, right) => Number(left.time) - Number(right.time))
+    }
+    for (const [key, points] of suffix) {
+      const tail = this.indicatorSeriesTail.get(key)
+      if (!this.indicatorSeries.has(key) || tail === undefined
+        || Number(points[0].time) < tail || points.length >= BULK_INDICATOR_POINTS) {
+        this.replaceIndicatorPlots(result)
+        return
       }
-      series.setData([...points.values()].sort((left, right) => Number(left.time) - Number(right.time)))
-      colorIndex += 1
     }
+    const rendered = this.renderedIndicators.get(result.indicatorId)
+    const seriesKeys = new Set(rendered?.seriesKeys ?? [])
+    for (const [key, points] of suffix) {
+      const series = this.indicatorSeries.get(key)
+      if (!series) continue
+      for (const point of points) series.update(point)
+      this.indicatorSeriesTail.set(key, Number(points[points.length - 1].time))
+      seriesKeys.add(key)
+    }
+    this.renderedIndicators.set(result.indicatorId, { plots: result.plots, draws: result.draws, seriesKeys })
+  }
+
+  /** The cold path: first render, rewind, timeframe change, input change. */
+  private replaceIndicatorPlots(result: IndicatorRenderResult): void {
+    if (!this.chart) return
+    // Map per key so a repeated timestamp resolves last-write-wins; setData
+    // rejects duplicates.
+    const grouped = new Map<string, Map<number, LineData<Time>>>()
+    for (const point of result.plots) {
+      if (!Number.isFinite(point.time) || !Number.isFinite(point.value)) continue
+      const key = `${result.indicatorId}:${point.key}`
+      const points = grouped.get(key) ?? new Map<number, LineData<Time>>()
+      points.set(point.time, { time: toTime(point.time), value: point.value })
+      grouped.set(key, points)
+    }
+    for (const key of this.renderedIndicators.get(result.indicatorId)?.seriesKeys ?? []) {
+      if (!grouped.has(key)) this.removeIndicatorSeries(key)
+    }
+    for (const [key, points] of grouped) {
+      const data = [...points.values()].sort((left, right) => Number(left.time) - Number(right.time))
+      this.ensureIndicatorSeries(key).setData(data)
+      this.indicatorSeriesTail.set(key, Number(data[data.length - 1].time))
+    }
+    this.renderedIndicators.set(result.indicatorId, {
+      plots: result.plots, draws: result.draws, seriesKeys: new Set(grouped.keys()),
+    })
+  }
+
+  private ensureIndicatorSeries(key: string): ISeriesApi<'Line'> {
+    const existing = this.indicatorSeries.get(key)
+    if (existing) return existing
+    const series = this.chart!.addSeries(LineSeries, {
+      color: INDICATOR_PLOT_COLORS[this.indicatorPlotColorSlot(key)],
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    this.indicatorSeries.set(key, series)
+    return series
+  }
+
+  /**
+   * A plot's color is bound to its "<indicatorId>:<plotKey>" identity for the
+   * life of the chart. The previous code indexed INDICATOR_PLOT_COLORS by Map
+   * iteration order, so removing one indicator recolored every plot after it.
+   *
+   * Lowest-free-slot rather than a hash of the key: a hash is stateless and
+   * trivially stable, but across five colors it collides between indicators,
+   * and two overlapping plots in the same color is the confusion this exists
+   * to prevent. The slot is never released, so an indicator that is removed
+   * and re-added comes back the color the user last saw it in.
+   */
+  private indicatorPlotColorSlot(key: string): number {
+    const assigned = this.indicatorPlotColors.get(key)
+    if (assigned !== undefined) return assigned
+    const taken = new Set<number>()
+    for (const live of this.indicatorSeries.keys()) {
+      const slot = this.indicatorPlotColors.get(live)
+      if (slot !== undefined) taken.add(slot)
+    }
+    let slot = 0
+    while (slot < INDICATOR_PLOT_COLORS.length && taken.has(slot)) slot += 1
+    if (slot === INDICATOR_PLOT_COLORS.length) slot = this.indicatorPlotColors.size % INDICATOR_PLOT_COLORS.length
+    this.indicatorPlotColors.set(key, slot)
+    return slot
+  }
+
+  /** The single choke point for dropping an indicator series. */
+  private removeIndicatorSeries(key: string): void {
+    const series = this.indicatorSeries.get(key)
+    if (series && this.chart) this.chart.removeSeries(series)
+    this.indicatorSeries.delete(key)
+    this.indicatorSeriesTail.delete(key)
+    // The color slot is deliberately retained — see indicatorPlotColorSlot.
   }
 
   setTradeConnections(connections: TradeConnection[]): void {
@@ -659,38 +974,120 @@ export class LwcAdapter implements ChartAdapter {
   onChartOrder(handler: (side: 'buy' | 'sell', type: 'limit' | 'stop', price: number) => void): void { this.chartOrderHandler = handler }
   drawingTools(): DrawingToolDefinition[] { return getToolRegistry().getAll() }
 
+  setCursorMode(mode: ChartCursorMode): void {
+    if (this.activeTool) this.setDrawingTool(null)
+    if (mode === 'eraser') this.drawingManager.deselectAll()
+    this.cursorMode = mode
+    this.applyCursorMode()
+  }
+
+  private applyCursorMode(): void {
+    const showsCrosshair = this.cursorMode === 'cross' || this.cursorMode === 'demonstration'
+    this.chart?.applyOptions({
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: {
+          visible: showsCrosshair,
+          labelVisible: showsCrosshair,
+          color: '#787b8688',
+          labelBackgroundColor: '#2a2e39',
+          style: LineStyle.Dashed,
+        },
+        horzLine: {
+          visible: showsCrosshair,
+          labelVisible: showsCrosshair,
+          color: '#787b8688',
+          labelBackgroundColor: '#2a2e39',
+          style: LineStyle.Dashed,
+        },
+      },
+    })
+    if (!this.container) return
+    this.container.classList.remove(...CURSOR_MODE_CLASSES)
+    this.container.classList.add(`chart-cursor-${this.cursorMode}`)
+    if (this.replaySelectionState.mode !== 'selecting') {
+      this.container.style.cursor = this.cursorMode === 'arrow' ? 'default' : this.cursorMode === 'eraser' ? 'crosshair' : this.cursorMode === 'cross' ? 'crosshair' : 'none'
+    }
+    if (this.cursorMode !== 'dot' && this.cursorMode !== 'demonstration') this.removeCursorIndicator()
+  }
+
+  private updateCursorIndicator(event: PointerEvent): void {
+    if (!this.container || this.activeTool || (this.cursorMode !== 'dot' && this.cursorMode !== 'demonstration')) return
+    const rect = this.container.getBoundingClientRect()
+    const x = event.clientX - rect.left
+    const y = event.clientY - rect.top
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+      this.removeCursorIndicator()
+      return
+    }
+    if (!this.cursorIndicator) {
+      this.cursorIndicator = this.container.ownerDocument.createElement('div')
+      this.cursorIndicator.className = 'chart-cursor-indicator'
+      this.cursorIndicator.setAttribute('aria-hidden', 'true')
+      this.container.append(this.cursorIndicator)
+    }
+    this.cursorIndicator.dataset.mode = this.cursorMode
+    this.cursorIndicator.style.transform = `translate3d(${x}px, ${y}px, 0)`
+  }
+
+  private removeCursorIndicator = (): void => {
+    this.cursorIndicator?.remove()
+    this.cursorIndicator = null
+  }
+
   setDrawingTool(tool: string | null): void {
     if (tool && this.drawingsHidden) this.toggleDrawingsVisibility()
     if (this.areaZoomSelecting) this.cancelAreaZoomSelection()
     this.cancelPreview()
     this.measurementGesture = null
+    this.persistentRangeGesture = null
     this.measurementClickAnchored = false
     this.pathAnchors = []
     this.freehandGesture = null
+    this.leaderAnnotationGesture = null
     if (tool) this.drawingManager.deselectAll()
     this.activeTool = tool
     const definition = tool ? getToolRegistry().get(tool) : undefined
     this.placement = definition && tool ? startDrawingPlacement(tool, definition.requiredAnchors) : IDLE_DRAWING_PLACEMENT
     this.drawingManager.setActiveTool(tool)
+    if (tool) {
+      this.removeCursorIndicator()
+      this.container?.classList.remove(...CURSOR_MODE_CLASSES)
+      this.container?.classList.add('chart-cursor-cross')
+      if (this.container) this.container.style.cursor = 'crosshair'
+      this.chart?.applyOptions({
+        crosshair: {
+          mode: CrosshairMode.Normal,
+          vertLine: { visible: true, labelVisible: true, color: '#787b8688', labelBackgroundColor: '#2a2e39', style: LineStyle.Dashed },
+          horzLine: { visible: true, labelVisible: true, color: '#787b8688', labelBackgroundColor: '#2a2e39', style: LineStyle.Dashed },
+        },
+      })
+    } else this.applyCursorMode()
     this.applyChartInteractionLock()
     this.drawingToolChangedHandler(tool)
   }
 
-  deselectDrawing(): void { this.drawingManager.deselectAll() }
+  deselectDrawing(): void {
+    this.finishInlineTextEditor('commit')
+    this.drawingManager.deselectAll()
+  }
 
   deleteSelectedDrawing(): void {
     const selected = this.drawingManager.getSelectedDrawing()
-    if (selected) this.drawingManager.removeDrawing(selected.id)
+    if (selected) {
+      this.closeInlineTextEditor()
+      this.drawingManager.removeDrawing(selected.id)
+    }
   }
 
   lockSelectedDrawing(): void {
     const selected = this.drawingManager.getSelectedDrawing()
     if (!selected) return
-    selected.updateOptions({ locked: true })
+    selected.updateOptions({ locked: !(selected.options.locked ?? false) })
     this.recordDrawingHistory('drawing:updated', selected.id)
     this.drawingLabelsPrimitive.requestUpdate()
+    this.drawingSelectionHandler(this.getDrawingAppearance(selected))
     this.drawingChangedHandler(selected.id)
-    this.drawingManager.deselectAll()
     this.applyChartInteractionLock()
   }
 
@@ -704,12 +1101,43 @@ export class LwcAdapter implements ChartAdapter {
   updateSelectedDrawing(patch: DrawingAppearancePatch): void {
     const drawing = this.drawingManager.getSelectedDrawing()
     if (!drawing) return
-    const appearance = mergeDrawingAppearance(getDrawingAppearance(drawing), patch)
+    const current = this.getDrawingAppearance(drawing)
+    let nextPatch = patch
+    if (drawing.type === 'text-annotation' && patch.textAnchored !== undefined && patch.textAnchored !== current.textAnchored) {
+      const width = Math.max(1, this.chart?.timeScale().width() ?? this.container?.clientWidth ?? 1)
+      const height = Math.max(1, this.container?.clientHeight ?? 1)
+      if (patch.textAnchored) {
+        const anchor = drawing.anchors[0]
+        const x = anchor ? this.chart?.timeScale().timeToCoordinate(anchor.time) : null
+        const y = anchor ? this.candles?.priceToCoordinate(anchor.price) : null
+        nextPatch = {
+          ...patch,
+          textAnchorX: x === null || x === undefined ? current.textAnchorX : Math.max(0, Math.min(1, x / width)),
+          textAnchorY: y === null || y === undefined ? current.textAnchorY : Math.max(0, Math.min(1, y / height)),
+        }
+      } else {
+        const time = this.chart?.timeScale().coordinateToTime(current.textAnchorX * width)
+        const price = this.candles?.coordinateToPrice(current.textAnchorY * height)
+        if (time !== null && time !== undefined && price !== null && price !== undefined) drawing.updateAnchor(0, { time, price })
+      }
+    }
+    if (nextPatch.coordinates && nextPatch.coordinates.length === drawing.anchors.length) {
+      drawing.setAnchors(nextPatch.coordinates.map((coordinate, index) => {
+        const fallback = drawing.anchors[index]
+        const bar = this.history[Math.min(Math.max(0, coordinate.bar), Math.max(0, this.history.length - 1))]
+        return { time: bar ? toTime(bar.time) : fallback.time, price: coordinate.price }
+      }))
+    }
+    const appearance = mergeDrawingAppearance(this.getDrawingAppearance(drawing), nextPatch)
+    this.applyDrawingAppearance(drawing, appearance)
+  }
+
+  private applyDrawingAppearance(drawing: IDrawing, appearance: DrawingAppearance): void {
     drawing.updateStyle(appearanceStyle(appearance))
-    drawing.updateOptions(appearanceOptions(appearance))
+    drawing.updateOptions({ ...appearanceOptions(appearance), visible: this.isDrawingVisibleAtCurrentTimeframe(appearance) })
     this.recordDrawingHistory('drawing:updated', drawing.id)
     this.drawingLabelsPrimitive.requestUpdate()
-    this.drawingSelectionHandler(appearance)
+    this.drawingSelectionHandler(this.getDrawingAppearance(drawing))
     this.drawingChangedHandler(drawing.id)
   }
 
@@ -788,7 +1216,7 @@ export class LwcAdapter implements ChartAdapter {
     })))
     this.recordDrawingHistory('drawing:updated', drawing.id)
     this.drawingLabelsPrimitive.requestUpdate()
-    this.drawingSelectionHandler(getDrawingAppearance(drawing))
+    this.drawingSelectionHandler(this.getDrawingAppearance(drawing))
     this.drawingChangedHandler(drawing.id)
     return true
   }
@@ -825,6 +1253,45 @@ export class LwcAdapter implements ChartAdapter {
   setKeepDrawing(enabled: boolean): void { this.keepDrawing = enabled }
   drawingCount(): number { return this.getDrawings().length }
 
+  private getDrawingAppearance(drawing: IDrawing): DrawingAppearance {
+    const appearance = getDrawingAppearance(drawing, (time) => {
+      const timestamp = timestampFromTime(time)
+      if (timestamp === null || this.history.length === 0) return 0
+      let closestIndex = 0
+      let closestDistance = Math.abs(this.history[0].time - timestamp)
+      for (let index = 1; index < this.history.length; index += 1) {
+        const distance = Math.abs(this.history[index].time - timestamp)
+        if (distance >= closestDistance) continue
+        closestIndex = index
+        closestDistance = distance
+      }
+      return closestIndex
+    })
+    const rangeStart = appearance.coordinates?.[0]?.bar ?? 0
+    const rangeEnd = appearance.coordinates?.[1]?.bar ?? rangeStart
+    const from = Math.max(0, Math.min(rangeStart, rangeEnd))
+    const to = Math.min(this.history.length - 1, Math.max(rangeStart, rangeEnd))
+    const rangeVolume = this.history.slice(from, to + 1).reduce((total, bar) => total + bar.volume, 0)
+    return {
+      ...appearance,
+      positionTickSize: this.tickSize,
+      positionPricePrecision: this.pricePrecision,
+      rangeVolume,
+      rangeBarIntervalSeconds: timeframeSeconds(this.currentTimeframe),
+      coordinates: appearance.coordinates?.map((coordinate) => ({
+        ...coordinate,
+        price: Number(coordinate.price.toFixed(this.pricePrecision)),
+      })),
+    }
+  }
+
+  private isDrawingVisibleAtCurrentTimeframe(appearance: DrawingAppearance): boolean {
+    const parsed = parseTimeframe(this.currentTimeframe)
+    if (!parsed) return true
+    const rule = appearance.visibility[TIMEFRAME_VISIBILITY_UNITS[parsed.unit]]
+    return rule.enabled && parsed.multiplier >= rule.min && parsed.multiplier <= rule.max
+  }
+
   private captureDrawingState(): SerializedDrawing[] {
     return structuredClone(this.getDrawings())
   }
@@ -853,6 +1320,10 @@ export class LwcAdapter implements ChartAdapter {
       this.drawingManager.clearAll()
       const registry = getToolRegistry()
       this.drawingManager.importDrawings(structuredClone(drawings), (type, data) => registry.createDrawing(type, data.id, data.anchors, data.style, data.options))
+      this.drawingManager.getAllDrawings().forEach((drawing) => {
+        const appearance = this.getDrawingAppearance(drawing)
+        drawing.updateOptions({ visible: this.isDrawingVisibleAtCurrentTimeframe(appearance) })
+      })
       if (this.drawingsLocked) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.updateOptions({ locked: true }))
       if (this.drawingsHidden) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.detach())
       this.drawingHistorySnapshot = this.captureDrawingState()
@@ -880,6 +1351,10 @@ export class LwcAdapter implements ChartAdapter {
       const registry = getToolRegistry()
       const projected = projectDrawingsToHistory(drawings, this.history)
       this.drawingManager.importDrawings(projected, (type, data) => registry.createDrawing(type, data.id, data.anchors, data.style, data.options))
+      this.drawingManager.getAllDrawings().forEach((drawing) => {
+        const appearance = this.getDrawingAppearance(drawing)
+        drawing.updateOptions({ visible: this.isDrawingVisibleAtCurrentTimeframe(appearance) })
+      })
       if (this.drawingsLocked) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.updateOptions({ locked: true }))
       if (this.drawingsHidden) this.drawingManager.getAllDrawings().forEach((drawing) => drawing.detach())
       this.drawingHistorySnapshot = this.captureDrawingState()
@@ -1057,8 +1532,11 @@ export class LwcAdapter implements ChartAdapter {
   destroy(): void {
     const chart = this.chart
     const chartWindow = this.container?.ownerDocument.defaultView
+    this.removeCursorIndicator()
+    this.container?.classList.remove(...CURSOR_MODE_CLASSES, 'chart-replay-selecting')
     this.removeAreaZoomOverlay()
     this.closeQuantityEditor()
+    this.closeInlineTextEditor()
     this.resizeObserver?.disconnect()
     this.resizeObserver = null
     this.lastWidth = 0
@@ -1070,6 +1548,7 @@ export class LwcAdapter implements ChartAdapter {
     if (this.container) {
       this.container.removeEventListener('pointerdown', this.handlePointerDown, true)
       this.container.removeEventListener('pointermove', this.handlePointerMove)
+      this.container.removeEventListener('pointerleave', this.removeCursorIndicator)
       this.container.removeEventListener('pointerup', this.handlePointerUp)
       this.container.removeEventListener('pointercancel', this.handlePointerUp)
       this.container.removeEventListener('click', this.handleReplaySelectionClick)
@@ -1089,12 +1568,18 @@ export class LwcAdapter implements ChartAdapter {
     this.spacer = null
     this.markers = null
     this.indicatorSeries.clear()
+    this.indicatorSeriesTail.clear()
+    this.indicatorPlotColors.clear()
+    this.renderedIndicators.clear()
+    this.renderedIndicatorResults = []
+    this.renderedIndicatorChart = null
     this.indicatorDrawingsPrimitive.setDraws([])
     this.container = null
     this.activeTool = null
     this.placement = IDLE_DRAWING_PLACEMENT
     this.pathAnchors = []
     this.freehandGesture = null
+    this.leaderAnnotationGesture = null
     this.suppressNextDrawingClick = false
     this.suppressNextDrawingDoubleClick = false
     this.preview = null
@@ -1136,6 +1621,7 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   private handleVisibleTimeRangeChange = (range: { from: Time; to: Time } | null): void => {
+    this.positionInlineTextEditor()
     if (this.suppressViewportEchoUntilGesture) return
     this.publishViewportSync(range)
   }
@@ -1159,7 +1645,7 @@ export class LwcAdapter implements ChartAdapter {
       this.recordDrawingHistory(event.type, event.drawingId)
       this.drawingLabelsPrimitive.requestUpdate()
       const selected = this.drawingManager.getSelectedDrawing()
-      this.drawingSelectionHandler(selected ? getDrawingAppearance(selected) : null)
+      this.drawingSelectionHandler(selected ? this.getDrawingAppearance(selected) : null)
       if (event.type === 'drawing:updated') this.scheduleDrawingChange(event.drawingId)
       else this.drawingChangedHandler(event.drawingId)
     }
@@ -1169,10 +1655,16 @@ export class LwcAdapter implements ChartAdapter {
     this.drawingManager.on('drawing:cleared', changed)
     this.drawingManager.on('drawing:selected', (event) => {
       this.drawingLabelsPrimitive.requestUpdate()
-      this.drawingSelectionHandler(event.drawing ? getDrawingAppearance(event.drawing) : null)
+      this.drawingSelectionHandler(event.drawing ? this.getDrawingAppearance(event.drawing) : null)
       this.applyChartInteractionLock()
     })
-    this.drawingManager.on('drawing:deselected', () => {
+    this.drawingManager.on('drawing:deselected', (event) => {
+      const drawing = event.drawingId ? this.drawingManager.getDrawing(event.drawingId) : undefined
+      if (drawing && EMPTY_TEXT_REMOVAL_TYPES.has(drawing.type) && this.getDrawingAppearance(drawing).text.trim().length === 0) {
+        this.drawingManager.removeDrawing(drawing.id)
+        this.applyChartInteractionLock()
+        return
+      }
       this.drawingLabelsPrimitive.requestUpdate()
       this.drawingSelectionHandler(null)
       this.applyChartInteractionLock()
@@ -1183,6 +1675,7 @@ export class LwcAdapter implements ChartAdapter {
     if (!this.container || !this.chart || !this.candles) return
     this.container.addEventListener('pointerdown', this.handlePointerDown, true)
     this.container.addEventListener('pointermove', this.handlePointerMove)
+    this.container.addEventListener('pointerleave', this.removeCursorIndicator)
     this.container.addEventListener('pointerup', this.handlePointerUp)
     this.container.addEventListener('pointercancel', this.handlePointerUp)
     this.container.addEventListener('click', this.handleReplaySelectionClick)
@@ -1347,6 +1840,22 @@ export class LwcAdapter implements ChartAdapter {
     if (time === null || price === null) return
     if (typeof time !== 'number') return
     const anchor: PlacementAnchor = { time, price }
+    if (this.activeTool === 'long-position' || this.activeTool === 'short-position') {
+      const direction = this.activeTool === 'long-position' ? 1 : -1
+      const rightX = Math.min(rect.width - 8, x + 120)
+      const stopY = Math.max(8, Math.min(rect.height - 8, y + direction * 80))
+      const targetY = Math.max(8, Math.min(rect.height - 8, y - direction * 80))
+      const rightTime = this.chart.timeScale().coordinateToTime(rightX)
+      const stopPrice = this.candles.coordinateToPrice(stopY)
+      const targetPrice = this.candles.coordinateToPrice(targetY)
+      if (typeof rightTime !== 'number' || stopPrice === null || targetPrice === null) return
+      this.completeDrawing(this.activeTool, [
+        anchor,
+        { time, price: stopPrice },
+        { time: rightTime, price: targetPrice },
+      ])
+      return
+    }
     if (this.activeTool === 'path') {
       if (event.detail >= 2) {
         if (this.pathAnchors.length >= 2) {
@@ -1373,21 +1882,74 @@ export class LwcAdapter implements ChartAdapter {
   private completeDrawing(tool: string, anchors: PlacementAnchor[]): void {
     const registry = getToolRegistry()
     this.removePreview()
-    const creationOptions: DrawingWorkbenchOptions & { text?: string; note?: string; pricePrecision?: number; displayTimezone?: string } = {
-      workbench: { ...DEFAULT_DRAWING_METADATA },
-      text: tool.includes('text') ? '' : undefined,
-      note: tool.includes('note') ? '' : undefined,
+    const isPositionTool = tool === 'long-position' || tool === 'short-position'
+    const isTextTool = tool === 'text-annotation'
+    const inlineEditorConfig = INLINE_EDITOR_CONFIGS[tool]
+    const isInlineTextTool = inlineEditorConfig !== undefined
+    const isNoteTool = tool === 'note' || tool === 'anchored-text'
+    const isCalloutTool = tool === 'callout'
+    const isCommentTool = tool === 'comment'
+    const isPriceNoteTool = tool === 'price-note'
+    const isCurveTool = tool === 'curve'
+    const isPriceRangeTool = tool === 'price-range'
+    const isDateRangeTool = tool === 'date-range'
+    const isRangeTool = isPriceRangeTool || isDateRangeTool
+    const initialMetadata = {
+      ...DEFAULT_DRAWING_METADATA,
+      ...(isPositionTool ? { strokeColor: '#9e9e9e', textColor: '#ffffff', fontSize: 12 } : {}),
+      ...(isTextTool ? { textColor: '#2962ff', fontSize: 14, horizontalAlign: 'left' as const, textBackgroundVisible: false, textBorderVisible: false, textWrap: false, textAnchored: false, textAnchorX: 0.5, textAnchorY: 0.5 } : {}),
+      ...(isNoteTool ? { strokeColor: '#202020', textColor: '#555555', backgroundColor: '#ffffff', backgroundOpacity: 1, fontSize: 14 } : {}),
+      ...(isCalloutTool ? { strokeColor: '#0097a7', fillColor: '#32b7bf', fillOpacity: 1, textColor: '#d7f5f6', fontSize: 14 } : {}),
+      ...(isCommentTool ? { strokeColor: '#2962ff', fillColor: '#2962ff', fillOpacity: 1, textColor: '#ffffff', fontSize: 14 } : {}),
+      ...(isPriceNoteTool ? { strokeColor: '#2962ff', fillColor: '#2962ff', fillOpacity: 1, textColor: '#ffffff', fontSize: 11 } : {}),
+      ...(isCurveTool ? { drawingBackgroundVisible: false } : {}),
+      ...(isRangeTool ? {
+        strokeColor: '#2962ff', fillColor: '#2962ff', fillOpacity: 0.18,
+        drawingBackgroundVisible: true, textColor: '#202020', backgroundColor: '#ffffff',
+        backgroundOpacity: 1, rangeLabelBackgroundVisible: true, fontSize: 12,
+        rangeStats: (isDateRangeTool
+          ? ['bars-range', 'date-time-range', 'volume']
+          : ['price-range', 'percent-change', 'change-in-pips']) as RangeStatKey[],
+      } : {}),
+    }
+    const creationOptions: DrawingWorkbenchOptions & { text?: string; note?: string; iconColor?: string; priceColor?: string; noteColor?: string; pricePrecision?: number; displayTimezone?: string } = {
+      workbench: initialMetadata,
+      text: isInlineTextTool ? '' : undefined,
+      fontSize: isInlineTextTool || isPriceNoteTool ? initialMetadata.fontSize : undefined,
+      fontFamily: isTextTool ? '-apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif' : undefined,
+      fontWeight: isTextTool ? '400' : undefined,
+      textAlign: isTextTool ? initialMetadata.horizontalAlign : undefined,
+      backgroundColor: isTextTool ? '' : isNoteTool ? '#ffffff' : isCalloutTool ? '#32b7bf' : isCommentTool || isPriceNoteTool ? '#2962ff' : undefined,
+      borderColor: isTextTool ? '' : isCalloutTool ? '#0097a7' : undefined,
+      textWrap: isTextTool ? false : undefined,
+      screenAnchored: isTextTool ? false : undefined,
+      note: isPriceNoteTool ? '' : undefined,
+      iconColor: isNoteTool ? '#555555' : undefined,
+      priceColor: isPriceNoteTool ? '#2962ff' : undefined,
+      noteColor: isPriceNoteTool ? '#ffffff' : undefined,
       pricePrecision: this.pricePrecision,
       displayTimezone: 'UTC',
+      filled: isRangeTool ? true : isCurveTool ? false : undefined,
+      showRange: isPriceRangeTool ? true : undefined,
+      showPercentage: isPriceRangeTool ? true : undefined,
+      showPips: isPriceRangeTool ? true : undefined,
+      showBars: isDateRangeTool ? true : undefined,
+      showDateTime: isDateRangeTool ? true : undefined,
+      showVolume: isDateRangeTool ? true : undefined,
+      labelBackgroundVisible: isRangeTool ? true : undefined,
+      labelBackgroundColor: isRangeTool ? '#ffffff' : undefined,
+      barIntervalSeconds: isDateRangeTool ? timeframeSeconds(this.currentTimeframe) : undefined,
+      volume: isDateRangeTool ? this.volumeBetweenAnchors(anchors) : undefined,
+      tickSize: isPriceRangeTool ? this.tickSize : undefined,
       locked: this.drawingsLocked,
     }
     const drawing = registry.createDrawing(tool, `drawing-${crypto.randomUUID()}`, anchors.map((point) => ({ time: toTime(point.time), price: point.price })), {
-      lineColor: colorWithOpacity(DEFAULT_DRAWING_METADATA.strokeColor, DEFAULT_DRAWING_METADATA.strokeOpacity),
-      lineWidth: 2,
+      lineColor: colorWithOpacity(initialMetadata.strokeColor, initialMetadata.strokeOpacity),
+      lineWidth: isPositionTool || isNoteTool || isCalloutTool || isCommentTool || isPriceNoteTool ? 1 : 2,
       lineDash: [],
-      fillColor: colorWithOpacity(DEFAULT_DRAWING_METADATA.fillColor, DEFAULT_DRAWING_METADATA.fillOpacity),
-      fillOpacity: DEFAULT_DRAWING_METADATA.fillOpacity,
-      labelColor: DEFAULT_DRAWING_METADATA.textColor,
+      fillColor: colorWithOpacity(initialMetadata.fillColor, initialMetadata.fillOpacity),
+      fillOpacity: initialMetadata.fillOpacity,
+      labelColor: initialMetadata.textColor,
     }, creationOptions)
     if (drawing) {
       this.drawingManager.addDrawing(drawing)
@@ -1399,6 +1961,14 @@ export class LwcAdapter implements ChartAdapter {
     }
     this.pathAnchors = []
     this.setDrawingTool(this.keepDrawing ? tool : null)
+    if (drawing && inlineEditorConfig) queueMicrotask(() => this.openInlineTextEditor(drawing))
+  }
+
+  private volumeBetweenAnchors(anchors: PlacementAnchor[]): number {
+    if (anchors.length < 2 || this.history.length === 0) return 0
+    const start = Math.min(anchors[0].time, anchors[1].time)
+    const end = Math.max(anchors[0].time, anchors[1].time)
+    return this.history.reduce((total, bar) => bar.time >= start && bar.time <= end ? total + bar.volume : total, 0)
   }
 
   private handleModifiedClick = (event: MouseEvent): void => {
@@ -1503,6 +2073,122 @@ export class LwcAdapter implements ChartAdapter {
     this.quantityEditor = null
   }
 
+  private openInlineTextEditor(drawing: IDrawing): void {
+    const config = INLINE_EDITOR_CONFIGS[drawing.type]
+    if (!this.container || !config || !this.drawingManager.getDrawing(drawing.id)) return
+    this.finishInlineTextEditor('commit')
+    const appearance = this.getDrawingAppearance(drawing)
+    const input = this.container.ownerDocument.createElement('input')
+    this.textEditor = input
+    this.textEditorDrawingId = drawing.id
+    this.textEditorOriginalText = appearance.text
+    this.textEditorDirty = false
+    input.type = 'text'
+    input.className = `drawing-inline-text-editor drawing-inline-text-editor--${config.variant}`
+    input.setAttribute('aria-label', `Inline ${config.label} editor`)
+    input.autocomplete = 'off'
+    input.spellcheck = false
+    input.value = appearance.text || 'Add text'
+    input.style.color = config.variant === 'text' ? appearance.textColor : config.variant === 'note' ? '#555555' : config.variant === 'callout' ? '#d7f5f6' : '#ffffff'
+    input.style.fontSize = `${appearance.fontSize}px`
+    input.style.fontStyle = appearance.italic ? 'italic' : 'normal'
+    input.style.fontWeight = appearance.bold ? '700' : '400'
+    input.style.textAlign = config.variant === 'text' ? appearance.horizontalAlign : 'left'
+    input.addEventListener('pointerdown', (event) => event.stopPropagation())
+    input.addEventListener('click', (event) => event.stopPropagation())
+    input.addEventListener('input', () => {
+      this.textEditorDirty = true
+      this.resizeInlineTextEditor(input)
+      if (this.textEditor === input) this.applyDrawingAppearance(drawing, mergeDrawingAppearance(this.getDrawingAppearance(drawing), { text: input.value }))
+    })
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation()
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        this.finishInlineTextEditor('commit')
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        this.finishInlineTextEditor('cancel')
+      }
+    })
+    input.addEventListener('blur', () => {
+      if (this.textEditor === input) this.finishInlineTextEditor('commit')
+    })
+    drawing.setInlineEditing(true)
+    this.container.append(input)
+    this.resizeInlineTextEditor(input)
+    this.positionInlineTextEditor()
+    input.focus({ preventScroll: true })
+    input.select()
+  }
+
+  private resizeInlineTextEditor(input: HTMLInputElement): void {
+    const fontSize = Number.parseFloat(input.style.fontSize) || 14
+    const bubble = input.classList.contains('drawing-inline-text-editor--comment') || input.classList.contains('drawing-inline-text-editor--callout')
+    const minimumWidth = bubble ? 76 : 62
+    const width = Math.max(minimumWidth, Math.ceil(input.value.length * fontSize * 0.58 + (bubble ? 24 : 14)))
+    input.style.width = `${Math.min(width, Math.max(minimumWidth, (this.container?.clientWidth ?? width) - 8))}px`
+  }
+
+  private positionInlineTextEditor(): void {
+    const input = this.textEditor
+    const drawing = this.textEditorDrawingId ? this.drawingManager.getDrawing(this.textEditorDrawingId) : undefined
+    if (!input || !drawing || !this.container) return
+    const appearance = this.getDrawingAppearance(drawing)
+    const config = INLINE_EDITOR_CONFIGS[drawing.type]
+    if (!config) return
+    const width = Math.max(1, this.chart?.timeScale().width() ?? this.container.clientWidth)
+    const height = Math.max(1, this.container.clientHeight)
+    const anchor = drawing.anchors[config.anchorIndex]
+    const rawX = drawing.type === 'text-annotation' && appearance.textAnchored
+      ? appearance.textAnchorX * width
+      : anchor ? this.chart?.timeScale().timeToCoordinate(anchor.time) : null
+    const rawY = drawing.type === 'text-annotation' && appearance.textAnchored
+      ? appearance.textAnchorY * height
+      : anchor ? this.candles?.priceToCoordinate(anchor.price) : null
+    if (rawX === null || rawX === undefined || rawY === null || rawY === undefined) return
+    const inputWidth = input.offsetWidth || Number.parseFloat(input.style.width) || 62
+    const translate = config.variant === 'text'
+      ? appearance.horizontalAlign === 'center' ? -inputWidth / 2 : appearance.horizontalAlign === 'right' ? -inputWidth : 0
+      : config.variant === 'comment' ? 0 : config.variant === 'callout' ? -2 : -2
+    const editorHeight = input.offsetHeight || 28
+    const top = config.variant === 'comment' ? rawY - editorHeight - 8 : rawY - editorHeight / 2
+    input.style.left = `${Math.max(2, Math.min(width - inputWidth - 2, rawX + translate))}px`
+    input.style.top = `${Math.max(2, Math.min(height - editorHeight - 2, top))}px`
+  }
+
+  private closeInlineTextEditor(): void {
+    const drawing = this.textEditorDrawingId ? this.drawingManager.getDrawing(this.textEditorDrawingId) : undefined
+    const input = this.textEditor
+    this.textEditor = null
+    this.textEditorDrawingId = null
+    this.textEditorOriginalText = ''
+    this.textEditorDirty = false
+    drawing?.setInlineEditing(false)
+    input?.remove()
+  }
+
+  private finishInlineTextEditor(mode: 'commit' | 'cancel'): void {
+    const input = this.textEditor
+    const drawing = this.textEditorDrawingId ? this.drawingManager.getDrawing(this.textEditorDrawingId) : undefined
+    if (!input || !drawing) {
+      this.closeInlineTextEditor()
+      return
+    }
+    const originalText = this.textEditorOriginalText
+    const value = !this.textEditorDirty && originalText.length === 0 ? '' : input.value
+    this.closeInlineTextEditor()
+    const nextText = mode === 'cancel' ? originalText : value
+    if (nextText.trim().length === 0) {
+      this.drawingManager.removeDrawing(drawing.id)
+      this.applyChartInteractionLock()
+      return
+    }
+    if (this.getDrawingAppearance(drawing).text !== nextText) {
+      this.applyDrawingAppearance(drawing, mergeDrawingAppearance(this.getDrawingAppearance(drawing), { text: nextText }))
+    }
+  }
+
   private handleDrawingDoubleClick = (event: MouseEvent): void => {
     if (this.suppressNextDrawingDoubleClick) {
       this.suppressNextDrawingDoubleClick = false
@@ -1521,12 +2207,25 @@ export class LwcAdapter implements ChartAdapter {
     const drawing = this.drawingManager.hitTest({ x: event.clientX - rect.left, y: event.clientY - rect.top })
     if (!drawing) return
     this.drawingManager.selectDrawing(drawing.id)
-    this.drawingEditRequestHandler(getDrawingAppearance(drawing))
+    if (INLINE_EDITOR_CONFIGS[drawing.type]) this.openInlineTextEditor(drawing)
+    else this.drawingEditRequestHandler(this.getDrawingAppearance(drawing))
     event.preventDefault()
   }
 
   private handlePointerDown = (event: PointerEvent): void => {
     if (this.replaySelectionState.mode === 'selecting' || event.button !== 0 || !this.container || !this.chart || !this.candles) return
+    if (this.textEditor?.contains(event.target as Node)) return
+    if (this.cursorMode === 'eraser') {
+      const rect = this.container.getBoundingClientRect()
+      const drawing = this.drawingManager.hitTest({ x: event.clientX - rect.left, y: event.clientY - rect.top })
+      if (drawing) {
+        if (this.textEditorDrawingId === drawing.id) this.closeInlineTextEditor()
+        this.drawingManager.removeDrawing(drawing.id)
+      }
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
     if (this.areaZoomSelecting) {
       const rect = this.container.getBoundingClientRect()
       const point = { x: event.clientX - rect.left, y: event.clientY - rect.top }
@@ -1546,6 +2245,49 @@ export class LwcAdapter implements ChartAdapter {
       const price = this.candles.coordinateToPrice(initialPoint.y)
       if (typeof time !== 'number' || price === null) return
       this.freehandGesture = { pointerId: event.pointerId, tool: 'brush', anchors: [{ time, price }], lastX: initialPoint.x, lastY: initialPoint.y }
+      this.container.setPointerCapture(event.pointerId)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
+    const placementAnchorCount = this.placement.status === 'anchored' || this.placement.status === 'previewing'
+      ? this.placement.anchors.length
+      : 0
+    if ((this.activeTool === 'price-range' || this.activeTool === 'date-range') && placementAnchorCount === 0) {
+      const time = this.chart.timeScale().coordinateToTime(initialPoint.x)
+      const price = this.candles.coordinateToPrice(initialPoint.y)
+      if (typeof time !== 'number' || price === null) return
+      const anchor = { time, price }
+      this.placement = commitDrawingAnchor(this.placement, anchor)
+      this.persistentRangeGesture = {
+        pointerId: event.pointerId,
+        tool: this.activeTool,
+        anchor,
+        startX: event.clientX,
+        startY: event.clientY,
+        dragged: false,
+      }
+      this.renderPlacementPreview(anchor)
+      this.container.setPointerCapture(event.pointerId)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
+    if (this.activeTool && LEADER_ANNOTATION_TOOLS.has(this.activeTool) && placementAnchorCount === 0) {
+      const time = this.chart.timeScale().coordinateToTime(initialPoint.x)
+      const price = this.candles.coordinateToPrice(initialPoint.y)
+      if (typeof time !== 'number' || price === null) return
+      const anchor = { time, price }
+      this.placement = commitDrawingAnchor(this.placement, anchor)
+      this.leaderAnnotationGesture = {
+        pointerId: event.pointerId,
+        tool: this.activeTool,
+        anchor,
+        startX: event.clientX,
+        startY: event.clientY,
+        dragged: false,
+      }
+      this.renderPlacementPreview(anchor)
       this.container.setPointerCapture(event.pointerId)
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -1574,6 +2316,12 @@ export class LwcAdapter implements ChartAdapter {
     const orderAction = this.orderPrimitive.actionAt(point.x, point.y)
     if (!orderAction || orderAction.type !== 'quantity') this.closeQuantityEditor()
     const hitDrawing = this.drawingManager.hitTest(point)
+    if (hitDrawing?.options.locked) {
+      if (this.drawingManager.getSelectedDrawing()?.id !== hitDrawing.id) this.drawingManager.selectDrawing(hitDrawing.id)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
     if (hitDrawing && !hitDrawing.options.locked) {
       if (this.drawingManager.getSelectedDrawing()?.id !== hitDrawing.id) this.drawingManager.selectDrawing(hitDrawing.id)
       if (this.drawingManager.hitTestAnchor(point) !== null) return
@@ -1590,6 +2338,9 @@ export class LwcAdapter implements ChartAdapter {
         anchors: hitDrawing.anchors.map((anchor) => ({ ...anchor })),
         moved: false,
         cloneOnDrag: event.ctrlKey || event.metaKey,
+        screenAnchor: hitDrawing.type === 'text-annotation' && this.getDrawingAppearance(hitDrawing).textAnchored
+          ? { x: this.getDrawingAppearance(hitDrawing).textAnchorX, y: this.getDrawingAppearance(hitDrawing).textAnchorY }
+          : undefined,
       }
       this.lockDrawingPriceScale()
       this.container.setPointerCapture(event.pointerId)
@@ -1645,6 +2396,7 @@ export class LwcAdapter implements ChartAdapter {
   }
 
   private handlePointerMove = (event: PointerEvent): void => {
+    this.updateCursorIndicator(event)
     if (this.areaZoomGesture?.pointerId === event.pointerId && this.container) {
       const rect = this.container.getBoundingClientRect()
       this.areaZoomGesture.currentX = Math.max(0, Math.min(rect.width, event.clientX - rect.left))
@@ -1666,6 +2418,32 @@ export class LwcAdapter implements ChartAdapter {
       this.freehandGesture.lastX = x
       this.freehandGesture.lastY = y
       this.renderFreeformPreview('brush', this.freehandGesture.anchors.length === 1 ? [...this.freehandGesture.anchors, { time, price }] : this.freehandGesture.anchors)
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (this.leaderAnnotationGesture?.pointerId === event.pointerId && this.container && this.chart && this.candles) {
+      const rect = this.container.getBoundingClientRect()
+      const time = this.chart.timeScale().coordinateToTime(event.clientX - rect.left)
+      const price = this.candles.coordinateToPrice(event.clientY - rect.top)
+      if (typeof time !== 'number' || price === null) return
+      if (Math.hypot(event.clientX - this.leaderAnnotationGesture.startX, event.clientY - this.leaderAnnotationGesture.startY) >= 3) {
+        this.leaderAnnotationGesture.dragged = true
+      }
+      this.renderPlacementPreview({ time, price })
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (this.persistentRangeGesture?.pointerId === event.pointerId && this.container && this.chart && this.candles) {
+      const rect = this.container.getBoundingClientRect()
+      const time = this.chart.timeScale().coordinateToTime(event.clientX - rect.left)
+      const price = this.candles.coordinateToPrice(event.clientY - rect.top)
+      if (typeof time !== 'number' || price === null) return
+      if (Math.hypot(event.clientX - this.persistentRangeGesture.startX, event.clientY - this.persistentRangeGesture.startY) >= 3) {
+        this.persistentRangeGesture.dragged = true
+      }
+      this.renderPlacementPreview({ time, price })
       event.preventDefault()
       event.stopPropagation()
       return
@@ -1696,10 +2474,32 @@ export class LwcAdapter implements ChartAdapter {
     if (this.draggingDrawing && this.draggingDrawing.pointerId === event.pointerId && this.container && this.chart && this.candles) {
       this.enforceDrawingPriceScaleLock()
       const rect = this.container.getBoundingClientRect()
+      let drawing = this.drawingManager.getDrawing(this.draggingDrawing.drawingId)
+      if (!drawing) return
+      if (this.draggingDrawing.screenAnchor) {
+        const deltaX = (event.clientX - this.draggingDrawing.startX) / Math.max(1, rect.width)
+        const deltaY = (event.clientY - this.draggingDrawing.startY) / Math.max(1, rect.height)
+        if (deltaX === 0 && deltaY === 0) return
+        if (this.draggingDrawing.cloneOnDrag) {
+          const clone = this.cloneDrawing(drawing)
+          this.draggingDrawing.cloneOnDrag = false
+          if (!clone) return
+          drawing = clone
+          this.draggingDrawing.drawingId = clone.id
+          this.lastDrawingUpdate = { id: clone.id, at: performance.now() }
+        }
+        const appearance = mergeDrawingAppearance(this.getDrawingAppearance(drawing), {
+          textAnchorX: this.draggingDrawing.screenAnchor.x + deltaX,
+          textAnchorY: this.draggingDrawing.screenAnchor.y + deltaY,
+        })
+        this.applyDrawingAppearance(drawing, appearance)
+        this.draggingDrawing.moved = true
+        this.enforceDrawingPriceScaleLock()
+        return
+      }
       const time = this.chart.timeScale().coordinateToTime(event.clientX - rect.left)
       const price = this.candles.coordinateToPrice(event.clientY - rect.top)
-      let drawing = this.drawingManager.getDrawing(this.draggingDrawing.drawingId)
-      if (typeof time !== 'number' || price === null || !drawing) return
+      if (typeof time !== 'number' || price === null) return
       const last = this.history.at(-1)
       const previous = this.history.at(-2)
       const barInterval = Math.max(1, last && previous ? last.time - previous.time : 60)
@@ -1765,12 +2565,49 @@ export class LwcAdapter implements ChartAdapter {
       event.stopPropagation()
       return
     }
+    if (this.leaderAnnotationGesture?.pointerId === event.pointerId && this.container && this.chart && this.candles) {
+      const gesture = this.leaderAnnotationGesture
+      this.leaderAnnotationGesture = null
+      if (this.container.hasPointerCapture(event.pointerId)) this.container.releasePointerCapture(event.pointerId)
+      if (event.type === 'pointercancel') {
+        this.setDrawingTool(null)
+      } else if (gesture.dragged) {
+        const rect = this.container.getBoundingClientRect()
+        const time = this.chart.timeScale().coordinateToTime(event.clientX - rect.left)
+        const price = this.candles.coordinateToPrice(event.clientY - rect.top)
+        if (typeof time === 'number' && price !== null) this.completeDrawing(gesture.tool, [gesture.anchor, { time, price }])
+      }
+      this.suppressNextDrawingClick = true
+      window.setTimeout(() => { this.suppressNextDrawingClick = false }, 0)
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    if (this.persistentRangeGesture?.pointerId === event.pointerId && this.container && this.chart && this.candles) {
+      const gesture = this.persistentRangeGesture
+      this.persistentRangeGesture = null
+      if (this.container.hasPointerCapture(event.pointerId)) this.container.releasePointerCapture(event.pointerId)
+      if (event.type === 'pointercancel') {
+        this.setDrawingTool(this.keepDrawing ? gesture.tool : null)
+      } else if (gesture.dragged) {
+        const rect = this.container.getBoundingClientRect()
+        const time = this.chart.timeScale().coordinateToTime(event.clientX - rect.left)
+        const price = this.candles.coordinateToPrice(event.clientY - rect.top)
+        if (typeof time === 'number' && price !== null) this.completeDrawing(gesture.tool, [gesture.anchor, { time, price }])
+      }
+      this.suppressNextDrawingClick = true
+      window.setTimeout(() => { this.suppressNextDrawingClick = false }, 0)
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     if (this.measurementGesture?.pointerId === event.pointerId && this.container) {
       const transient = this.measurementGesture.transient
       const cancelled = event.type === 'pointercancel'
       const finishMeasurement = this.measurementGesture.dragged || this.measurementClickAnchored
       if (this.container.hasPointerCapture(event.pointerId)) this.container.releasePointerCapture(event.pointerId)
-      this.measurementGesture = null
+    this.measurementGesture = null
+    this.persistentRangeGesture = null
       if (cancelled) this.setDrawingTool(null)
       else if (finishMeasurement) this.pinMeasurementPreview()
       else this.measurementClickAnchored = true
@@ -2020,22 +2857,26 @@ export class LwcAdapter implements ChartAdapter {
     }
     this.replaySelectionPrimitive.setState(state)
     const selecting = this.replaySelectionState.mode === 'selecting'
-    this.chart?.applyOptions({
-      crosshair: {
-        vertLine: {
-          color: selecting ? '#2962ff' : '#787b8688',
-          labelBackgroundColor: selecting ? '#2962ff' : '#2a2e39',
+    if (selecting) {
+      this.chart?.applyOptions({
+        crosshair: {
+          mode: CrosshairMode.Normal,
+          vertLine: { visible: true, labelVisible: true, color: '#2962ff', labelBackgroundColor: '#2962ff', style: LineStyle.Dashed },
+          horzLine: { visible: true, labelVisible: true, color: '#787b8688', labelBackgroundColor: '#2a2e39', style: LineStyle.Dashed },
         },
-      },
-    })
+      })
+      this.removeCursorIndicator()
+    }
     if (this.container) {
-      this.container.style.cursor = selecting ? 'crosshair' : ''
+      this.container.classList.toggle('chart-replay-selecting', selecting)
       if (selecting) {
+        this.container.style.cursor = 'crosshair'
         this.container.tabIndex = 0
         this.container.setAttribute('role', 'group')
         this.container.setAttribute('aria-label', 'Select replay start bar. Use Left and Right arrows, then Enter.')
         queueMicrotask(() => this.container?.focus({ preventScroll: true }))
       } else {
+        this.applyCursorMode()
         this.syncOrderKeyboardState(this.orderPrimitive.lines)
       }
     }

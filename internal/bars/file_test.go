@@ -6,9 +6,9 @@ import (
 )
 
 func TestNewBarFile_Valid(t *testing.T) {
-	f, err := newBarFile(simpleFixture(5, 1000, 60))
+	f, err := newUTCIndexedBarFile(simpleFixture(5, 1000, 60))
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 	if f.Count() != 5 {
 		t.Fatalf("Count() = %d, want 5", f.Count())
@@ -21,7 +21,7 @@ func TestNewBarFile_Valid(t *testing.T) {
 func TestNewBarFile_SizeMismatch(t *testing.T) {
 	data := simpleFixture(5, 1000, 60)
 	truncated := data[:len(data)-4] // chop part of the volume column
-	if _, err := newBarFile(truncated); !errors.Is(err, ErrSizeMismatch) {
+	if _, err := newUTCIndexedBarFile(truncated); !errors.Is(err, ErrSizeMismatch) {
 		t.Fatalf("err = %v, want ErrSizeMismatch", err)
 	}
 }
@@ -31,15 +31,15 @@ func TestNewBarFile_NonMonotonicTs(t *testing.T) {
 		[]uint32{100, 100, 200}, // duplicate ts -> not strictly increasing
 		[]int32{1, 1, 1}, []int32{2, 2, 2}, []int32{0, 0, 0}, []int32{1, 1, 1}, []uint32{1, 1, 1},
 	)
-	if _, err := newBarFile(data); !errors.Is(err, ErrNonMonotonicTs) {
+	if _, err := newUTCIndexedBarFile(data); !errors.Is(err, ErrNonMonotonicTs) {
 		t.Fatalf("err = %v, want ErrNonMonotonicTs", err)
 	}
 }
 
 func TestIndexAtOrAfter_And_Before(t *testing.T) {
-	f, err := newBarFile(simpleFixture(5, 100, 100)) // ts: 100,200,300,400,500
+	f, err := newUTCIndexedBarFile(simpleFixture(5, 100, 100)) // ts: 100,200,300,400,500
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 
 	tests := []struct {
@@ -67,9 +67,9 @@ func TestIndexAtOrAfter_And_Before(t *testing.T) {
 }
 
 func TestSeekWindow(t *testing.T) {
-	f, err := newBarFile(simpleFixture(10, 0, 60)) // ts: 0,60,...,540
+	f, err := newUTCIndexedBarFile(simpleFixture(10, 0, 60)) // ts: 0,60,...,540
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 
 	win := f.SeekWindow(300, 3, 1) // idx-at-or-before(300)=5; [5-3+1, 5+1+1) = [3,7)
@@ -89,9 +89,9 @@ func TestSeekWindow(t *testing.T) {
 }
 
 func TestRangeWindow_Truncation(t *testing.T) {
-	f, err := newBarFile(simpleFixture(10, 0, 60))
+	f, err := newUTCIndexedBarFile(simpleFixture(10, 0, 60))
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 
 	win, truncated := f.RangeWindow(0, 540, 5)

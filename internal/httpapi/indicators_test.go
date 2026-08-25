@@ -68,6 +68,35 @@ func TestHandleRunIndicator_Success(t *testing.T) {
 	}
 }
 
+// TestHandleRunIndicator_EmptyPlotsAreAnArrayOnTheWire guards the exact shape
+// the web client parses. No script under indicators/scripts/ calls plot(), so
+// an empty plot list is the response every shipped indicator produces; a
+// "plots": null body fails the client's array schema and the indicator never
+// renders at all. A decode into []any — which is what the test above does —
+// accepts null happily, which is precisely how that regression shipped, so
+// this one asserts on the body text.
+//
+// Both handler branches are covered: 1m is the base timeframe and runs
+// unquantized through Engine.Run, while 5m goes through
+// quantizeToClosedBucket and RunChart.
+func TestHandleRunIndicator_EmptyPlotsAreAnArrayOnTheWire(t *testing.T) {
+	s := newTestServer(t)
+	at := int64(testFixtureStart) + int64(testFixtureN-1)*60
+	for _, tf := range []string{"1m", "5m"} {
+		t.Run(tf, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, testRunURL("NQ", "fractals", at, "&tf="+tf), nil)
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), `"plots":[]`) {
+				t.Fatalf("body = %s, want it to contain \"plots\":[]", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleRunIndicator_AggregatesDisplayTimeframeFromOneMinute(t *testing.T) {
 	s := newTestServer(t)
 	at := int64(testFixtureStart) + int64(testFixtureN-1)*60

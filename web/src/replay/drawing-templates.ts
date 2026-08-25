@@ -12,7 +12,7 @@ import {
 export const DRAWING_TEMPLATES_STORAGE_KEY = 'market-replay:drawing-templates:v1'
 const HYDRATE_TIMEOUT_MS = 1_200
 
-export type DrawingTemplateAppearance = Required<DrawingAppearancePatch>
+export type DrawingTemplateAppearance = Required<Omit<DrawingAppearancePatch, 'coordinates'>>
 
 export interface DrawingTemplate {
   id: string
@@ -34,22 +34,46 @@ const fibonacciLevelSchema = z.object({
   visible: z.boolean(),
   color: hexColorSchema,
 })
+const visibilityRuleSchema = z.object({
+  enabled: z.boolean(),
+  min: z.number().int().positive(),
+  max: z.number().int().positive(),
+})
 const appearanceSchema = z.object({
   strokeColor: hexColorSchema,
   strokeOpacity: z.number().min(0).max(1),
   borderStyle: z.enum(['solid', 'dashed', 'dotted']),
   fillColor: hexColorSchema,
   fillOpacity: z.number().min(0).max(1),
+  drawingBackgroundVisible: z.boolean().default(DEFAULT_DRAWING_METADATA.drawingBackgroundVisible),
   text: z.string(),
   textColor: hexColorSchema,
   textOpacity: z.number().min(0).max(1),
   backgroundColor: hexColorSchema,
   backgroundOpacity: z.number().min(0).max(1),
+  textBackgroundVisible: z.boolean().default(DEFAULT_DRAWING_METADATA.textBackgroundVisible),
+  textBorderVisible: z.boolean().default(DEFAULT_DRAWING_METADATA.textBorderVisible),
+  textWrap: z.boolean().default(DEFAULT_DRAWING_METADATA.textWrap),
+  textAnchored: z.boolean().default(DEFAULT_DRAWING_METADATA.textAnchored),
+  textAnchorX: z.number().min(0).max(1).default(DEFAULT_DRAWING_METADATA.textAnchorX),
+  textAnchorY: z.number().min(0).max(1).default(DEFAULT_DRAWING_METADATA.textAnchorY),
   horizontalAlign: z.enum(['left', 'center', 'right']),
   verticalAlign: z.enum(['top', 'inside', 'bottom']),
   bold: z.boolean(),
   italic: z.boolean(),
-  fontSize: z.number().min(9).max(32),
+  fontSize: z.number().min(8).max(40),
+  lineStartStyle: z.enum(['normal', 'arrow']).default(DEFAULT_DRAWING_METADATA.lineStartStyle),
+  lineEndStyle: z.enum(['normal', 'arrow']).default(DEFAULT_DRAWING_METADATA.lineEndStyle),
+  showMiddlePoint: z.boolean().default(DEFAULT_DRAWING_METADATA.showMiddlePoint),
+  showPriceLabels: z.boolean().default(DEFAULT_DRAWING_METADATA.showPriceLabels),
+  visibility: z.object({
+    seconds: visibilityRuleSchema,
+    minutes: visibilityRuleSchema,
+    hours: visibilityRuleSchema,
+    days: visibilityRuleSchema,
+    weeks: visibilityRuleSchema,
+    months: visibilityRuleSchema,
+  }).default(() => structuredClone(DEFAULT_DRAWING_METADATA.visibility)),
   lineWidth: z.number().min(1).max(8),
   extendLeft: z.boolean(),
   extendRight: z.boolean(),
@@ -63,12 +87,32 @@ const appearanceSchema = z.object({
   fibonacciLevelLabels: z.boolean().default(DEFAULT_DRAWING_METADATA.fibonacciLevelLabels),
   fibonacciLevelFormat: z.enum(['values', 'percents']).default(DEFAULT_DRAWING_METADATA.fibonacciLevelFormat),
   fibonacciTextVisible: z.boolean().default(DEFAULT_DRAWING_METADATA.fibonacciTextVisible),
+  fibonacciTrendLineColor: hexColorSchema.default(DEFAULT_DRAWING_METADATA.fibonacciTrendLineColor),
+  fibonacciTrendLineOpacity: z.number().min(0).max(1).default(DEFAULT_DRAWING_METADATA.fibonacciTrendLineOpacity),
+  fibonacciTrendLineWidth: z.number().min(1).max(8).default(DEFAULT_DRAWING_METADATA.fibonacciTrendLineWidth),
+  fibonacciTrendLineStyle: z.enum(['solid', 'dashed', 'dotted']).default(DEFAULT_DRAWING_METADATA.fibonacciTrendLineStyle),
   rectangleMiddleLine: z.boolean().default(DEFAULT_DRAWING_METADATA.rectangleMiddleLine),
   rectangleMiddleLineColor: hexColorSchema.default(DEFAULT_DRAWING_METADATA.rectangleMiddleLineColor),
   rectangleMiddleLineOpacity: z.number().min(0).max(1).default(DEFAULT_DRAWING_METADATA.rectangleMiddleLineOpacity),
   rectangleMiddleLineWidth: z.number().min(1).max(8).default(DEFAULT_DRAWING_METADATA.rectangleMiddleLineWidth),
   rectangleMiddleLineStyle: z.enum(['solid', 'dashed', 'dotted']).default(DEFAULT_DRAWING_METADATA.rectangleMiddleLineStyle),
   fibonacciDiagonalLine: z.boolean().default(DEFAULT_DRAWING_METADATA.fibonacciDiagonalLine),
+  positionAccountSize: z.number().min(0).default(DEFAULT_DRAWING_METADATA.positionAccountSize),
+  positionLotSize: z.number().positive().default(DEFAULT_DRAWING_METADATA.positionLotSize),
+  positionRisk: z.number().min(0).default(DEFAULT_DRAWING_METADATA.positionRisk),
+  positionRiskMode: z.enum(['percent', 'cash']).default(DEFAULT_DRAWING_METADATA.positionRiskMode),
+  positionLeverage: z.number().min(0).default(DEFAULT_DRAWING_METADATA.positionLeverage),
+  positionQtyPrecision: z.union([z.literal('default'), z.number().int().min(0).max(8)]).default(DEFAULT_DRAWING_METADATA.positionQtyPrecision),
+  positionStopColor: hexColorSchema.default(DEFAULT_DRAWING_METADATA.positionStopColor),
+  positionStopOpacity: z.number().min(0).max(1).default(DEFAULT_DRAWING_METADATA.positionStopOpacity),
+  positionTargetColor: hexColorSchema.default(DEFAULT_DRAWING_METADATA.positionTargetColor),
+  positionTargetOpacity: z.number().min(0).max(1).default(DEFAULT_DRAWING_METADATA.positionTargetOpacity),
+  positionPriceLabels: z.boolean().default(DEFAULT_DRAWING_METADATA.positionPriceLabels),
+  positionStats: z.array(z.enum(['tp-price-offset', 'tp-percent-offset', 'tp-tick-offset', 'tp-amount', 'tp-pl', 'open-closed-pl', 'qty', 'risk-reward-ratio', 'sl-price-offset', 'sl-percent-offset', 'sl-tick-offset', 'sl-amount', 'sl-pl'])).default(DEFAULT_DRAWING_METADATA.positionStats),
+  positionCompactStats: z.boolean().default(DEFAULT_DRAWING_METADATA.positionCompactStats),
+  positionAlwaysShowStats: z.boolean().default(DEFAULT_DRAWING_METADATA.positionAlwaysShowStats),
+  rangeLabelBackgroundVisible: z.boolean().default(DEFAULT_DRAWING_METADATA.rangeLabelBackgroundVisible),
+  rangeStats: z.array(z.enum(['price-range', 'percent-change', 'change-in-pips', 'bars-range', 'date-time-range', 'volume'])).default(DEFAULT_DRAWING_METADATA.rangeStats),
 })
 
 const drawingTemplateSchema = z.object({
@@ -92,18 +136,20 @@ function createTemplateId(now: number): string {
 }
 
 export function drawingAppearanceToTemplate(appearance: DrawingAppearance): DrawingTemplateAppearance {
-  const { id: _id, type: _type, supportsExtend: _supportsExtend, ...template } = appearance
+  const { id: _id, type: _type, locked: _locked, supportsExtend: _supportsExtend, coordinates: _coordinates, positionTickSize: _positionTickSize, positionPricePrecision: _positionPricePrecision, rangeVolume: _rangeVolume, rangeBarIntervalSeconds: _rangeBarIntervalSeconds, ...template } = appearance
   return template
 }
 
 export function defaultDrawingTemplateAppearance(drawing: DrawingAppearance): DrawingTemplateAppearance {
   const extendLeft = drawing.type === 'extended-line'
   const extendRight = drawing.type === 'extended-line' || drawing.type === 'ray' || drawing.type === 'horizontal-ray'
+  const isPosition = drawing.type === 'long-position' || drawing.type === 'short-position'
   return {
     ...drawingAppearanceToTemplate(drawing),
     ...DEFAULT_DRAWING_METADATA,
     fibonacciLevels: DEFAULT_DRAWING_METADATA.fibonacciLevels.map((level) => ({ ...level })),
-    lineWidth: 2,
+    ...(isPosition ? { strokeColor: '#9e9e9e', textColor: '#ffffff', fontSize: 12 } : {}),
+    lineWidth: isPosition ? 1 : 2,
     extendLeft,
     extendRight,
   }

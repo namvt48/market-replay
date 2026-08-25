@@ -13,6 +13,7 @@ import {
 } from '../../replay/drawing-appearance'
 import type { DrawingTemplate } from '../../replay/drawing-templates'
 import { HexColorField } from '../ui/HexColorField'
+import { DrawingCoordinatesPanel, DrawingVisibilityPanel } from './DrawingPropertySharedPanels'
 
 interface OpacityFieldProps {
   label: string
@@ -37,7 +38,7 @@ interface DrawingInspectorProps {
 }
 
 type FibonacciPropertyTab = 'line' | 'levels' | 'display'
-type DrawingPropertyTab = 'style' | 'fill' | 'text' | 'templates' | FibonacciPropertyTab
+type DrawingPropertyTab = 'style' | 'fill' | 'text' | 'coordinates' | 'visibility' | 'templates' | FibonacciPropertyTab
 
 interface DrawingPropertyTabOption {
   id: DrawingPropertyTab
@@ -48,6 +49,8 @@ const STANDARD_PROPERTY_TABS: readonly DrawingPropertyTabOption[] = [
   { id: 'style', label: 'Style' },
   { id: 'fill', label: 'Fill' },
   { id: 'text', label: 'Text' },
+  { id: 'coordinates', label: 'Coordinates' },
+  { id: 'visibility', label: 'Visibility' },
   { id: 'templates', label: 'Templates' },
 ]
 
@@ -269,7 +272,7 @@ export function DrawingInspector({
         <button type="button" onClick={onClose} className="tool-button" aria-label="Close drawing properties"><X size={15} /></button>
       </header>
 
-      <div role="tablist" aria-label="Drawing property sections" onKeyDown={moveTabFocus} className="grid shrink-0 grid-cols-4 border-b border-line bg-surface-0 px-1.5 pt-1.5">
+      <div role="tablist" aria-label="Drawing property sections" onKeyDown={moveTabFocus} className="grid shrink-0 grid-flow-col auto-cols-fr overflow-x-auto border-b border-line bg-surface-0 px-1.5 pt-1.5">
         {tabs.map((tab) => {
           const selected = tab.id === resolvedActiveTab
           return (
@@ -378,6 +381,9 @@ export function DrawingInspector({
             <label className="field-label">Font size (px)<input type="number" min="9" max="32" value={drawing.fontSize} onChange={(event) => onChange({ fontSize: Number(event.target.value) })} className="field-input h-9" /></label>
           </div>
         </section> : null}
+
+        {resolvedActiveTab === 'coordinates' ? <DrawingCoordinatesPanel drawing={drawing} onChange={onChange} /> : null}
+        {resolvedActiveTab === 'visibility' ? <DrawingVisibilityPanel drawing={drawing} onChange={onChange} /> : null}
           </>
         ) : null}
       </div>

@@ -439,8 +439,16 @@ func (e *Engine) cacheWaiters(key runCacheKey) int {
 func cloneRunResult(result RunResult) RunResult {
 	cloned := RunResult{
 		Draws: make([]DrawIntent, len(result.Draws)),
-		Plots: append([]PlotPoint(nil), result.Plots...),
+		// make+copy rather than append-to-nil: append([]PlotPoint(nil))
+		// with an empty source evaluates to nil, and a nil slice marshals
+		// as JSON null. Since no script under scripts/ calls plot(), that
+		// made every shipped indicator serialize "plots": null and fail the
+		// web client's array schema on arrival. Draws has always used make
+		// for the same reason, and runContext.result already guarantees an
+		// empty slice — this clone was silently undoing it.
+		Plots: make([]PlotPoint, len(result.Plots)),
 	}
+	copy(cloned.Plots, result.Plots)
 	for i, draw := range result.Draws {
 		cloned.Draws[i] = draw
 		cloned.Draws[i].Style = cloneStringMap(draw.Style)

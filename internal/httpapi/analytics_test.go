@@ -54,6 +54,7 @@ func TestHandleAnalyticsSources_MixesSessionAndEvaluation(t *testing.T) {
 	s := newTestServer(t)
 	replayID := createTestSession(t, s)
 	evalID := createTestSessionWithKind(t, s, "eval", 5_000_000)
+	serve(t, s, http.MethodPatch, "/api/v1/sessions/"+evalID, `{"name":"Evaluation Alpha"}`)
 
 	rec := serve(t, s, http.MethodGet, "/api/v1/analytics/sources", "")
 	if rec.Code != http.StatusOK {
@@ -61,8 +62,9 @@ func TestHandleAnalyticsSources_MixesSessionAndEvaluation(t *testing.T) {
 	}
 	var resp struct {
 		Items []struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
+			ID    string `json:"id"`
+			Type  string `json:"type"`
+			Title string `json:"title"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -72,14 +74,22 @@ func TestHandleAnalyticsSources_MixesSessionAndEvaluation(t *testing.T) {
 		t.Fatalf("items length = %d, want 2: %+v", len(resp.Items), resp.Items)
 	}
 	types := map[string]string{}
+	titles := map[string]string{}
 	for _, item := range resp.Items {
 		types[item.ID] = item.Type
+		titles[item.ID] = item.Title
 	}
 	if types[replayID] != "session" {
 		t.Errorf("replay session type = %q, want %q", types[replayID], "session")
 	}
 	if types[evalID] != "evaluation" {
 		t.Errorf("eval session type = %q, want %q", types[evalID], "evaluation")
+	}
+	if titles[evalID] != "Evaluation Alpha" {
+		t.Errorf("renamed eval title = %q, want Evaluation Alpha", titles[evalID])
+	}
+	if len(titles[replayID]) != 7 || titles[replayID][0] != '#' {
+		t.Errorf("default replay title = %q, want stable #HASH", titles[replayID])
 	}
 }
 

@@ -15,7 +15,7 @@ func TestCreateSession_DefaultsAndRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := s.CreateSession(ctx, model.Session{
-		Symbol: "NQ", Tf: "1m", StartTs: 1000,
+		Name: "Opening range review", Symbol: "NQ", Tf: "1m", StartTs: 1000,
 		Config: json.RawMessage(`{"maxContracts":5}`),
 	})
 	if err != nil {
@@ -38,7 +38,7 @@ func TestCreateSession_DefaultsAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if got.Symbol != "NQ" || string(got.Config) != `{"maxContracts":5}` {
+	if got.Name != "Opening range review" || got.Symbol != "NQ" || string(got.Config) != `{"maxContracts":5}` {
 		t.Errorf("GetSession = %+v, unexpected", got)
 	}
 }
@@ -113,7 +113,8 @@ func TestUpdateSession_PartialPatch(t *testing.T) {
 	}
 
 	cursor := int64(2000)
-	if err := s.UpdateSession(ctx, created.ID, model.SessionPatch{CursorTs: &cursor}); err != nil {
+	name := "Trend day practice"
+	if err := s.UpdateSession(ctx, created.ID, model.SessionPatch{Name: &name, CursorTs: &cursor}); err != nil {
 		t.Fatalf("UpdateSession: %v", err)
 	}
 
@@ -121,8 +122,8 @@ func TestUpdateSession_PartialPatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if got.CursorTs != 2000 {
-		t.Errorf("CursorTs = %d, want 2000", got.CursorTs)
+	if got.Name != name || got.CursorTs != 2000 {
+		t.Errorf("Name/CursorTs = %q/%d, want %q/2000", got.Name, got.CursorTs, name)
 	}
 	// Untouched fields must survive the partial patch.
 	if got.EquityCents != 0 || got.Status != model.SessionActive {

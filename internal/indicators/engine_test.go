@@ -1,7 +1,9 @@
 package indicators
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -489,5 +491,80 @@ func TestEngine_RunCacheKeepsSixtyFourMostRecentResults(t *testing.T) {
 
 	if got := e.executions.Load() - before; got != 66 {
 		t.Fatalf("JS executions = %d, want 66 for a 64-entry LRU", got)
+	}
+}
+
+// drawOnlyScript emits drawings and never calls plot(). That is the shape
+// every script under scripts/ actually has — none of them plots — so it is
+// also the shape whose serialized Plots the web client has to accept.
+const drawOnlyScript = `
+init = () => { indicator({onMainPanel: true}); };
+onTick = () => { horizontalRay(time(0), closeC(0), {linecolor: 'x'}, 'L'); };
+`
+
+func TestCloneRunResultNeverNilsPlots(t *testing.T) {
+	if cloned := cloneRunResult(RunResult{Plots: []PlotPoint{}}); cloned.Plots == nil {
+		t.Fatal("cloning an empty plot list must keep it an empty slice, not nil")
+	}
+}
+
+// TestEngine_RunSerializesEmptyPlotsAsArray pins the wire contract a
+// draw-only script produces. runContext.result already substitutes an empty
+// slice for a never-assigned plots field, but every cacheable run reaches the
+// caller through cloneRunResult — so the guarantee only held on a path
+// nothing takes.
+//
+// Run is called twice with identical params on purpose: the first lands on
+// awaitCachedRun, the second on the ready-entry fast path, and those are
+// separate cloneRunResult call sites. One call would only pin one of them.
+func TestEngine_RunSerializesEmptyPlotsAsArray(t *testing.T) {
+	e := NewEngine()
+	if err := e.Register("draw-only", "Draw Only", 1, []byte(drawOnlyScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	specs := linearSpecs(1_700_000_000, 8)
+	file := openFixtureFile(t, "NQ", "1m", specs, testMeta)
+	params := RunParams{At: specs[7].ts, Before: 8, MaxTs: specs[7].ts}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		result, err := e.Run(context.Background(), "draw-only", file, nil, testMeta, params)
+		if err != nil {
+			t.Fatalf("Run %d: %v", attempt, err)
+		}
+		if len(result.Draws) == 0 {
+			t.Fatalf("Run %d: the fixture must emit drawings for this test to mean anything", attempt)
+		}
+		if result.Plots == nil {
+			t.Fatalf("Run %d: Plots is nil; a script that never plots must still yield an empty slice", attempt)
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("Run %d: marshal: %v", attempt, err)
+		}
+		if !bytes.Contains(encoded, []byte(`"plots":[]`)) {
+			t.Fatalf("Run %d: serialized as %s, want \"plots\":[]", attempt, encoded)
+		}
+	}
+}
+
+// The display-timeframe path takes a different series type and skips session
+// continuation entirely, but returns through the same clone.
+func TestEngine_RunChartSerializesEmptyPlotsAsArray(t *testing.T) {
+	e := NewEngine()
+	if err := e.Register("draw-only", "Draw Only", 1, []byte(drawOnlyScript)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	specs := linearSpecs(1_700_000_000, 4)
+	file := openFixtureFile(t, "NQ", "1m", specs, testMeta)
+	chartBars := []bars.ChartBar{{
+		Time: specs[0].ts, OpenTicks: 1000, HighTicks: 1005, LowTicks: 995, CloseTicks: 1001, Volume: 10,
+	}}
+	result, err := e.RunChart(context.Background(), "draw-only", chartBars, file, nil, testMeta,
+		RunParams{At: specs[0].ts, Before: 1, MaxTs: specs[0].ts})
+	if err != nil {
+		t.Fatalf("RunChart: %v", err)
+	}
+	if result.Plots == nil {
+		t.Fatal("RunChart: Plots is nil; a script that never plots must still yield an empty slice")
 	}
 }

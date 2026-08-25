@@ -2,6 +2,9 @@ package analytics
 
 import (
 	"fmt"
+	"hash/fnv"
+	"strconv"
+	"strings"
 	"time"
 
 	"market-replay/internal/model"
@@ -138,10 +141,20 @@ func lastExitTimestamp(sorted []model.Trade) *string {
 // the spec pins down to an exact string. The frontend is free to reformat
 // these once it consumes the real endpoint instead of the mock.
 func formatSourceTitle(sess model.Session) string {
-	if sess.Kind == model.SessionKindEval {
-		return fmt.Sprintf("%s evaluation account", formatAccountSize(sess))
+	if name := strings.TrimSpace(sess.Name); name != "" {
+		return name
 	}
-	return fmt.Sprintf("%s replay journal", sess.Symbol)
+	return "#" + shortSourceHash(sess.ID)
+}
+
+func shortSourceHash(id string) string {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(id))
+	encoded := strings.ToUpper(strconv.FormatUint(uint64(hash.Sum32()), 36))
+	if len(encoded) < 6 {
+		encoded = strings.Repeat("0", 6-len(encoded)) + encoded
+	}
+	return encoded[len(encoded)-6:]
 }
 
 func formatAccountSize(sess model.Session) string {

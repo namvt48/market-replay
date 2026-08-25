@@ -91,7 +91,7 @@ func buildContinuousMinuteFixture(t testing.TB, from time.Time, days int) *BarFi
 		vol = append(vol, uint32(1+minute%50))
 	}
 
-	file, err := newBarFile(buildFixture(ts, open, high, low, closeCol, vol))
+	file, err := newUTCIndexedBarFile(buildFixture(ts, open, high, low, closeCol, vol))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,10 @@ func TestBuildRTHRollupsMatchesTimeBasedReference(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			file := buildContinuousMinuteFixture(t, testCase.from, testCase.days)
-			gotHourly, gotDaily := buildRTHRollups(file, location)
+			if _, err := file.index(indexPlan{rollups: true, location: location}); err != nil {
+				t.Fatal(err)
+			}
+			gotHourly, gotDaily := file.rollups.rthHourly, file.rollups.rthDaily
 			wantHourly, wantDaily := buildRTHRollupsViaTimeAPI(file, location)
 
 			if len(gotDaily) == 0 || len(gotHourly) == 0 {

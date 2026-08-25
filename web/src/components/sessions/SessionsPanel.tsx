@@ -14,6 +14,8 @@ import { TradeHistoryTable } from '../trades/TradeHistoryTable'
 import { tradeHistoryCsv } from './trade-history-csv'
 import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
 import { formatChartTime, type ChartTimezone } from '../../replay/chart-timezone'
+import { replaySessionDisplayName } from '../../sources/source-name'
+import { SourceNameEditor } from '../sources/SourceNameEditor'
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 })
 function durationLabel(seconds: number): string {
@@ -37,7 +39,8 @@ function downloadTradeHistory(session: ReplaySession, trades: EngineTrade[]): vo
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `${session.symbol}-${shortReplaySessionHash(session.id)}-trades.csv`
+  const safeName = replaySessionDisplayName(session).replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
+  anchor.download = `${safeName || shortReplaySessionHash(session.id)}-trades.csv`
   anchor.click()
   queueMicrotask(() => URL.revokeObjectURL(url))
 }
@@ -49,11 +52,12 @@ interface SessionDetailsProps {
   current: boolean
   deleting: boolean
   onRefresh: () => Promise<void>
+  onRename: (name: string) => Promise<void>
   onDelete: () => Promise<void>
   timezone: ChartTimezone
 }
 
-function SessionDetails({ session, trades, loading, current, deleting, onRefresh, onDelete, timezone }: SessionDetailsProps) {
+function SessionDetails({ session, trades, loading, current, deleting, onRefresh, onRename, onDelete, timezone }: SessionDetailsProps) {
   const stats = calculateTradeStats(trades)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -73,6 +77,12 @@ function SessionDetails({ session, trades, loading, current, deleting, onRefresh
 
   return (
     <section id={`session-details-${session.id}`} aria-label={`${session.symbol} ${session.tf} replay session`} className="border-t border-line bg-surface-0/35">
+      <div className="flex min-w-0 items-center border-b border-line p-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5">
+          <p className="min-w-0 truncate text-ui-body font-semibold text-ink">{replaySessionDisplayName(session)}</p>
+          <SourceNameEditor currentName={session.name} defaultName={`#${shortReplaySessionHash(session.id)}`} sourceLabel="replay session" onSave={onRename} />
+        </div>
+      </div>
       <div className="flex items-center gap-2 p-3">
         {!current ? (
           <button type="button" disabled={busy} onClick={() => void run(() => replayEngine.resumeSession(session))} className="primary-button flex-1"><Play size={14} fill="currentColor" /> Activate</button>
@@ -222,6 +232,11 @@ export function SessionsPanel() {
     }
   }
 
+  const rename = async (session: ReplaySession, name: string): Promise<void> => {
+    await patchSession(session.id, { name })
+    await refresh()
+  }
+
   const openContextMenu = (session: ReplaySession, left: number, top: number): void => {
     setSelectedId(session.id)
     setContextMenu({
@@ -256,11 +271,11 @@ export function SessionsPanel() {
       <div className="flex min-h-12 items-center justify-between border-b border-line px-3">
         <div>
           <h2 className="text-ui-body font-semibold text-ink">Replay sessions</h2>
-          <p className={`text-ui-meta ${replay.sessionId ? 'text-profit-bright' : 'text-dim'}`}>{replay.sessionId ? `Active #${shortReplaySessionHash(replay.sessionId)}` : 'No active session · replay is temporary'}</p>
+          <p className={`max-w-44 truncate text-ui-meta ${replay.sessionId ? 'text-profit-bright' : 'text-dim'}`}>{activeSession ? `Active · ${replaySessionDisplayName(activeSession)}` : 'No active session · replay is temporary'}</p>
         </div>
         <div className="flex items-center gap-1.5">
           {activeSession ? (
-            <button type="button" onClick={() => openReview({ id: activeSession.id, type: 'session', title: `${activeSession.symbol} · ${activeSession.tf} · #${shortReplaySessionHash(activeSession.id)}` })} className="secondary-button h-7 min-h-7 px-2.5" aria-label="Review active session"><ClipboardCheck size={13} />Review</button>
+            <button type="button" onClick={() => openReview({ id: activeSession.id, type: 'session', title: replaySessionDisplayName(activeSession) })} className="secondary-button h-7 min-h-7 px-2.5" aria-label="Review active session"><ClipboardCheck size={13} />Review</button>
           ) : null}
           <button type="button" onClick={() => replayEngine.beginReplaySelection({ createSession: true })} className="primary-button h-7 px-2.5" aria-label="New session"><Plus size={13} />New</button>
         </div>
@@ -286,6 +301,8 @@ export function SessionsPanel() {
           const stats = calculateTradeStats(trades)
           const loading = loadingTradeIds.has(session.id)
           const status = current ? 'active' : session.status
+          const displayName = replaySessionDisplayName(session)
+          const defaultName = `#${shortReplaySessionHash(session.id)}`
           return (
             <li key={session.id} onContextMenu={(event) => handleRowContextMenu(event, session)}>
               <button
@@ -295,20 +312,20 @@ export function SessionsPanel() {
                 aria-expanded={selectedRow}
                 aria-current={current ? 'true' : undefined}
                 aria-controls={`session-details-${session.id}`}
-                aria-label={`Inspect ${session.symbol} ${session.tf} session ${shortReplaySessionHash(session.id)}`}
+                aria-label={`Inspect replay session ${displayName}`}
                 className={`w-full text-left transition-colors ${current ? 'bg-active/10 ring-1 ring-inset ring-active/35 hover:bg-active/15 aria-expanded:bg-active/15' : 'hover:bg-surface-2 aria-expanded:bg-surface-2'}`}
               >
                 <span className="flex items-start gap-2.5 px-3 py-2.5">
                   <span className={`mt-0.5 grid size-7 shrink-0 place-items-center rounded-control ${current ? 'bg-active/15 text-active-bright' : 'bg-surface-3 text-muted'}`}><Clock3 size={13} /></span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center justify-between gap-2">
-                      <span className="min-w-0 truncate"><strong className={`text-ui-body ${current ? 'text-active-bright' : 'text-ink'}`}>{session.symbol} · {session.tf}</strong><span className={`ml-1.5 font-mono text-ui-meta ${current ? 'text-[#9db7ff]' : 'text-dim'}`}>#{shortReplaySessionHash(session.id)}</span></span>
+                      <strong className={`min-w-0 truncate text-ui-body ${current ? 'text-active-bright' : 'text-ink'}`}>{displayName}</strong>
                       <span className="flex shrink-0 items-center gap-1.5">
                         <span className={`rounded-control px-1.5 py-0.5 text-ui-meta font-semibold uppercase ${statusTone(status)}`}>{status}</span>
                         <ChevronDown size={13} className={`text-dim transition-transform ${selectedRow ? 'rotate-180' : ''}`} aria-hidden="true" />
                       </span>
                     </span>
-                    <span className="mt-0.5 block truncate font-mono text-ui-meta text-dim">{formatChartTime(session.cursorTs || session.startTs, chartWorkspace.timezone)}</span>
+                    <span className="mt-0.5 block truncate text-ui-meta text-dim">{session.symbol} · {session.tf}{displayName !== defaultName ? ` · ${defaultName}` : ''} · <span className="font-mono">{formatChartTime(session.cursorTs || session.startTs, chartWorkspace.timezone)}</span></span>
                   </span>
                 </span>
                 <dl className="grid grid-cols-4 border-t border-line text-center text-ui-meta">
@@ -318,7 +335,7 @@ export function SessionsPanel() {
                   <div className="min-w-0 border-l border-line px-1 py-1.5"><dt className="text-dim">Avg R</dt><dd className="truncate font-mono font-medium text-ink">{loading ? '…' : stats.averageR === null ? '—' : stats.averageR.toFixed(2)}</dd></div>
                 </dl>
               </button>
-              {selectedRow ? <SessionDetails key={session.id} session={session} trades={trades} loading={loading} current={current} deleting={deletingId === session.id} onRefresh={refresh} onDelete={() => remove(session)} timezone={chartWorkspace.timezone} /> : null}
+              {selectedRow ? <SessionDetails key={session.id} session={session} trades={trades} loading={loading} current={current} deleting={deletingId === session.id} onRefresh={refresh} onRename={(name) => rename(session, name)} onDelete={() => remove(session)} timezone={chartWorkspace.timezone} /> : null}
             </li>
           )
         })}
@@ -326,7 +343,7 @@ export function SessionsPanel() {
       {sessions.length > visibleCount ? <button type="button" onClick={() => setVisibleCount((count) => count + 30)} className="h-10 w-full border-t border-line text-ui-body text-muted hover:bg-surface-2 hover:text-ink">Show 30 older sessions</button> : null}
       {!error && sessions.length === 0 ? <div className="grid place-items-center px-6 py-12 text-center"><Clock3 className="mb-3 text-dim" size={22} /><p className="text-ui-body text-muted">No saved sessions.</p><p className="mt-1 text-ui-meta text-dim">Replay normally for temporary practice, or create a session when you want to preserve its trades and review.</p></div> : null}
       {contextMenu && contextSession ? createPortal(
-        <div ref={contextMenuRef} role="menu" aria-label={`Session ${shortReplaySessionHash(contextSession.id)} actions`} style={{ left: contextMenu.left, top: contextMenu.top }} className="fixed z-[90] w-48 rounded-control border border-line-strong bg-[#111214] p-1 shadow-overlay">
+        <div ref={contextMenuRef} role="menu" aria-label={`${replaySessionDisplayName(contextSession)} actions`} style={{ left: contextMenu.left, top: contextMenu.top }} className="fixed z-[90] w-48 rounded-control border border-line-strong bg-[#111214] p-1 shadow-overlay">
           <button
             type="button"
             role="menuitem"

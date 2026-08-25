@@ -91,11 +91,37 @@ func TestHandlePatchSession(t *testing.T) {
 	s := newTestServer(t)
 	id := createTestSession(t, s)
 
-	req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+id, bytes.NewBufferString(`{"cursorTs":1600000600,"equityCents":1000000}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+id, bytes.NewBufferString(`{"name":"  Opening range  ","cursorTs":1600000600,"equityCents":1000000}`))
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	sess, err := s.Store.GetSession(req.Context(), id)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.Name != "Opening range" {
+		t.Fatalf("name = %q, want trimmed rename", sess.Name)
+	}
+}
+
+func TestHandlePatchSession_RejectsInvalidName(t *testing.T) {
+	s := newTestServer(t)
+	id := createTestSession(t, s)
+	tooLong := make([]byte, maxSessionNameRunes+1)
+	for i := range tooLong {
+		tooLong[i] = 'a'
+	}
+	body, err := json.Marshal(map[string]string{"name": string(tooLong)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+id, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -1,15 +1,16 @@
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EVAL_PRESETS, customConfig, dayKey, fundedConfig, newRuntime, shortEvalAccountHash } from '../../eval/rules'
+import { EVAL_PRESETS, customConfig, newRuntime, shortEvalAccountHash } from '../../eval/rules'
 import { getEvalState, loadEvalAccounts, useEvalStore } from '../../store/eval-store'
 import { EvaluationPanel } from './EvaluationPanel'
 
 vi.mock('../../chart-workspace/use-chart-workspace', () => ({ useChartWorkspace: () => ({ state: { timezone: { kind: 'preset', id: 'UTC' } } }) }))
 
-const replayMocks = vi.hoisted(() => ({ syncEvaluationSession: vi.fn() }))
+const replayMocks = vi.hoisted(() => ({ syncEvaluationSession: vi.fn(), patchSession: vi.fn() }))
 
 vi.mock('../../replay/replay-engine', () => ({ replayEngine: replayMocks }))
+vi.mock('../../api/client', () => ({ patchSession: replayMocks.patchSession }))
 const evalSnapshot = { fill: null }
 vi.mock('../../replay/use-replay', () => ({
   useReplaySnapshot: () => evalSnapshot,
@@ -23,6 +24,8 @@ describe('EvaluationPanel', () => {
     localStorage.clear()
     getEvalState().abandon()
     replayMocks.syncEvaluationSession.mockReset()
+    replayMocks.patchSession.mockReset()
+    replayMocks.patchSession.mockResolvedValue(undefined)
   })
 
   afterEach(cleanup)
@@ -61,9 +64,10 @@ describe('EvaluationPanel', () => {
     expect(screen.getAllByText('FTMO 100K (static)')).toHaveLength(2)
     expect(screen.getAllByText(`#${shortEvalAccountHash(accountId)}`)).toHaveLength(2)
     expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0)
-    const liveAccount = screen.getByRole('button', { name: /FTMO 100K.*All symbols/ })
+    const liveAccount = screen.getByRole('button', { name: /#.*FTMO 100K/ })
     expect(liveAccount).toHaveAttribute('aria-current', 'true')
     expect(liveAccount).toHaveClass('bg-active/10')
+    expect(screen.queryByText('All symbols')).not.toBeInTheDocument()
     expect(screen.getByText('$101,250')).toBeVisible()
     expect(screen.getByText('TRADE HISTORY')).toBeVisible()
     expect(screen.getByText('LONG')).toBeVisible()
@@ -91,31 +95,20 @@ describe('EvaluationPanel', () => {
     expect(screen.getByRole('progressbar', { name: 'Consistency' })).toHaveAttribute('aria-valuenow', '100')
   })
 
-  it('shows funded payout progress and exposes the request action when eligible', async () => {
-    const user = userEvent.setup()
-    const config = fundedConfig(EVAL_PRESETS[2])
+  it('keeps a passed evaluation terminal without funded or payout actions', () => {
+    const config = EVAL_PRESETS[2]
     getEvalState().startEvaluation(config, 'NQ', '2024-01-15', START_TS)
-    const trades = [0, 1, 2, 3, 4].map((index) => ({ exitTime: START_TS + index * 86400 + 3600, realizedCents: 80000 }))
     useEvalStore.setState({
-      runtime: {
-        ...newRuntime(config, START_TS),
-        dayKey: dayKey(START_TS + 5 * 86400, config.dayResetHour),
-        profitSinceLastPayout: 4000,
-        winningDays: 5,
-        bestDaySincePayout: 800,
-      },
-      lastEvalBalance: 54000,
-      lastEvalEquity: 54000,
-      trades,
+      phase: 'passed',
+      runtime: { ...newRuntime(config, START_TS), outcome: 'passed', passedAt: START_TS + 3600 },
+      lastEvalBalance: 53000,
+      lastEvalEquity: 53000,
     })
 
     render(<EvaluationPanel />)
 
-    expect(screen.getByRole('heading', { name: 'Payout status' })).toBeVisible()
-    expect(screen.getByText('ELIGIBLE')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Request payout' }))
-    expect(getEvalState().runtime?.payoutsTaken).toBe(1)
-    expect(screen.getByText('Payout #1 · 100% split')).toBeVisible()
+    expect(screen.getAllByText('PASSED').length).toBeGreaterThan(0)
+    expect(screen.queryByText(/payout|funded|verification/i)).not.toBeInTheDocument()
   })
 
   it('hides account metrics until Start Eval is pressed', async () => {
@@ -162,7 +155,7 @@ describe('EvaluationPanel', () => {
     getEvalState().startEvaluation(EVAL_PRESETS[2], 'ES', '2024-01-16', START_TS + 86400)
     render(<EvaluationPanel />)
 
-    await user.click(screen.getByRole('button', { name: /FTMO 100K.*All symbols/ }))
+    await user.click(screen.getByRole('button', { name: /#.*FTMO 100K/ }))
 
     expect(screen.getByText('TRADE HISTORY')).toBeVisible()
     expect(screen.getByText('SHORT')).toBeVisible()
@@ -181,7 +174,7 @@ describe('EvaluationPanel', () => {
     getEvalState().startEvaluation(EVAL_PRESETS[2], 'ES', '2024-01-16', START_TS + 86400)
     render(<EvaluationPanel />)
 
-    await user.click(screen.getByRole('button', { name: /FTMO 100K.*All symbols/ }))
+    await user.click(screen.getByRole('button', { name: /#.*FTMO 100K/ }))
     expect(screen.queryByRole('button', { name: 'Open account' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Resume Eval' }))
@@ -215,11 +208,11 @@ describe('EvaluationPanel', () => {
     getEvalState().startEvaluation(EVAL_PRESETS[2], 'ES', '2024-01-16', START_TS + 86400)
     render(<EvaluationPanel />)
 
-    await user.click(screen.getByRole('button', { name: /FTMO 100K.*All symbols/ }))
+    await user.click(screen.getByRole('button', { name: /#.*FTMO 100K/ }))
     await user.click(screen.getByRole('button', { name: /Delete FTMO.*evaluation/ }))
     await user.click(screen.getByRole('button', { name: /Confirm delete FTMO.*evaluation/ }))
 
-    expect(screen.queryByRole('button', { name: /FTMO 100K.*All symbols/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /#.*FTMO 100K/ })).not.toBeInTheDocument()
     expect(loadEvalAccounts().some((account) => account.accountId === pausedAccountId)).toBe(false)
   })
 
@@ -233,7 +226,24 @@ describe('EvaluationPanel', () => {
     await user.click(screen.getByRole('button', { name: /Delete FTMO.*evaluation/ }))
     await user.click(screen.getByRole('button', { name: /Confirm delete FTMO.*evaluation/ }))
 
-    expect(screen.queryByRole('button', { name: /FTMO 100K.*All symbols/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /#.*FTMO 100K/ })).not.toBeInTheDocument()
     expect(loadEvalAccounts().some((account) => account.accountId === readyAccountId)).toBe(false)
+  })
+
+  it('renames an evaluation across the local account and backend analytics source', async () => {
+    const user = userEvent.setup()
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '2024-01-15', START_TS)
+    getEvalState().attachSession('eval-session-1')
+    const accountId = getEvalState().accountId
+    if (!accountId) throw new Error('Expected an evaluation account id')
+    render(<EvaluationPanel />)
+
+    await user.click(screen.getByRole('button', { name: 'Rename evaluation account' }))
+    await user.type(screen.getByLabelText('Display name'), 'New York challenge')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(replayMocks.patchSession).toHaveBeenCalledWith('eval-session-1', { name: 'New York challenge' })
+    expect(loadEvalAccounts().find((account) => account.accountId === accountId)?.name).toBe('New York challenge')
+    expect(screen.getAllByText('New York challenge').length).toBeGreaterThan(0)
   })
 })

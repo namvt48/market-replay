@@ -119,13 +119,13 @@ export function TradeHistoryTable({ trades, loading = false, action, headingId, 
       </div>
 
       {recentTrades.length > 0 ? (
-        <div className="overflow-x-auto border-t border-line">
-          <table className="w-full min-w-80 table-fixed border-collapse text-left" aria-label="Trade history">
+        <div className="overflow-x-auto border-t border-line" role="region" aria-label="Scrollable trade history" tabIndex={0}>
+          <table className="w-full min-w-[26rem] table-fixed border-collapse text-left" aria-label="Trade history">
             <colgroup>
-              <col className="w-[23%]" />
-              <col className="w-[32%]" />
               <col className="w-[20%]" />
-              <col className="w-[25%]" />
+              <col className="w-[40%]" />
+              <col className="w-[17%]" />
+              <col className="w-[23%]" />
             </colgroup>
             <thead className="bg-surface-2/45 text-ui-meta text-dim">
               <tr>

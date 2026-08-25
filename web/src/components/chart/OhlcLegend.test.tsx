@@ -10,7 +10,7 @@ describe('OhlcLegend', () => {
     let frame: FrameRequestCallback | null = null
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { frame = callback; return 1 })
     const store = new HoverBarStore()
-    render(<OhlcLegend store={store} precision={2} />)
+    render(<OhlcLegend store={store} precision={2} textColor="#a3a6af" />)
     act(() => {
       store.emit({ time: 1_700_000_000, open: 100, high: 103, low: 99, close: 102, hovered: true })
       if (frame) (frame as FrameRequestCallback)(0)
@@ -23,11 +23,23 @@ describe('OhlcLegend', () => {
     expect(screen.queryByText('latest')).not.toBeInTheDocument()
   })
 
+  it('renders the O/H/L/C readout in the configured price & time text color', () => {
+    let frame: FrameRequestCallback | null = null
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { frame = callback; return 1 })
+    const store = new HoverBarStore()
+    render(<OhlcLegend store={store} precision={2} textColor="#ff8800" />)
+    act(() => {
+      store.emit({ time: 1_700_000_000, open: 100, high: 103, low: 99, close: 102, hovered: true })
+      if (frame) (frame as FrameRequestCallback)(0)
+    })
+    expect(screen.getByText('100.00').closest('div')).toHaveStyle({ color: '#ff8800' })
+  })
+
   it('marks the latest-bar fallback as muted', () => {
     let frame: FrameRequestCallback | null = null
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { frame = callback; return 1 })
     const store = new HoverBarStore()
-    render(<OhlcLegend store={store} precision={1} />)
+    render(<OhlcLegend store={store} precision={1} textColor="#a3a6af" />)
     act(() => {
       store.emit({ time: 1_700_000_000, open: 102, high: 103, low: 99, close: 100, hovered: false })
       if (frame) (frame as FrameRequestCallback)(0)
@@ -57,7 +69,7 @@ describe('OhlcLegend', () => {
     let frame: FrameRequestCallback | null = null
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { frame = callback; return 1 })
     const store = new HoverBarStore()
-    const { container } = render(<OhlcLegend store={store} precision={2} />)
+    const { container } = render(<OhlcLegend store={store} precision={2} textColor="#a3a6af" />)
     act(() => {
       store.emit({ time: 1_700_000_000, open: 100, high: 103, low: 99, close: 102, hovered: true })
       if (frame) (frame as FrameRequestCallback)(0)

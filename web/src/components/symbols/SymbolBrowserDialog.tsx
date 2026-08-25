@@ -78,7 +78,7 @@ export function SymbolBrowserDialog({ symbols, activeSymbol, initialQuery = '', 
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line px-3 sm:px-4">
           <Search size={17} className="shrink-0 text-muted" aria-hidden="true" />
           <h2 id="symbol-browser-title" className="sr-only">Symbol search</h2>
-          <input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search symbols" placeholder="Search symbol or name" className="h-full min-w-0 flex-1 bg-transparent text-ui-title text-ink outline-none placeholder:text-dim" />
+          <input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search symbols" placeholder="Search symbol or name" className="h-full min-w-0 flex-1 bg-transparent text-ui-title text-ink outline-none placeholder:text-dim focus-visible:!outline-none" />
           <kbd className="hidden rounded-[4px] border border-line-strong bg-surface-2 px-1.5 py-0.5 font-mono text-ui-meta text-dim sm:inline">ESC</kbd>
           <button type="button" onClick={onClose} className="tool-button sm:hidden" aria-label="Close symbol search"><X size={17} /></button>
         </header>

@@ -4,6 +4,7 @@ import type { SymbolMeta } from '../api/types'
 import type { SerializedDrawing } from 'lightweight-charts-drawing'
 import type { UTCTimestamp } from 'lightweight-charts'
 import type { OrderLine } from './chart-adapter'
+import { DEFAULT_DRAWING_METADATA } from './drawing-appearance'
 
 interface FakeAnchor { time: number; price: number }
 interface FakeDrawing {
@@ -13,12 +14,15 @@ interface FakeDrawing {
   style: Record<string, unknown>
   options: Record<string, unknown>
   state: string
+  inlineEditing: boolean
   detached: boolean
   attach(): void
   detach(): void
   setAnchors(anchors: FakeAnchor[]): void
   updateStyle(style: Record<string, unknown>): void
   updateOptions(options: Record<string, unknown>): void
+  updateAnchor(index: number, anchor: FakeAnchor): void
+  setInlineEditing(editing: boolean): void
   toJSON(): Record<string, unknown>
 }
 
@@ -66,12 +70,14 @@ const drawingMocks = vi.hoisted(() => {
 
   function createDrawing(type: string, id: string, anchors: FakeAnchor[], style: Record<string, unknown>, options: Record<string, unknown>): FakeDrawing {
     return {
-      id, type, anchors, style, options, state: 'normal', detached: false,
+      id, type, anchors, style, options, state: 'normal', inlineEditing: false, detached: false,
       attach(): void { this.detached = false },
       detach(): void { this.detached = true },
       setAnchors(next): void { this.anchors = next },
       updateStyle(next): void { this.style = { ...this.style, ...next } },
       updateOptions(next): void { this.options = { ...this.options, ...next } },
+      updateAnchor(index, anchor): void { this.anchors[index] = anchor },
+      setInlineEditing(editing): void { this.inlineEditing = editing },
       toJSON(): Record<string, unknown> { return { id: this.id, type: this.type, anchors: this.anchors, style: this.style, options: this.options } },
     }
   }
@@ -121,7 +127,15 @@ const chartMocks = vi.hoisted(() => {
 vi.mock('lightweight-charts-drawing', () => ({
   DrawingManager: drawingMocks.FakeDrawingManager,
   getToolRegistry: () => ({
-    get: (type: string) => ({ type, name: type, category: 'line', requiredAnchors: 2 }),
+    get: (type: string) => ({
+      type,
+      name: type,
+      category: 'line',
+      requiredAnchors: type === 'long-position' || type === 'short-position'
+        ? 3
+        : type === 'curve' ? 3
+        : ['text-annotation', 'comment', 'price-label', 'pin', 'table', 'signpost', 'flag-mark'].includes(type) ? 1 : 2,
+    }),
     getAll: () => [{ type: 'trend-line', name: 'Trend Line', category: 'line', requiredAnchors: 2 }],
     createDrawing: drawingMocks.createDrawing,
   }),
@@ -129,6 +143,7 @@ vi.mock('lightweight-charts-drawing', () => ({
 
 vi.mock('lightweight-charts', () => {
   const timeScale = {
+    width: () => 600,
     coordinateToTime: (x: number) => Math.round(x),
     coordinateToLogical: (x: number) => x,
     getVisibleRange: () => ({ from: 0, to: 100 }), getVisibleLogicalRange: () => ({ from: 10, to: 20 }),
@@ -143,6 +158,7 @@ vi.mock('lightweight-charts', () => {
   const baseSeries = {
     attachPrimitive: vi.fn(), setData: vi.fn(), update: vi.fn(), pop: vi.fn(),
     coordinateToPrice: (y: number) => y,
+    priceToCoordinate: (price: number) => price,
     getPane: () => pane,
     priceScale: () => ({
       applyOptions: chartMocks.priceScaleApplyOptions,
@@ -178,7 +194,7 @@ vi.mock('lightweight-charts', () => {
   }
   return {
     CandlestickSeries: 'CandlestickSeries', HistogramSeries: 'HistogramSeries', LineSeries: 'LineSeries',
-    ColorType: { Solid: 'solid' }, CrosshairMode: { Normal: 0 }, PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2 },
+    ColorType: { Solid: 'solid' }, CrosshairMode: { Normal: 0 }, LineStyle: { Dashed: 2 }, PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2 },
     createChart: (element: HTMLElement, options: Record<string, unknown>) => {
       chartMocks.createChartOptions = options
       chartMocks.chartRoot = document.createElement('div')
@@ -221,6 +237,52 @@ beforeEach(() => {
 })
 
 describe('LwcAdapter lifecycle', () => {
+  it('applies cross, dot, arrow, and demonstration cursor visuals', async () => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+
+    adapter.setCursorMode('dot')
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 120, clientY: 90 }))
+    expect(container).toHaveClass('chart-cursor-dot')
+    expect(container.querySelector('.chart-cursor-indicator')).toHaveStyle({ transform: 'translate3d(120px, 90px, 0)' })
+
+    adapter.setCursorMode('arrow')
+    expect(container).toHaveClass('chart-cursor-arrow')
+    expect(container.querySelector('.chart-cursor-indicator')).toBeNull()
+
+    adapter.setCursorMode('demonstration')
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 75, clientY: 55 }))
+    expect(container).toHaveClass('chart-cursor-demonstration')
+    expect(container.querySelector('.chart-cursor-indicator')).toHaveStyle({ transform: 'translate3d(75px, 55px, 0)' })
+
+    adapter.setCursorMode('cross')
+    expect(container).toHaveClass('chart-cursor-cross')
+    expect(container.querySelector('.chart-cursor-indicator')).toBeNull()
+  })
+
+  it('erases the drawing under the pointer without selecting or dragging it', async () => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+    adapter.loadDrawings([{
+      id: 'erasable-line', type: 'trend-line', anchors: [{ time: 0 as UTCTimestamp, price: 100 }, { time: 60 as UTCTimestamp, price: 105 }],
+      style: { lineColor: '#2962ff', lineWidth: 2 }, options: { locked: true },
+    }])
+    const manager = drawingMocks.managers.at(-1)
+    manager!.hitDrawing = manager!.drawings[0]
+
+    adapter.setCursorMode('eraser')
+    const pointerDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 91, clientX: 30, clientY: 100 })
+    container.dispatchEvent(pointerDown)
+
+    expect(pointerDown.defaultPrevented).toBe(true)
+    expect(adapter.getDrawings()).toEqual([])
+    expect(manager?.getSelectedDrawing()).toBeNull()
+  })
+
   it('keeps resize ownership in the adapter so detached-window cleanup cannot race an internal observer', async () => {
     const adapter = new LwcAdapter()
     await adapter.init(document.createElement('div'), symbol, '1m')
@@ -477,6 +539,88 @@ describe('LwcAdapter drawing preview', () => {
     expect(changed).toHaveBeenCalledTimes(1)
   })
 
+  it('creates Curve from three visible points', async () => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+
+    adapter.setDrawingTool('curve')
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 40, clientY: 220 }))
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 240, clientY: 40 }))
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 520, clientY: 120 }))
+
+    expect(adapter.getDrawings()).toEqual([expect.objectContaining({
+      type: 'curve',
+      anchors: [{ time: 40, price: 220 }, { time: 240, price: 40 }, { time: 520, price: 120 }],
+    })])
+  })
+
+  it.each(['price-range', 'date-range'] as const)('persists %s after pointer drag instead of leaving a transient Measure preview', async (tool) => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    Object.defineProperties(container, {
+      setPointerCapture: { value: vi.fn() },
+      hasPointerCapture: { value: vi.fn().mockReturnValue(true) },
+      releasePointerCapture: { value: vi.fn() },
+    })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+
+    adapter.setDrawingTool(tool)
+    container.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, buttons: 1, pointerId: 82, clientX: 80, clientY: 80 }))
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, buttons: 1, pointerId: 82, clientX: 360, clientY: 260 }))
+    container.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 82, clientX: 360, clientY: 260 }))
+
+    expect(adapter.getDrawings()).toEqual([expect.objectContaining({
+      type: tool,
+      anchors: [{ time: 80, price: 80 }, { time: 360, price: 260 }],
+    })])
+    expect(drawingMocks.managers.at(-1)?.getSelectedDrawing()).toMatchObject({ type: tool })
+  })
+
+  it.each(['price-range', 'date-range'] as const)('supports click-click placement for %s', async (tool) => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    Object.defineProperties(container, {
+      setPointerCapture: { value: vi.fn() },
+      hasPointerCapture: { value: vi.fn().mockReturnValue(true) },
+      releasePointerCapture: { value: vi.fn() },
+    })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+    adapter.setDrawingTool(tool)
+
+    const click = (pointerId: number, clientX: number, clientY: number): void => {
+      container.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, buttons: 1, pointerId, clientX, clientY }))
+      container.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId, clientX, clientY }))
+      container.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX, clientY }))
+    }
+    click(91, 80, 80)
+    click(92, 360, 260)
+
+    expect(adapter.getDrawings()).toEqual([expect.objectContaining({
+      type: tool,
+      anchors: [{ time: 80, price: 80 }, { time: 360, price: 260 }],
+    })])
+  })
+
+  it.each([
+    ['long-position', [{ time: 200, price: 200 }, { time: 200, price: 280 }, { time: 320, price: 120 }]],
+    ['short-position', [{ time: 200, price: 200 }, { time: 200, price: 120 }, { time: 320, price: 280 }]],
+  ] as const)('creates a selected %s with usable default bounds on the first click', async (tool, anchors) => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+
+    adapter.setDrawingTool(tool)
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 200, clientY: 200 }))
+
+    expect(adapter.getDrawings()).toEqual([expect.objectContaining({ type: tool, anchors })])
+    expect(drawingMocks.managers.at(-1)?.getSelectedDrawing()).toMatchObject({ type: tool, anchors })
+  })
+
   it('keeps Measure visible after pointerup until the next chart interaction without persisting it', async () => {
     const container = document.createElement('div')
     container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
@@ -647,6 +791,138 @@ describe('LwcAdapter drawing preview', () => {
     expect(adapter.getDrawings()[1].anchors).toEqual([{ time: 60, price: 100.25 }, { time: 120, price: 105.25 }])
   })
 
+  it('removes whitespace-only Text on deselection but preserves authored Text', async () => {
+    const adapter = new LwcAdapter()
+    await adapter.init(document.createElement('div'), symbol, '1m')
+    const textDrawing = (id: string, text: string): SerializedDrawing => ({
+      id,
+      type: 'text-annotation',
+      anchors: [{ time: 0 as UTCTimestamp, price: 100 }],
+      style: { lineColor: '#2962ff', lineWidth: 1, labelColor: '#2962ff' },
+      options: { workbench: { ...DEFAULT_DRAWING_METADATA, text } },
+    })
+
+    adapter.loadDrawings([textDrawing('empty-text', '   ')])
+    drawingMocks.managers.at(-1)?.selectDrawing('empty-text')
+    adapter.deselectDrawing()
+    expect(adapter.getDrawings()).toEqual([])
+
+    adapter.loadDrawings([textDrawing('authored-text', 'Breakout')])
+    drawingMocks.managers.at(-1)?.selectDrawing('authored-text')
+    adapter.deselectDrawing()
+    expect(adapter.getDrawings()).toHaveLength(1)
+  })
+
+  it('opens a focused inline editor on the first Text placement click', async () => {
+    const container = document.createElement('div')
+    document.body.append(container)
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 600 },
+      clientHeight: { configurable: true, value: 400 },
+      setPointerCapture: { value: vi.fn() },
+      hasPointerCapture: { value: vi.fn().mockReturnValue(true) },
+      releasePointerCapture: { value: vi.fn() },
+    })
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+
+    adapter.setDrawingTool('text-annotation')
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 120, clientY: 100 }))
+    await Promise.resolve()
+
+    const editor = container.querySelector<HTMLInputElement>('[aria-label="Inline text editor"]')
+    expect(editor).not.toBeNull()
+    expect(editor).toHaveValue('Add text')
+    expect(document.activeElement).toBe(editor)
+    expect([editor?.selectionStart, editor?.selectionEnd]).toEqual([0, 8])
+    editor?.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }))
+    expect(adapter.getDrawings()).toEqual([])
+
+    adapter.setDrawingTool('text-annotation')
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 180, clientY: 140 }))
+    await Promise.resolve()
+    const authoredEditor = container.querySelector<HTMLInputElement>('[aria-label="Inline text editor"]')
+    if (!authoredEditor) throw new Error('Expected the inline Text editor')
+    authoredEditor.value = 'Breakout'
+    authoredEditor.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    authoredEditor.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }))
+
+    expect(container.querySelector('[aria-label="Inline text editor"]')).toBeNull()
+    expect(adapter.getDrawings()).toHaveLength(1)
+    expect(adapter.getDrawings()[0].options).toMatchObject({ text: 'Breakout', workbench: expect.objectContaining({ text: 'Breakout' }) })
+    adapter.destroy()
+    container.remove()
+  })
+
+  it('opens inline editors for two-point Note and one-point Comment placement', async () => {
+    const container = document.createElement('div')
+    document.body.append(container)
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 600 },
+      clientHeight: { configurable: true, value: 400 },
+      setPointerCapture: { value: vi.fn() },
+      hasPointerCapture: { value: vi.fn().mockReturnValue(true) },
+      releasePointerCapture: { value: vi.fn() },
+    })
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+
+    adapter.setDrawingTool('note')
+    container.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, buttons: 1, pointerId: 51, clientX: 80, clientY: 180 }))
+    container.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, buttons: 1, pointerId: 51, clientX: 220, clientY: 90 }))
+    container.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 51, clientX: 220, clientY: 90 }))
+    await Promise.resolve()
+    const noteEditor = container.querySelector<HTMLInputElement>('[aria-label="Inline Note editor"]')
+    expect(noteEditor).toHaveValue('Add text')
+    if (!noteEditor) throw new Error('Expected Note editor')
+    noteEditor.value = 'Plan entry'
+    noteEditor.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    noteEditor.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }))
+    await new Promise((resolve) => window.setTimeout(resolve, 0))
+    expect(adapter.getDrawings()[0]).toMatchObject({
+      type: 'note',
+      anchors: [{ time: 80, price: 180 }, { time: 220, price: 90 }],
+      options: { text: 'Plan entry', workbench: expect.objectContaining({ text: 'Plan entry' }) },
+    })
+
+    adapter.setDrawingTool('comment')
+    container.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 320, clientY: 210 }))
+    await Promise.resolve()
+    expect(container.querySelector('[aria-label="Inline Comment editor"]')).toHaveValue('Add text')
+
+    adapter.destroy()
+    container.remove()
+  })
+
+  it('toggles Text between chart coordinates and a fixed pane anchor', async () => {
+    const container = document.createElement('div')
+    Object.defineProperties(container, {
+      clientWidth: { configurable: true, value: 600 },
+      clientHeight: { configurable: true, value: 400 },
+    })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+    adapter.loadDrawings([{
+      id: 'text-anchor', type: 'text-annotation', anchors: [{ time: 120 as UTCTimestamp, price: 100 }],
+      style: { lineColor: '#2962ff', lineWidth: 1, labelColor: '#2962ff' },
+      options: { workbench: { ...DEFAULT_DRAWING_METADATA, text: 'Pinned' } },
+    }])
+    drawingMocks.managers.at(-1)?.selectDrawing('text-anchor')
+
+    adapter.updateSelectedDrawing({ textAnchored: true })
+    expect(adapter.getDrawings()[0].options).toMatchObject({
+      screenAnchored: true,
+      screenXRatio: 0.2,
+      screenYRatio: 0.25,
+      workbench: expect.objectContaining({ textAnchored: true, textAnchorX: 0.2, textAnchorY: 0.25 }),
+    })
+
+    adapter.updateSelectedDrawing({ textAnchored: false })
+    expect(adapter.getDrawings()[0].options).toMatchObject({ screenAnchored: false })
+  })
+
   it('supports TradingView chart pan, zoom, scale modes, snapshots and temporary drawing visibility', async () => {
     const adapter = new LwcAdapter()
     await adapter.init(document.createElement('div'), symbol, '1m')
@@ -745,7 +1021,7 @@ describe('LwcAdapter drawing preview', () => {
     expect(adapter.getDrawings()[0].options).toMatchObject({ locked: false })
   })
 
-  it('locks only the selected drawing and clears its selection', async () => {
+  it('toggles the selected drawing lock without clearing its selection', async () => {
     const adapter = new LwcAdapter()
     await adapter.init(document.createElement('div'), symbol, '1m')
     adapter.loadDrawings([
@@ -764,7 +1040,74 @@ describe('LwcAdapter drawing preview', () => {
 
     expect(adapter.getDrawings()[0].options).toMatchObject({ locked: true })
     expect(adapter.getDrawings()[1].options).not.toHaveProperty('locked')
-    expect(drawingMocks.managers.at(-1)?.selected).toBeNull()
+    expect(drawingMocks.managers.at(-1)?.selected?.id).toBe('line-1')
+
+    adapter.lockSelectedDrawing()
+
+    expect(adapter.getDrawings()[0].options).toMatchObject({ locked: false })
+    expect(drawingMocks.managers.at(-1)?.selected?.id).toBe('line-1')
+  })
+
+  it('absorbs pointer gestures on a locked drawing without deselecting or moving it', async () => {
+    const container = document.createElement('div')
+    container.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON: () => ({}) })
+    const adapter = new LwcAdapter()
+    await adapter.init(container, symbol, '1m')
+    adapter.loadDrawings([{
+      id: 'locked-line', type: 'trend-line', anchors: [{ time: 0 as UTCTimestamp, price: 100 }, { time: 60 as UTCTimestamp, price: 105 }],
+      style: { lineColor: '#2962ff', lineWidth: 2 }, options: {},
+    }])
+    const manager = drawingMocks.managers.at(-1)
+    manager?.selectDrawing('locked-line')
+    manager!.hitDrawing = manager!.drawings[0]
+    adapter.lockSelectedDrawing()
+    const anchors = structuredClone(adapter.getDrawings()[0].anchors)
+
+    const pointerDown = new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, pointerId: 71, clientX: 30, clientY: 100,
+    })
+    container.dispatchEvent(pointerDown)
+    container.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, cancelable: true, buttons: 1, pointerId: 71, clientX: 130, clientY: 40,
+    }))
+    container.dispatchEvent(new PointerEvent('pointerup', {
+      bubbles: true, cancelable: true, pointerId: 71, clientX: 130, clientY: 40,
+    }))
+
+    expect(pointerDown.defaultPrevented).toBe(true)
+    expect(manager?.getSelectedDrawing()?.id).toBe('locked-line')
+    expect(adapter.getDrawings()[0].anchors).toEqual(anchors)
+  })
+
+  it('updates selected line coordinates and timeframe visibility from properties', async () => {
+    const adapter = new LwcAdapter()
+    await adapter.init(document.createElement('div'), symbol, '1m')
+    adapter.setHistory([
+      { time: 0, open: 100, high: 101, low: 99, close: 100, volume: 1 },
+      { time: 60, open: 100, high: 102, low: 99, close: 101, volume: 1 },
+      { time: 120, open: 101, high: 103, low: 100, close: 102, volume: 1 },
+    ])
+    adapter.loadDrawings([{
+      id: 'line-1', type: 'trend-line', anchors: [{ time: 0 as UTCTimestamp, price: 100 }, { time: 60 as UTCTimestamp, price: 105 }],
+      style: { lineColor: '#2962ff', lineWidth: 2 }, options: {},
+    }])
+    drawingMocks.managers.at(-1)?.selectDrawing('line-1')
+
+    adapter.updateSelectedDrawing({
+      coordinates: [{ price: 101.25, bar: 1 }, { price: 106.5, bar: 2 }],
+      visibility: {
+        ...DEFAULT_DRAWING_METADATA.visibility,
+        minutes: { enabled: false, min: 1, max: 59 },
+      },
+    })
+
+    expect(adapter.getDrawings()[0].anchors).toEqual([{ time: 60, price: 101.25 }, { time: 120, price: 106.5 }])
+    expect(adapter.getDrawings()[0].options).toMatchObject({ visible: false })
+
+    adapter.updateSelectedDrawing({
+      visibility: DEFAULT_DRAWING_METADATA.visibility,
+    })
+    expect(adapter.getDrawings()[0].options).toMatchObject({ visible: true })
   })
 
   it('preserves hidden and locked drawing controls configured before initialization', async () => {

@@ -14,6 +14,8 @@ const (
 	maxMonteCarloSimulations         = 1000
 	maxMonteCarloTradesPerSimulation = 5000
 	maxMonteCarloTotalTrades         = 250_000
+	// Keep the JSON seed exactly representable in JavaScript Number.
+	maxMonteCarloSeed int64 = 1<<53 - 1
 )
 
 type monteCarloRequestBody struct {
@@ -84,6 +86,10 @@ func (s *Server) handleSimulationMonteCarlo(w http.ResponseWriter, r *http.Reque
 		writeError(w, fmt.Errorf("%w: winRatePercent must be between 0 and 100", errBadRequest))
 		return
 	}
+	if body.Seed != nil && (*body.Seed <= 0 || *body.Seed > maxMonteCarloSeed) {
+		writeError(w, fmt.Errorf("%w: seed must be between 1 and %d", errBadRequest, maxMonteCarloSeed))
+		return
+	}
 
 	seed := int64(0)
 	if body.Seed != nil {
@@ -131,5 +137,9 @@ func randomSeed() int64 {
 		// rather than failing a simulation over an unrelated OS issue.
 		return 1
 	}
-	return int64(binary.BigEndian.Uint64(buf[:]))
+	seed := int64(binary.BigEndian.Uint64(buf[:]) & uint64(maxMonteCarloSeed))
+	if seed == 0 {
+		return 1
+	}
+	return seed
 }

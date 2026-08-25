@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BarFrame } from '../api/binary-frame'
 import type { ClosedTrade, IndicatorRunResult, ReplaySession, SymbolMeta } from '../api/types'
 import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, OrderLine, OrderLineAction, ReplaySelectionState, TradeMarker, ViewportDemand } from './chart-adapter'
@@ -6,7 +6,7 @@ import { aggregateRange } from './aggregate'
 import { DEFAULT_CHART_PANE_SETTINGS } from './chart-settings-store'
 import { HoverBarStore } from './hover-bar-store'
 import { ReplayEngine } from './replay-engine'
-import { EVAL_PRESETS } from '../eval/rules'
+import { EVAL_PRESETS, shortEvalAccountHash } from '../eval/rules'
 import { getEvalState, loadEvalAccounts, useEvalStore } from '../store/eval-store'
 import type { ViewportDataClient } from './viewport-data'
 import { createLayoutPreset } from '../chart-workspace/layout-presets'
@@ -78,6 +78,7 @@ function adapter(drawings: object[] = []) {
   const setTradeConnections = vi.fn()
   const setOrderLines = vi.fn()
   const setDrawingTool = vi.fn()
+  const setCursorMode = vi.fn()
   const focusTime = vi.fn()
   const visibleRange = vi.fn().mockReturnValue({ from: 0, to: 0 })
   const setViewportSync = vi.fn()
@@ -101,7 +102,7 @@ function adapter(drawings: object[] = []) {
     onOrderLineMove: vi.fn((handler: typeof orderMove) => { orderMove = handler }),
     onOrderLineDragStart: vi.fn((handler: typeof orderDragStart) => { orderDragStart = handler }),
     onOrderLineAction: vi.fn((handler: typeof orderAction) => { orderAction = handler }),
-    onChartOrder: vi.fn((handler: typeof chartOrder) => { chartOrder = handler }), drawingTools: vi.fn().mockReturnValue([]), setDrawingTool, deselectDrawing: vi.fn(),
+    onChartOrder: vi.fn((handler: typeof chartOrder) => { chartOrder = handler }), drawingTools: vi.fn().mockReturnValue([]), setCursorMode, setDrawingTool, deselectDrawing: vi.fn(),
     deleteSelectedDrawing: vi.fn(), lockSelectedDrawing: vi.fn(), deleteAllDrawings: vi.fn(), updateSelectedDrawing: vi.fn(), setNextDrawingAppearance: vi.fn(),
     copySelectedDrawing: vi.fn().mockReturnValue(null), pasteDrawing: vi.fn(), undoDrawing: vi.fn().mockReturnValue(false), redoDrawing: vi.fn().mockReturnValue(false),
     nudgeSelectedDrawing: vi.fn().mockReturnValue(false), toggleDrawingsVisibility: vi.fn(), setDrawingsHidden: vi.fn(), setAllDrawingsLocked: vi.fn(), setKeepDrawing: vi.fn(), drawingCount: vi.fn().mockReturnValue(drawings.length),
@@ -110,7 +111,7 @@ function adapter(drawings: object[] = []) {
     focusTime, panView: vi.fn(), zoomView: vi.fn(), toggleInvertScale: vi.fn(), togglePriceScaleMode: vi.fn(), takeSnapshot: vi.fn(), resetView,
   }
   return {
-    value: value as ChartAdapter, init, setSymbol, setHistory, pushBars, loadDrawings, setTradeMarkers, setTradeConnections, setIndicators, setOrderLines, setDrawingTool, setReplaySelection, focusTime, visibleRange, setViewportSync, resetView,
+    value: value as ChartAdapter, init, setSymbol, setHistory, pushBars, loadDrawings, setTradeMarkers, setTradeConnections, setIndicators, setOrderLines, setCursorMode, setDrawingTool, setReplaySelection, focusTime, visibleRange, setViewportSync, resetView,
     fireDrawingChanged: (drawingId?: string) => drawingChanged(drawingId),
     fireViewportDemand: (demand: ViewportDemand) => viewportDemand(demand),
     fireCrosshairSync: (state: ChartCrosshairSync | null) => crosshairSync(state),
@@ -147,6 +148,27 @@ beforeEach(() => {
 })
 
 describe('ReplayEngine multi-view invariant', () => {
+  it('keeps the selected cursor mode synchronized across existing and newly registered panes', async () => {
+    const engine = new ReplayEngine()
+    const first = adapter()
+    const second = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), first.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-b', document.createElement('div'), second.value, '5m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    first.setCursorMode.mockClear()
+    second.setCursorMode.mockClear()
+
+    engine.setCursorMode('demonstration')
+
+    expect(first.setCursorMode).toHaveBeenLastCalledWith('demonstration')
+    expect(second.setCursorMode).toHaveBeenLastCalledWith('demonstration')
+    expect(engine.getSnapshot().cursorMode).toBe('demonstration')
+
+    const added = adapter()
+    await engine.registerChartView('pane-c', document.createElement('div'), added.value, '15m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    expect(added.setCursorMode).toHaveBeenLastCalledWith('demonstration')
+    engine.destroy()
+  })
+
   it('runs an added indicator against every registered chart view', async () => {
     const engine = new ReplayEngine()
     const first = adapter()
@@ -691,7 +713,7 @@ describe('ReplayEngine multi-view invariant', () => {
     const resumedView = adapter()
     await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     await resumedEngine.resumeSession({
-      id: 'session-1', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
+      id: 'session-1', name: '', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
       equityCents: 1_000_000, status: 'paused', kind: 'replay', config: null, createdAt: 60, updatedAt: 240,
     })
 
@@ -743,7 +765,7 @@ describe('ReplayEngine multi-view invariant', () => {
     const resumedView = adapter()
     await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     await resumedEngine.resumeSession({
-      id: 'session-1', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
+      id: 'session-1', name: '', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
       equityCents: 1_000_000, status: 'paused', kind: 'replay', config: null, createdAt: 60, updatedAt: 240,
     })
 
@@ -776,7 +798,7 @@ describe('ReplayEngine multi-view invariant', () => {
     const resumedView = adapter()
     await resumedEngine.registerChartView('pane-a', document.createElement('div'), resumedView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     await resumedEngine.resumeSession({
-      id: 'session-1', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
+      id: 'session-1', name: '', symbol: 'NQ', tf: '1m', startTs: 60, cursorTs: 240,
       equityCents: 1_000_000, status: 'paused', kind: 'replay', config: null, createdAt: 60, updatedAt: 240,
     })
 
@@ -798,7 +820,7 @@ describe('ReplayEngine multi-view invariant', () => {
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     await engine.syncEvaluationSession()
     expect(engineMocks.createSession).toHaveBeenCalledOnce()
-    expect(engineMocks.createSession).toHaveBeenCalledWith('NQ', '1m', 60, { kind: 'eval', initialBalanceCents: 10_000_000 })
+    expect(engineMocks.createSession).toHaveBeenCalledWith('NQ', '1m', 60, { kind: 'eval', initialBalanceCents: 10_000_000, name: `#${shortEvalAccountHash(accountId)}` })
     engine.placeMarket('buy')
     view.fireOrderAction({ type: 'confirm' })
     engine.stepForward()
@@ -939,7 +961,7 @@ describe('ReplayEngine multi-view invariant', () => {
     const view = adapter()
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     const session: ReplaySession = {
-      id: 'saved-session', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
+      id: 'saved-session', name: '', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
       equityCents: 1_000_000, status: 'paused', kind: 'replay', config: {}, createdAt: 0, updatedAt: 240,
     }
     const trade: ClosedTrade = {
@@ -964,7 +986,7 @@ describe('ReplayEngine multi-view invariant', () => {
     const view = adapter()
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     const session: ReplaySession = {
-      id: 'signed-marker-session', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
+      id: 'signed-marker-session', name: '', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
       equityCents: 1_000_000, status: 'paused', kind: 'replay', config: {}, createdAt: 0, updatedAt: 240,
     }
     const trade: ClosedTrade = {
@@ -1007,7 +1029,7 @@ describe('ReplayEngine multi-view invariant', () => {
     const view = adapter()
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     const session: ReplaySession = {
-      id: 'history-replay-session', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
+      id: 'history-replay-session', name: '', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 240,
       equityCents: 1_000_000, status: 'paused', kind: 'replay', config: {}, createdAt: 0, updatedAt: 240,
     }
     const trade: ClosedTrade = {
@@ -1054,7 +1076,7 @@ describe('ReplayEngine multi-view invariant', () => {
     const view = adapter()
     await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
     const session: ReplaySession = {
-      id: 'empty-session', symbol: 'NQ', tf: '1m', startTs: 150, cursorTs: 300,
+      id: 'empty-session', name: '', symbol: 'NQ', tf: '1m', startTs: 150, cursorTs: 300,
       equityCents: 1_000_000, status: 'paused', kind: 'replay', config: {}, createdAt: 150, updatedAt: 300,
     }
     engineMocks.fetchCalendar.mockResolvedValueOnce([
@@ -1086,7 +1108,9 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot()).toMatchObject({ cursorTs: 240, replayMode: 'active', replayStartTs: 150 })
     expect(view.focusTime).toHaveBeenCalledWith(240)
     expect(engineMocks.createSession).toHaveBeenCalledOnce()
-    expect(engineMocks.createSession).toHaveBeenCalledWith('NQ', '1m', 150, { kind: 'eval', initialBalanceCents: 10_000_000 })
+    const accountId = getEvalState().accountId
+    if (!accountId) throw new Error('Evaluation fixture did not create an account')
+    expect(engineMocks.createSession).toHaveBeenCalledWith('NQ', '1m', 150, { kind: 'eval', initialBalanceCents: 10_000_000, name: `#${shortEvalAccountHash(accountId)}` })
     expect(engine.getSnapshot()).toMatchObject({ sessionId: 'session-1', sessionStatus: 'active' })
     expect(getEvalState().sessionId).toBe('session-1')
     engine.destroy()
@@ -1692,6 +1716,139 @@ describe('ReplayEngine multi-view invariant', () => {
     pending[0]?.resolve({ bars: displayBars, hasMore: false })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(view.setHistory).toHaveBeenCalledTimes(1)
+    engine.destroy()
+  })
+})
+
+describe('ReplayEngine indicator playback cadence', () => {
+  /**
+   * Brings up a pane with an active replay session and one visible indicator,
+   * on real timers, and leaves the caller free to switch to fake ones.
+   */
+  async function playableEngineWithIndicator() {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    engine.beginReplaySelection()
+    // Not bar 0: refreshIndicatorGroup treats cursorTs <= 0 as "nothing to
+    // compute yet" and would never issue a run.
+    view.fireReplayBarSelect(120)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+    await vi.waitFor(() => expect(engine.getSnapshot().cursorTs).toBeGreaterThan(0))
+    engine.addIndicator({ id: 'cursor-study', name: 'Cursor Study', version: 1, meta: { onMainPanel: true }, inputs: [] })
+    await vi.waitFor(() => expect(engineMocks.runIndicator).toHaveBeenCalled())
+    // addIndicator's own run is a foreground one; let it settle so the tests
+    // start from a quiet spinner and an empty controller map.
+    await vi.waitFor(() => expect(engine.getSnapshot().indicatorLoading).toBe(false))
+    return { engine, view }
+  }
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it('recomputes indicators while playing instead of waiting for the replay to stop', async () => {
+    const { engine } = await playableEngineWithIndicator()
+
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    engineMocks.runIndicator.mockClear()
+    engine.play()
+    await vi.advanceTimersByTimeAsync(1_600)
+
+    // Three intervals' worth of wall clock. Before this existed the 1s
+    // trailing debounce was reset by every advance() and never fired at all,
+    // so any repeat call at all is the regression this guards.
+    expect(engineMocks.runIndicator.mock.calls.length).toBeGreaterThanOrEqual(2)
+    engine.destroy()
+  })
+
+  it('skips a playback tick rather than aborting a run that has not finished', async () => {
+    const { engine } = await playableEngineWithIndicator()
+    // A run that never settles is the pathological case: refreshIndicatorGroup
+    // aborts the outstanding controller on entry, so a ticker that restarted
+    // instead of skipping would cancel and relaunch forever and no run would
+    // ever complete.
+    const signals: AbortSignal[] = []
+    engineMocks.runIndicator.mockImplementation((...args: unknown[]) => {
+      signals.push(args[5] as AbortSignal)
+      return new Promise<IndicatorRunResult>(() => undefined)
+    })
+
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    engineMocks.runIndicator.mockClear()
+    signals.length = 0
+    engine.play()
+    await vi.advanceTimersByTimeAsync(600)
+    const afterFirstTick = engineMocks.runIndicator.mock.calls.length
+    expect(afterFirstTick).toBeGreaterThanOrEqual(1)
+
+    await vi.advanceTimersByTimeAsync(2_500)
+
+    expect(engineMocks.runIndicator.mock.calls.length).toBe(afterFirstTick)
+    expect(signals.every((signal) => !signal.aborted)).toBe(true)
+    engine.destroy()
+  })
+
+  it('does not blink the legend spinner for a background refresh', async () => {
+    const { engine } = await playableEngineWithIndicator()
+    expect(engine.getSnapshot().indicatorLoading).toBe(false)
+
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    engine.play()
+    await vi.advanceTimersByTimeAsync(600)
+    expect(engine.getSnapshot().indicatorLoading).toBe(false)
+    await vi.advanceTimersByTimeAsync(1_200)
+    expect(engine.getSnapshot().indicatorLoading).toBe(false)
+    engine.destroy()
+  })
+
+  it('still shows the spinner for a user-initiated recalculate', async () => {
+    const { engine } = await playableEngineWithIndicator()
+    let resolveRun: (result: IndicatorRunResult) => void = () => undefined
+    engineMocks.runIndicator.mockImplementationOnce(() => new Promise<IndicatorRunResult>((resolve) => { resolveRun = resolve }))
+
+    engine.refreshIndicator('cursor-study')
+
+    await vi.waitFor(() => expect(engine.getSnapshot().indicatorLoading).toBe(true))
+    resolveRun({ draws: [], plots: [] })
+    await vi.waitFor(() => expect(engine.getSnapshot().indicatorLoading).toBe(false))
+    engine.destroy()
+  })
+
+  it('stops the playback refresh once paused', async () => {
+    const { engine } = await playableEngineWithIndicator()
+
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    engine.play()
+    await vi.advanceTimersByTimeAsync(600)
+    engine.pause()
+    // Let pause()'s own immediate refresh drain before counting.
+    await vi.advanceTimersByTimeAsync(100)
+    engineMocks.runIndicator.mockClear()
+
+    await vi.advanceTimersByTimeAsync(3_000)
+
+    expect(engineMocks.runIndicator).not.toHaveBeenCalled()
+    engine.destroy()
+  })
+
+  it('aborts an in-flight background run when the user pauses', async () => {
+    const { engine } = await playableEngineWithIndicator()
+    const signals: AbortSignal[] = []
+    engineMocks.runIndicator.mockImplementation((...args: unknown[]) => {
+      signals.push(args[5] as AbortSignal)
+      return new Promise<IndicatorRunResult>(() => undefined)
+    })
+
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    signals.length = 0
+    engine.play()
+    await vi.advanceTimersByTimeAsync(600)
+    expect(signals.length).toBeGreaterThanOrEqual(1)
+    const background = signals[0]
+
+    engine.pause()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(background.aborted).toBe(true)
     engine.destroy()
   })
 })

@@ -106,13 +106,15 @@ func openDataset(binPath string, meta model.SymbolMeta, symbol, tf string) loade
 			return out
 		}
 	}
+	plan, err := planFor(tf, meta)
+	if err != nil {
+		file.Close()
+		out.err = err
+		return out
+	}
 	// Indexed before the file reaches a slot, so no reader can observe a
 	// partially built index.
-	if rejected := file.attachCalendarRollup(out.cal); rejected != "" {
-		out.warning = fmt.Sprintf("%s/%s: %s has no usable session index (%s); daily, weekly and monthly aggregation will scan raw bars instead",
-			symbol, tf, filepath.Base(out.idxPath), rejected)
-	}
-	if err := file.attachRTHRollups(meta); err != nil {
+	if err := out.index(file, plan, meta); err != nil {
 		file.Close()
 		out.err = err
 		return out
@@ -123,26 +125,95 @@ func openDataset(binPath string, meta model.SymbolMeta, symbol, tf string) loade
 		return out
 	}
 	if err := discardMappedPages(file); err != nil {
-		warning := fmt.Sprintf("could not release mmap pages after indexing: %v", err)
-		if out.warning == "" {
-			out.warning = fmt.Sprintf("%s/%s: %s", symbol, tf, warning)
-		} else {
-			out.warning += "; " + warning
-		}
+		out.note("could not release mmap pages after indexing: %v", err)
 	}
 	out.file = file
 	return out
+}
+
+// index brings file to the state a published slot needs: timestamps
+// validated, rollups either restored from the .roll cache or built and then
+// written to it, and the companion calendar's ranges checked.
+func (l *loaded) index(file *BarFile, plan indexPlan, meta model.SymbolMeta) error {
+	// Pass one reads the ts column and nothing else. It is the fail-fast
+	// validation that has to run on every boot either way, and its hash is
+	// what decides whether cached rollups still describe these exact bars —
+	// so a cache hit never touches the five price/volume columns at all.
+	tsHash, err := file.index(indexPlan{})
+	if err != nil {
+		return fmt.Errorf("bars: %s: %w", l.binPath, err)
+	}
+	if !plan.rollups {
+		l.attachCalendar(file, plan)
+		return nil
+	}
+
+	fingerprint, err := newRollFingerprint(l.binPath, l.idxPath, file.Count(), tsHash, meta.SessionTz)
+	if err != nil {
+		return err
+	}
+	cachePath := rollupCachePath(l.binPath)
+	cached, reason := loadRollupCache(cachePath, fingerprint, file.Count(), l.sessionCount())
+	if cached != nil {
+		file.rollups = cached
+		// The daily index came with the cache; the calendar still needs its
+		// ranges verified, because Calendar.Range binary-searches on that.
+		restored := plan
+		restored.rollups = false
+		l.attachCalendar(file, restored)
+		return nil
+	}
+	if reason != "" {
+		l.note("rebuilding the rollup index: %s", reason)
+	}
+	if _, err := file.index(plan); err != nil {
+		return fmt.Errorf("bars: %s: %w", l.binPath, err)
+	}
+	l.attachCalendar(file, plan)
+	if reason := storeRollupCache(cachePath, fingerprint, file.rollups); reason != "" {
+		l.note("rollup index not cached, so the next restart rebuilds it: %s", reason)
+	}
+	return nil
+}
+
+func (l *loaded) attachCalendar(file *BarFile, plan indexPlan) {
+	if rejected := file.attachCalendarRollup(l.cal, plan); rejected != "" {
+		l.note("%s has no usable session index (%s); daily, weekly and monthly aggregation will scan raw bars instead",
+			filepath.Base(l.idxPath), rejected)
+	}
+}
+
+func (l *loaded) sessionCount() int {
+	if l.cal == nil {
+		return 0
+	}
+	return len(l.cal.dates)
+}
+
+// note records a non-fatal data-integrity problem against this dataset.
+// Several can surface from one open, so they accumulate rather than
+// overwriting each other.
+func (l *loaded) note(format string, args ...any) {
+	entry := fmt.Sprintf("%s/%s: %s", l.symbol, l.tf, fmt.Sprintf(format, args...))
+	if l.warning == "" {
+		l.warning = entry
+		return
+	}
+	l.warning += "; " + entry
 }
 
 // openDatasets opens every path concurrently and returns the results in the
 // same order, so behaviour never depends on which file happened to finish
 // first.
 //
-// Concurrent because the expensive part — building the hourly index — is a
-// full pass over the file and nothing else: measured on this dataset, 174 ms
-// of a 219 ms startup, split 98/75 between two symbols that share no state.
-// Serially that cost grows with every symbol added; in parallel it grows with
-// the largest one.
+// Concurrent because the expensive part — index()'s pass over the file — is a
+// full read and nothing else, sharing no state between datasets. Serially that
+// cost grows with every symbol added; in parallel it grows with the largest
+// one, until it stops being CPU-bound at all and becomes a question of how
+// many bytes the pass has to read. Which is why the two things that actually
+// moved startup were reading fewer bytes, not reading them faster: skipping
+// the indexes a sub-minute dataset can never serve, and reusing a previous
+// run's via the .roll cache.
 func openDatasets(paths []string, symbols []model.SymbolMeta) []loaded {
 	results := make([]loaded, len(paths))
 	// Bounded so a directory with dozens of datasets cannot put every one of

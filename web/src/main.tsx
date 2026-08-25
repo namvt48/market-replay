@@ -20,6 +20,12 @@ const { default: App } = await loadDuringHydration(
   () => import('./App.tsx'),
 )
 
+// App is preloaded in parallel with preference hydration. Rehydrate the
+// review store once the remote preference has landed so seeded journals and
+// tags are visible on the very first analytics/review render.
+const { useReviewStore } = await import('./store/review-store')
+await useReviewStore.persist.rehydrate()
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

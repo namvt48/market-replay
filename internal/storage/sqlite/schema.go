@@ -10,6 +10,7 @@ PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS sessions (
 	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL DEFAULT '',
 	symbol TEXT NOT NULL,
 	tf TEXT NOT NULL,
 	start_ts INTEGER NOT NULL,

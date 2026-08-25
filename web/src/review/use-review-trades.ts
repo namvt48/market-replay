@@ -75,17 +75,18 @@ export function useReviewTrades(): ReviewTradesState {
   }))
   const evaluation = useEvalSession((state) => ({
     accountId: state.accountId,
+    sessionId: state.sessionId,
     phase: state.phase,
     config: state.config,
     trades: state.trades,
   }))
   const fallbackSource = useMemo<ReviewSource | null>(() => {
     if (evaluation.accountId && evaluation.phase === 'running') {
-      return { id: evaluation.accountId, type: 'evaluation', title: evaluation.config ? evalAccountName(evaluation.config) : 'Evaluation account' }
+      return { id: evaluation.sessionId ?? evaluation.accountId, type: 'evaluation', title: evaluation.config ? evalAccountName(evaluation.config) : 'Evaluation account' }
     }
     if (replay.sessionId && replay.sessionStatus === 'active') return { id: replay.sessionId, type: 'session', title: replay.symbol }
     return null
-  }, [evaluation.accountId, evaluation.config, evaluation.phase, replay.sessionId, replay.sessionStatus, replay.symbol])
+  }, [evaluation.accountId, evaluation.config, evaluation.phase, evaluation.sessionId, replay.sessionId, replay.sessionStatus, replay.symbol])
   const source = selectedSource ?? fallbackSource
   const [remote, setRemote] = useState<{ key: string; trades: ReviewTrade[]; error: string | null } | null>(null)
   const sourceKey = source ? `${source.type}:${source.id}` : ''
@@ -94,11 +95,13 @@ export function useReviewTrades(): ReviewTradesState {
     if (!source) return []
     if (source.type === 'session' && source.id === replay.sessionId) return replay.trades.map((trade) => fromEngineTrade(source, trade))
     if (source.type === 'evaluation') {
-      const records = source.id === evaluation.accountId ? evaluation.trades : loadEvalAccounts().find((account) => account.accountId === source.id)?.trades
+      const records = source.id === evaluation.accountId || source.id === evaluation.sessionId
+        ? evaluation.trades
+        : loadEvalAccounts().find((account) => account.accountId === source.id || account.sessionId === source.id)?.trades
       return (records ?? []).map((trade, index) => fromEvalTrade(source, trade, index))
     }
     return null
-  }, [evaluation.accountId, evaluation.trades, replay.sessionId, replay.trades, source])
+  }, [evaluation.accountId, evaluation.sessionId, evaluation.trades, replay.sessionId, replay.trades, source])
 
   useEffect(() => {
     if (!source || immediate !== null) return

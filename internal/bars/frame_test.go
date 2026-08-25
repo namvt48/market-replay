@@ -7,9 +7,9 @@ import (
 )
 
 func TestWriteFrame_RoundTrip(t *testing.T) {
-	f, err := newBarFile(simpleFixture(10, 1000, 60))
+	f, err := newUTCIndexedBarFile(simpleFixture(10, 1000, 60))
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 
 	win := Window{From: 2, To: 7}
@@ -18,9 +18,9 @@ func TestWriteFrame_RoundTrip(t *testing.T) {
 		t.Fatalf("WriteFrame: %v", err)
 	}
 
-	got, err := newBarFile(rec.Body.Bytes())
+	got, err := newUTCIndexedBarFile(rec.Body.Bytes())
 	if err != nil {
-		t.Fatalf("newBarFile(round-trip): %v", err)
+		t.Fatalf("newUTCIndexedBarFile(round-trip): %v", err)
 	}
 	if got.Count() != win.Len() {
 		t.Fatalf("Count() = %d, want %d", got.Count(), win.Len())
@@ -43,9 +43,9 @@ func TestWriteFrame_RoundTrip(t *testing.T) {
 }
 
 func TestWriteFrameJSON(t *testing.T) {
-	f, err := newBarFile(simpleFixture(3, 1000, 60))
+	f, err := newUTCIndexedBarFile(simpleFixture(3, 1000, 60))
 	if err != nil {
-		t.Fatalf("newBarFile: %v", err)
+		t.Fatalf("newUTCIndexedBarFile: %v", err)
 	}
 	rec := httptest.NewRecorder()
 	if err := WriteFrameJSON(rec, f, Window{From: 0, To: 3}); err != nil {

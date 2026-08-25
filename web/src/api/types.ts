@@ -83,6 +83,7 @@ export interface ChartBarTicks {
 
 export interface ReplaySession {
   id: string
+  name: string
   symbol: string
   tf: Timeframe
   startTs: number

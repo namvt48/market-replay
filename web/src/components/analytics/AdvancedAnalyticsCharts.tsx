@@ -1,4 +1,5 @@
 import { useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 export interface DrawdownPoint {
   date: string
@@ -36,7 +37,7 @@ const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD
 const compactMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 })
 
 function Inspector({ children, className, inspect }: InspectorProps) {
-  const [tooltip, setTooltip] = useState<(TooltipData & { x: number; y: number }) | null>(null)
+  const [tooltip, setTooltip] = useState<(TooltipData & { x: number; y: number; placement: 'above' | 'below' }) | null>(null)
 
   const showAt = (element: HTMLDivElement, clientX: number, clientY: number): void => {
     const bounds = element.getBoundingClientRect()
@@ -44,8 +45,9 @@ function Inspector({ children, className, inspect }: InspectorProps) {
     const yRatio = Math.min(1, Math.max(0, (clientY - bounds.top) / Math.max(1, bounds.height)))
     setTooltip({
       ...inspect(xRatio, yRatio),
-      x: Math.min(88, Math.max(12, xRatio * 100)),
-      y: Math.min(88, Math.max(18, yRatio * 100)),
+      x: Math.min(window.innerWidth - 120, Math.max(120, clientX)),
+      y: clientY,
+      placement: clientY < 180 ? 'below' : 'above',
     })
   }
 
@@ -67,11 +69,11 @@ function Inspector({ children, className, inspect }: InspectorProps) {
       onPointerLeave={() => setTooltip(null)}
     >
       {children}
-      {tooltip ? (
+      {tooltip && typeof document !== 'undefined' ? createPortal(
         <div
           role="tooltip"
-          style={{ left: `${tooltip.x}%`, top: `${tooltip.y}%` }}
-          className="pointer-events-none absolute z-20 min-w-52 -translate-x-1/2 -translate-y-[calc(100%+12px)] rounded-md border border-[#555b64] bg-[#0b0d10] px-3 py-2.5 shadow-[0_14px_36px_rgba(0,0,0,0.56)]"
+          style={{ left: tooltip.x, top: tooltip.y }}
+          className={`pointer-events-none fixed z-[140] min-w-52 -translate-x-1/2 rounded-md border border-[#626975] bg-[#090b0e] px-3 py-2.5 shadow-[0_16px_38px_rgba(0,0,0,0.72)] ${tooltip.placement === 'above' ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}
         >
           <p className="whitespace-nowrap text-xs font-semibold leading-4 text-[#e6e9ed]">{tooltip.title}</p>
           <dl className="mt-2 space-y-1.5">
@@ -82,7 +84,7 @@ function Inspector({ children, className, inspect }: InspectorProps) {
               </div>
             ))}
           </dl>
-        </div>
+        </div>, document.body
       ) : null}
     </div>
   )
@@ -133,7 +135,6 @@ export function DrawdownChart({ points, mode }: DrawdownChartProps) {
         tabIndex={0}
         onKeyDown={handleKeyDown}
       >
-        <title>Drawdown on equity</title>
         {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
           const value = floor * ratio
           const lineY = y(value)

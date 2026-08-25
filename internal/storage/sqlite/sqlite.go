@@ -185,6 +185,7 @@ func (s *Store) migrateSessionAnalyticsColumns(ctx context.Context) error {
 		name string
 		ddl  string
 	}{
+		{name: "name", ddl: `ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''`},
 		{name: "kind", ddl: `ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'replay'`},
 		{name: "initial_balance_cents", ddl: `ALTER TABLE sessions ADD COLUMN initial_balance_cents INTEGER`},
 	}

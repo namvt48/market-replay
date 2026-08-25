@@ -79,6 +79,10 @@ describe('drawing templates', () => {
       fibonacciLevelLabels: _fibonacciLevelLabels,
       fibonacciLevelFormat: _fibonacciLevelFormat,
       fibonacciTextVisible: _fibonacciTextVisible,
+      fibonacciTrendLineColor: _fibonacciTrendLineColor,
+      fibonacciTrendLineOpacity: _fibonacciTrendLineOpacity,
+      fibonacciTrendLineWidth: _fibonacciTrendLineWidth,
+      fibonacciTrendLineStyle: _fibonacciTrendLineStyle,
       ...legacyAppearance
     } = saved.appearance
     const parsed = parseDrawingTemplates(JSON.stringify([{ ...saved, appearance: legacyAppearance }]))
@@ -96,6 +100,10 @@ describe('drawing templates', () => {
       fibonacciLevelLabels: true,
       fibonacciLevelFormat: 'values',
       fibonacciTextVisible: false,
+      fibonacciTrendLineColor: '#787b86',
+      fibonacciTrendLineOpacity: 1,
+      fibonacciTrendLineWidth: 1,
+      fibonacciTrendLineStyle: 'dashed',
     })
   })
 })

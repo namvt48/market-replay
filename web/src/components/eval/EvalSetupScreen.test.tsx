@@ -46,36 +46,14 @@ describe('EvalSetupScreen', () => {
     expect(screen.queryByRole('combobox', { name: 'Instrument' })).not.toBeInTheDocument()
   })
 
-  it('lets the trader configure or disable the consistency threshold', async () => {
+  it('uses fixed presets without exposing rule settings', async () => {
     const user = userEvent.setup()
     render(<EvalSetupScreen />)
-    const field = screen.getByRole('spinbutton', { name: 'Consistency max % (0 = none)' })
-
-    expect(field).toHaveValue(0)
     await user.click(screen.getByRole('button', { name: 'TopStep 50K (EOD trail)' }))
-    expect(field).toHaveValue(50)
-    expect(screen.getByText(/best day ≤ 50% of profit target/)).toBeVisible()
-    expect(screen.getByRole('combobox', { name: 'Consistency formula' })).toHaveValue('of-profit-target')
-
-    await user.clear(field)
-    await user.type(field, '35')
-    expect(field).toHaveValue(35)
-    expect(screen.getByText(/best day ≤ 35% of profit target/)).toBeVisible()
-  })
-
-  it('shows contract, target-lock, multi-phase, and preset payout rules', async () => {
-    const user = userEvent.setup()
-    render(<EvalSetupScreen />)
-
-    expect(screen.getByRole('spinbutton', { name: 'Verification target (0 = one phase)' })).toHaveValue(5000)
-    await user.click(screen.getByRole('button', { name: 'Apex 50K (trailing)' }))
-    expect(screen.getByRole('spinbutton', { name: 'Max position size (0 = unlimited)' })).toHaveValue(6)
-    expect(screen.getByRole('heading', { name: 'Funded payout rules' })).toBeVisible()
-    expect(screen.getByText('100% trader split')).toBeVisible()
-
-    await user.click(screen.getByRole('button', { name: 'LOCK AT PROFIT TARGET' }))
-    expect(screen.getByRole('spinbutton', { name: 'Lock margin above profit target' })).toHaveValue(2000)
-    expect(screen.getByText(/locks after target \+ \$2,000/)).toBeVisible()
+    expect(screen.getByText(/Pass at \$53,000/)).toBeVisible()
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /payout/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/verification|funded/i)).not.toBeInTheDocument()
   })
 
   describe('start date picker', () => {
@@ -140,7 +118,6 @@ describe('EvalSetupScreen', () => {
       const user = userEvent.setup()
       render(<EvalSetupScreen />)
 
-      await screen.findByText('All symbols')
       const picker = await screen.findByLabelText('Start date')
       await vi.waitFor(() => expect(picker).toHaveValue('2020-04-28'))
       await user.click(screen.getByRole('button', { name: /CREATE EVALUATION ACCOUNT/i }))
@@ -150,6 +127,9 @@ describe('EvalSetupScreen', () => {
       const registry = localStorage.getItem('replay:eval:accounts')
       expect(session).toBeTruthy()
       expect(registry).toBeTruthy()
+      const parsed = JSON.parse(session ?? '{}') as { config?: { verificationProfitTarget?: number; payout?: unknown } }
+      expect(parsed.config?.verificationProfitTarget).toBe(0)
+      expect(parsed.config?.payout).toBeUndefined()
       expect(api.putPreference).toHaveBeenCalledWith('replay:eval', session)
       expect(api.putPreference).toHaveBeenCalledWith('replay:eval:accounts', registry)
 

@@ -46,14 +46,16 @@ func buildSessionFixture(t testing.TB, sessions int, firstOpen time.Time) (*BarF
 		day = day.AddDate(0, 0, 1)
 	}
 
-	file, err := newBarFile(buildFixture(ts, open, high, low, closeCol, vol))
+	// Indexed in the same session timezone the fixture's sessions are laid
+	// out in, so the RTH indexes line up with the 09:30 opens these bars have.
+	file, err := newIndexedBarFile(buildFixture(ts, open, high, low, closeCol, vol), firstOpen.Location())
 	if err != nil {
 		t.Fatal(err)
 	}
 	calendar := &Calendar{byDate: byDate, dates: dates}
-	// Same wiring order the registry uses: newBarFile builds the hourly
-	// index, the calendar-derived daily index is attached afterwards.
-	file.attachCalendarRollup(calendar)
+	// Same wiring order the registry uses: index() builds the hourly and RTH
+	// indexes, the calendar-derived daily index is attached afterwards.
+	file.attachCalendarRollup(calendar, indexPlan{rollups: true, location: firstOpen.Location()})
 	return file, calendar
 }
 
@@ -157,9 +159,6 @@ func TestAggregateRTHChartWindowRollupMatchesScan(t *testing.T) {
 	}
 	meta := model.SymbolMeta{Kind: "future", SessionTz: "America/New_York"}
 	file, calendar := buildSessionFixture(t, 70, time.Date(2025, time.January, 5, 18, 0, 0, 0, location))
-	if err := file.attachRTHRollups(meta); err != nil {
-		t.Fatal(err)
-	}
 	scanOnly := *file
 	scanOnly.rollups = &rollups{hourly: file.rollups.hourly, daily: file.rollups.daily}
 
@@ -229,9 +228,6 @@ func TestAggregateRTHChartWindowFallsBackWhenIndexIsUnavailable(t *testing.T) {
 	}
 	meta := model.SymbolMeta{Kind: "future", SessionTz: "America/New_York"}
 	file, calendar := buildSessionFixture(t, 20, time.Date(2025, time.March, 3, 18, 0, 0, 0, location))
-	if err := file.attachRTHRollups(meta); err != nil {
-		t.Fatal(err)
-	}
 	indexed, err := AggregateChartWindowForSession(file, calendar, meta, "1w", file.TsAt(file.Count()-1), 8, 0, file.TsAt(file.Count()-1), "rth")
 	if err != nil {
 		t.Fatalf("indexed aggregation: %v", err)
@@ -256,7 +252,7 @@ func TestAggregateRTHChartWindowFallsBackWhenIndexIsUnavailable(t *testing.T) {
 // no daily index, so session timeframes keep using the raw scan (and the
 // hourly index still serves 'h').
 func TestRollupFallsBackWithoutCalendar(t *testing.T) {
-	file, err := newBarFile(simpleFixture(5_000, 1_700_000_000, 60))
+	file, err := newUTCIndexedBarFile(simpleFixture(5_000, 1_700_000_000, 60))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +277,7 @@ func TestRollupFallsBackWithoutCalendar(t *testing.T) {
 // to the raw scan (which reports ErrIdxOutOfBounds per request) instead of
 // silently serving bars sliced from the wrong offsets.
 func TestBuildDailyRollupRejectsStaleCalendar(t *testing.T) {
-	file, err := newBarFile(simpleFixture(100, 1_700_000_000, 60))
+	file, err := newUTCIndexedBarFile(simpleFixture(100, 1_700_000_000, 60))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,14 +304,20 @@ func TestBuildDailyRollupRejectsStaleCalendar(t *testing.T) {
 	}
 	for name, calendar := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, rejected := buildDailyRollup(file, calendar, file.rollups.hourly)
-			if got != nil {
-				t.Fatalf("built a daily rollup from a stale calendar: %+v", got)
+			rejected := file.attachCalendarRollup(calendar, indexPlan{rollups: true, location: time.UTC})
+			if file.rollups.daily != nil {
+				t.Fatalf("built a daily rollup from a stale calendar: %+v", file.rollups.daily)
 			}
 			// The reason has to reach the operator; a silent nil turned a
 			// stale .idx into unexplained slowness.
 			if rejected == "" {
 				t.Error("rejected a stale calendar without saying why")
+			}
+			// Range must stay on the linear scan, which is what keeps
+			// ErrIdxOutOfBounds firing per request instead of a binary search
+			// walking ranges that were never checked.
+			if calendar.ordered {
+				t.Error("stale calendar marked ordered; Range would binary-search it")
 			}
 		})
 	}
@@ -349,7 +351,7 @@ func TestDailyRollupMatchesRawAggregation(t *testing.T) {
 // depends on: the hourly index partitions the file exactly, with no gap and
 // no overlap.
 func TestHourlyRollupCoversEveryBar(t *testing.T) {
-	file, err := newBarFile(simpleFixture(3_601, 1_700_000_037, 60))
+	file, err := newUTCIndexedBarFile(simpleFixture(3_601, 1_700_000_037, 60))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,9 +422,6 @@ func BenchmarkAggregateRTHChartWindow_Monthly(b *testing.B) {
 	}
 	meta := model.SymbolMeta{Kind: "future", SessionTz: "America/New_York"}
 	file, calendar := buildSessionFixture(b, 400, time.Date(2023, time.January, 2, 18, 0, 0, 0, location))
-	if err := file.attachRTHRollups(meta); err != nil {
-		b.Fatal(err)
-	}
 	scanOnly := *file
 	scanOnly.rollups = &rollups{hourly: file.rollups.hourly, daily: file.rollups.daily}
 	lastTs := file.TsAt(file.Count() - 1)

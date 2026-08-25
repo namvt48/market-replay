@@ -15,7 +15,7 @@ import (
 func buildDailyCalendarFixture(t testing.TB, n int, startTs uint32) (*BarFile, *Calendar) {
 	t.Helper()
 	const daySeconds = 86400
-	file, err := newBarFile(simpleFixture(n, startTs, daySeconds))
+	file, err := newUTCIndexedBarFile(simpleFixture(n, startTs, daySeconds))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func BenchmarkAggregateCalendarChartWindow_Shallow(b *testing.B) {
 // for comparison — chart-bars/at's other common case.
 func BenchmarkAggregateChartWindow_MinuteTf(b *testing.B) {
 	const n = 50_000
-	file, err := newBarFile(simpleFixture(n, 1_000_000_000, 60))
+	file, err := newUTCIndexedBarFile(simpleFixture(n, 1_000_000_000, 60))
 	if err != nil {
 		b.Fatal(err)
 	}

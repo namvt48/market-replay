@@ -28,7 +28,7 @@ const modes: Array<{ id: ReviewMode; label: string; icon: typeof Crosshair }> = 
 const matrixCopy: Record<DecisionClassification, { title: string; eyebrow: string; description: string; tone: string }> = {
   goodWin: { title: 'Good win', eyebrow: 'Skill rewarded', description: 'Followed the plan and the outcome paid.', tone: 'border-profit/70 bg-profit/15 text-profit-bright' },
   goodLoss: { title: 'Good loss', eyebrow: 'Healthy variance', description: 'A valid decision that happened to lose.', tone: 'border-[#4f6f8f] bg-[#12253a] text-[#8fc5ff]' },
-  badWin: { title: 'Bad win', eyebrow: 'Luck rewarded', description: 'The outcome can hide a broken process.', tone: 'border-[#9c7b27] bg-[#2c260f] text-[#e4b740]' },
+  badWin: { title: 'Bad win', eyebrow: 'Luck rewarded', description: 'The outcome can hide a broken process.', tone: 'border-caution/70 bg-caution/15 text-caution-bright' },
   badLoss: { title: 'Bad loss', eyebrow: 'Process leak', description: 'Plan drift and a negative outcome aligned.', tone: 'border-loss/70 bg-loss/15 text-loss-bright' },
 }
 
@@ -48,9 +48,9 @@ function ScoreRail({ label, score, inverse = false }: { label: string; score: nu
   const active = Math.round(safeScore / 10)
   const favorable = inverse ? safeScore <= 25 : safeScore >= 70
   const caution = inverse ? safeScore <= 50 : safeScore >= 45
-  const color = favorable ? 'bg-profit' : caution ? 'bg-[#d09b16]' : 'bg-loss'
+  const color = favorable ? 'bg-profit' : caution ? 'bg-caution' : 'bg-loss'
   return (
-    <div tabIndex={0} title={`${label}: ${safeScore.toFixed(1)} out of 100`} className="group rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-active">
+    <div className="rounded-lg">
       <div className="mb-2 flex items-center justify-between gap-4"><span className="text-[13px] text-[#aeb5bf]">{label}</span><strong className="font-mono text-[14px] text-white tabular-nums">{safeScore.toFixed(1)}</strong></div>
       <div role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safeScore)} className="grid grid-cols-10 gap-1">
         {Array.from({ length: 10 }, (_, index) => <span key={index} className={`h-2 rounded-sm ${index < active ? color : 'bg-[#292d32]'}`} />)}
@@ -124,12 +124,12 @@ export function ExecutionDisciplineTab({ report }: ExecutionDisciplineTabProps) 
           </div>
         </section>
         <section>
-          <DecisionSectionTitle info="Counts the recorded reason that closed each trade. Hover or focus a row for the exact count and share.">Exit reason mix</DecisionSectionTitle>
+          <DecisionSectionTitle info="Counts the recorded reason that closed each trade and shows its exact share of exits.">Exit reason mix</DecisionSectionTitle>
           <DecisionPanel className="grid gap-2 p-4 sm:grid-cols-3 sm:p-5">
             {exitReasons.filter(([reason, count]) => reason !== 'unknown' || count > 0).map(([reason, count]) => {
               const share = exitTotal === 0 ? 0 : count / exitTotal * 100
               const label = reason === 'takeProfit' ? 'Take profit' : reason === 'stopLoss' ? 'Stop loss' : reason === 'unknown' ? 'Unknown' : 'Manual exit'
-              return <div key={reason} tabIndex={0} title={`${label}: ${count} trades (${share.toFixed(1)}%)`} className="rounded-lg border border-[#343940] bg-[#0e1012] p-4 outline-none transition-colors hover:border-[#555c66] focus-visible:ring-2 focus-visible:ring-active"><EvidenceHeader>{label}</EvidenceHeader><p className="mt-2 font-mono text-[24px] font-semibold text-white tabular-nums">{count}</p><p className="mt-1 font-mono text-xs text-[#929aa5]">{share.toFixed(1)}% of exits</p></div>
+              return <div key={reason} className="rounded-lg border border-[#343940] bg-[#0e1012] p-4 transition-colors hover:border-[#555c66]"><EvidenceHeader>{label}</EvidenceHeader><p className="mt-2 font-mono text-[24px] font-semibold text-white tabular-nums">{count}</p><p className="mt-1 font-mono text-xs text-[#929aa5]">{share.toFixed(1)}% of exits</p></div>
             })}
           </DecisionPanel>
         </section>
@@ -143,7 +143,7 @@ export function ExecutionDisciplineTab({ report }: ExecutionDisciplineTabProps) 
               {(Object.keys(matrixCopy) as DecisionClassification[]).map((classification) => {
                 const item = matrixCopy[classification]
                 const count = model.decision.matrix[classification]
-                return <article key={classification} tabIndex={0} title={`${item.title}: ${count} trades — ${item.description}`} className={`min-h-36 rounded-xl border p-5 outline-none transition-transform hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-active ${item.tone}`}><p className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-80">{item.eyebrow}</p><div className="mt-3 flex items-end justify-between gap-4"><h3 className="text-[18px] font-semibold text-white">{item.title}</h3><strong className="font-mono text-[30px] leading-none tabular-nums">{count}</strong></div><p className="mt-4 text-xs leading-5 text-[#b7bec7]">{item.description}</p></article>
+                return <article key={classification} className={`min-h-36 rounded-xl border p-5 transition-transform hover:-translate-y-0.5 ${item.tone}`}><p className="text-[11px] font-semibold uppercase tracking-[0.14em] opacity-80">{item.eyebrow}</p><div className="mt-3 flex items-end justify-between gap-4"><h3 className="text-[18px] font-semibold text-white">{item.title}</h3><strong className="font-mono text-[30px] leading-none tabular-nums">{count}</strong></div><p className="mt-4 text-xs leading-5 text-[#b7bec7]">{item.description}</p></article>
               })}
             </DecisionPanel>
             <DecisionPanel className="grid content-start gap-7 p-5 sm:p-6">
@@ -161,7 +161,7 @@ export function ExecutionDisciplineTab({ report }: ExecutionDisciplineTabProps) 
           <DecisionPanel className="overflow-hidden">
             <div className="grid gap-8 p-5 sm:p-7 lg:grid-cols-[.8fr_1.2fr]">
               <div className="border-b border-[#343940] pb-7 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-7">
-                <ShieldAlert size={24} className={profile.tone === 'positive' ? 'text-profit-bright' : profile.tone === 'negative' ? 'text-loss-bright' : 'text-[#e4b740]'} />
+                <ShieldAlert size={24} className={profile.tone === 'positive' ? 'text-profit-bright' : profile.tone === 'negative' ? 'text-loss-bright' : 'text-caution-bright'} />
                 <SignalBadge label={model.tilt.profile.replace('-', ' ')} tone={profile.tone} />
                 <h3 className="mt-4 text-[24px] font-semibold tracking-[-0.02em] text-white">{profile.title}</h3>
                 <p className="mt-3 text-[13px] leading-6 text-[#aeb5bf]">{profile.detail}</p>
