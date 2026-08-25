@@ -15,6 +15,7 @@ web/*.local
 /*.png
 coverage/
 web/coverage/
+web/tmp-*.mjs
 *.prof
 *.trace
 
