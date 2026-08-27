@@ -10,7 +10,7 @@ import type { EvalPhase } from '../../store/eval-store'
 import { useUiStore } from '../../store/ui-store'
 import { TradeHistoryTable } from '../trades/TradeHistoryTable'
 import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
-import { formatChartTime, type ChartTimezone } from '../../replay/chart-timezone'
+import type { ChartTimezone } from '../../replay/chart-timezone'
 import { patchSession } from '../../api/client'
 import { evaluationDisplayName } from '../../sources/source-name'
 import { SourceNameEditor } from '../sources/SourceNameEditor'
@@ -33,7 +33,6 @@ interface AccountView {
   config: EvalConfig
   runtime: EvalRuntime
   startDate: string
-  lastCursorTs: number
   status: EvalStatus
   balance: number
   equity: number
@@ -65,12 +64,12 @@ function Metric({ label, value, tone = 'text-ink' }: { label: string; value: str
   )
 }
 
-type ProgressTone = 'accent' | 'profit' | 'loss'
+type ProgressTone = 'accent' | 'profit' | 'loss' | 'caution'
 
 function ProgressLine({ label, value, pct, tone = 'accent' }: { label: string; value: string; pct: number; tone?: ProgressTone }) {
   const progress = Math.max(0, Math.min(100, pct * 100))
   const width = `${progress}%`
-  const fill = tone === 'profit' ? 'bg-profit' : tone === 'loss' ? 'bg-loss' : 'bg-active'
+  const fill = tone === 'profit' ? 'bg-profit' : tone === 'loss' ? 'bg-loss' : tone === 'caution' ? 'bg-caution' : 'bg-active'
   return (
     <div className="py-2">
       <div className="mb-1.5 flex items-center justify-between gap-2 text-ui-meta">
@@ -117,7 +116,6 @@ export function EvaluationPanel() {
     runtime: state.runtime,
     startDate: state.startDate,
     startTs: state.startTs,
-    lastCursorTs: state.lastCursorTs,
     baselineRealizedCents: state.baselineRealizedCents,
     baselineEquityCents: state.baselineEquityCents,
     lastEvalBalance: state.lastEvalBalance,
@@ -157,7 +155,6 @@ export function EvaluationPanel() {
       config: account.config,
       runtime: account.runtime,
       startDate: account.startDate,
-      lastCursorTs: account.lastCursorTs,
       balance,
       equity,
       status,
@@ -177,7 +174,6 @@ export function EvaluationPanel() {
         config: session.config,
         runtime: session.runtime,
         startDate: session.startDate ?? '—',
-        lastCursorTs: session.lastCursorTs ?? session.startTs ?? 0,
         balance: currentFinancials.balance,
         equity: currentFinancials.equity,
         status: currentFinancials.status,
@@ -201,19 +197,27 @@ export function EvaluationPanel() {
 
   const selected = accounts.find((account) => account.id === selectedId) ?? accounts[0] ?? null
   const selectedDisplayName = selected ? evaluationDisplayName({ accountId: selected.id, name: selected.name }) : ''
-  const resumeSelected = (): void => {
+  const releaseActiveSession = async (): Promise<boolean> => {
+    if (replayEngine.getSnapshot().sessionStatus !== 'active') return true
+    await replayEngine.pauseReplaySession()
+    return replayEngine.getSnapshot().sessionStatus !== 'active'
+  }
+  const resumeSelected = async (): Promise<void> => {
     if (!selected) return
+    if (!await releaseActiveSession()) return
     if (!selected.isCurrent) session.restoreAccount(selected.id)
     session.activateEvaluation()
-    void replayEngine.syncEvaluationSession()
+    await replayEngine.syncEvaluationSession()
   }
-  const activate = (): void => {
+  const activate = async (): Promise<void> => {
+    if (!await releaseActiveSession()) return
     session.activateEvaluation()
-    void replayEngine.syncEvaluationSession()
+    await replayEngine.syncEvaluationSession()
   }
-  const retry = (): void => {
+  const retry = async (): Promise<void> => {
+    if (!await releaseActiveSession()) return
     session.retry()
-    void replayEngine.syncEvaluationSession()
+    await replayEngine.syncEvaluationSession()
   }
   const deleteSelected = (): void => {
     if (!selected) return
@@ -267,6 +271,12 @@ export function EvaluationPanel() {
                 const selectedAccount = selected?.id === account.id
                 const displayName = evaluationDisplayName({ accountId: account.id, name: account.name })
                 const hash = `#${shortEvalAccountHash(account.id)}`
+                const ruleLabel = evalAccountName(account.config)
+                const metadata = [
+                  ruleLabel === 'Custom' ? null : ruleLabel,
+                  displayName !== hash ? hash : null,
+                  account.startDate,
+                ].filter((item): item is string => item !== null)
                 return (
                   <li key={account.id}>
                     <button type="button" onClick={() => { setSelectedId(account.id); setConfirmingDelete(false) }} aria-pressed={selectedAccount} aria-current={live ? 'true' : undefined} className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors ${live ? 'bg-active/10 ring-1 ring-inset ring-active/35 hover:bg-active/15' : selectedAccount ? 'bg-surface-3 hover:bg-surface-3' : 'hover:bg-surface-2'}`}>
@@ -274,9 +284,12 @@ export function EvaluationPanel() {
                       <span className="min-w-0 flex-1">
                         <strong className={`block truncate text-ui-body font-medium ${live ? 'text-active-bright' : 'text-ink'}`}>{displayName}</strong>
                         <span className="mt-0.5 flex items-center gap-1.5 text-ui-meta text-dim">
-                          <span className="truncate">{evalAccountName(account.config)}</span>
-                          {displayName !== hash ? <><span aria-hidden="true">·</span><code className="text-muted" title={`Full account ID: ${account.id}`}>{hash}</code></> : null}
-                          <span aria-hidden="true">·</span><span className="shrink-0 font-mono">{account.startDate}</span>
+                          {metadata.map((item, index) => (
+                            <span key={item} className="contents">
+                              {index > 0 ? <span aria-hidden="true">·</span> : null}
+                              {item === hash ? <code className="text-muted" title={`Full account ID: ${account.id}`}>{item}</code> : <span className={item === account.startDate ? 'shrink-0 font-mono' : 'truncate'}>{item}</span>}
+                            </span>
+                          ))}
                         </span>
                       </span>
                       <span className={`text-ui-meta font-semibold ${statusTone(account)}`}>{statusLabel(account)}</span>
@@ -289,20 +302,18 @@ export function EvaluationPanel() {
 
           {selected ? (
             <section className="border-t border-line" aria-labelledby="eval-account-details-heading">
-              <div className="flex items-start justify-between gap-3 px-3 py-3">
+              <div className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5">
-                  <h3 id="eval-account-details-heading" className="min-w-0 truncate text-ui-title font-semibold text-ink">{selectedDisplayName}</h3>
+                  <h3 id="eval-account-details-heading" className="min-w-0 truncate text-ui-body font-semibold text-ink">{selectedDisplayName}</h3>
                   <SourceNameEditor currentName={selected.name} defaultName={`#${shortEvalAccountHash(selected.id)}`} sourceLabel="evaluation account" onSave={renameSelected} />
-                  <p className="mt-0.5 basis-full text-ui-meta text-dim">
-                    <span>{evalAccountName(selected.config)}</span>
-                    <span aria-hidden="true"> · </span>
-                    <span className="font-mono">Updated {formatChartTime(selected.lastCursorTs, chartWorkspace.timezone)}</span>
-                  </p>
                 </div>
-                <div className="flex shrink-0 flex-col items-end gap-2">
-                  <span className={`text-ui-meta font-semibold ${statusTone(selected)}`}>{statusLabel(selected)}</span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className={`flex items-center gap-1 text-ui-meta font-semibold ${statusTone(selected)}`}>
+                    {selected.isCurrent && selected.phase === 'running' ? <span className="size-1.5 animate-replay-pulse rounded-full bg-active" aria-hidden="true" /> : null}
+                    {statusLabel(selected)}
+                  </span>
                   {selected.isCurrent && selected.phase === 'running' ? (
-                    <button type="button" onClick={() => openReview({ id: selected.id, type: 'evaluation', title: selectedDisplayName })} className="secondary-button min-h-8 px-2.5" aria-label="Review active evaluation"><ClipboardCheck size={13} />Review</button>
+                    <button type="button" onClick={() => openReview({ id: selected.id, type: 'evaluation', title: selectedDisplayName })} className="secondary-button min-h-8 px-2" aria-label="Review active evaluation"><ClipboardCheck size={13} />Review</button>
                   ) : null}
                 </div>
               </div>
@@ -328,15 +339,40 @@ export function EvaluationPanel() {
               </dl>
 
               <div className="px-3 py-2">
-                <ProgressLine label="Profit target" value={`${Math.round(selected.status.targetPct * 100)}%`} pct={selected.status.targetPct} />
-                <ProgressLine label="Total drawdown" value={currency.format(selected.status.totalRemaining)} pct={selected.status.totalPct} tone="loss" />
-                {selected.config.maxDailyLoss > 0 ? <ProgressLine label="Daily loss" value={currency.format(selected.status.dailyRemaining)} pct={selected.status.dailyPct} tone="loss" /> : null}
+                <ProgressLine
+                  label="Profit target"
+                  value={`${currency.format(selected.status.realizedProfit)} / ${currency.format(selected.config.profitTarget)}`}
+                  pct={selected.status.targetPct}
+                  tone={selected.status.targetPct >= 1 ? 'profit' : selected.runtime.outcome === 'failed' ? 'loss' : 'accent'}
+                />
+                <ProgressLine
+                  label="Total drawdown"
+                  value={`${currency.format(selected.status.totalDrawdown)} / ${currency.format(selected.config.maxTotalLoss)}`}
+                  pct={selected.status.totalPct}
+                  tone={selected.status.totalPct >= 1 || selected.status.failReason === 'total' ? 'loss' : 'caution'}
+                />
+                {selected.config.maxDailyLoss > 0 ? (
+                  <ProgressLine
+                    label="Daily loss"
+                    value={`${currency.format(selected.status.dailyLoss)} / ${currency.format(selected.config.maxDailyLoss)}`}
+                    pct={selected.status.dailyPct}
+                    tone={selected.status.dailyPct >= 1 || selected.status.failReason === 'daily' ? 'loss' : 'caution'}
+                  />
+                ) : null}
+                {selected.config.minTradingDays > 0 ? (
+                  <ProgressLine
+                    label="Trading days"
+                    value={`${selected.status.daysTraded} / ${selected.config.minTradingDays}`}
+                    pct={selected.status.daysTraded / selected.config.minTradingDays}
+                    tone={selected.status.minDaysMet ? 'profit' : 'accent'}
+                  />
+                ) : null}
                 {selected.config.consistencyRulePct > 0 ? (
                   <ProgressLine
                     label="Consistency"
                     value={`${selected.status.realizedProfit > 0 ? percentage.format(selected.status.consistencyPct) : '—'} / ${selected.config.consistencyRulePct}%`}
                     pct={selected.status.consistencyPct / (selected.config.consistencyRulePct / 100)}
-                    tone={selected.status.consistencyMet ? 'profit' : selected.status.targetPct >= 1 ? 'loss' : 'accent'}
+                    tone={selected.status.consistencyMet ? 'profit' : selected.status.targetPct >= 1 ? 'loss' : 'caution'}
                   />
                 ) : null}
               </div>
@@ -347,8 +383,16 @@ export function EvaluationPanel() {
                   <button type="button" onClick={deleteSelected} className={`shrink-0 ${confirmingDelete ? 'primary-button bg-loss text-white' : 'secondary-button text-loss'}`} aria-label={confirmingDelete ? `Confirm delete ${evalAccountName(selected.config)} evaluation` : `Delete ${evalAccountName(selected.config)} evaluation`}><Trash2 size={14} />{confirmingDelete ? 'Confirm delete' : 'Delete Eval'}</button>
                 </div>
               ) : null}
-              {selected.isCurrent && selected.runtime.outcome === 'failed' ? (
-                <div className="border-t border-line p-3"><button type="button" onClick={retry} className="primary-button w-full"><RotateCcw size={14} />Retry with new account</button></div>
+              {selected.runtime.outcome === 'failed' ? (
+                <div className="flex gap-2 border-t border-line p-3">
+                  {selected.isCurrent ? <button type="button" onClick={retry} className="primary-button flex-1"><RotateCcw size={14} />Retry with new account</button> : null}
+                  <button type="button" onClick={deleteSelected} className={`${selected.isCurrent ? 'shrink-0' : 'w-full'} ${confirmingDelete ? 'primary-button bg-loss text-white' : 'secondary-button text-loss'}`} aria-label={confirmingDelete ? `Confirm delete ${evalAccountName(selected.config)} evaluation` : `Delete ${evalAccountName(selected.config)} evaluation`}><Trash2 size={14} />{confirmingDelete ? 'Confirm delete' : 'Delete Eval'}</button>
+                </div>
+              ) : null}
+              {selected.runtime.outcome === 'passed' ? (
+                <div className="border-t border-line p-3">
+                  <button type="button" onClick={deleteSelected} className={`w-full ${confirmingDelete ? 'primary-button bg-loss text-white' : 'secondary-button text-loss'}`} aria-label={confirmingDelete ? `Confirm delete ${evalAccountName(selected.config)} evaluation` : `Delete ${evalAccountName(selected.config)} evaluation`}><Trash2 size={14} />{confirmingDelete ? 'Confirm delete' : 'Delete Eval'}</button>
+                </div>
               ) : null}
                 </>
               )}

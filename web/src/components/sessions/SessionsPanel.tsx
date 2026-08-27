@@ -184,7 +184,10 @@ export function SessionsPanel() {
     const version = refreshVersion.current + 1
     refreshVersion.current = version
     try {
-      const next = await fetchSessions()
+      // Evaluation accounts have their own lifecycle and UI. They share the
+      // persistence API for journals/workspace recovery only; that backing
+      // record must never appear as a duplicate replay Session.
+      const next = (await fetchSessions()).filter((session) => session.kind === 'replay')
       const ordered = next.toSorted((a, b) => b.updatedAt - a.updatedAt)
       if (version !== refreshVersion.current) return
       setSessions(ordered)

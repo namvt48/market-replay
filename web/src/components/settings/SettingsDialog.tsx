@@ -1,4 +1,4 @@
-import { Archive, Clock3, FileText, Settings2, Tags, X } from 'lucide-react'
+import { Archive, CalendarRange, Clock3, Crosshair, FileText, Lock, Settings2, Tags, X, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactElement } from 'react'
 import { createPortal } from 'react-dom'
 import type { SymbolMeta } from '../../api/types'
@@ -8,10 +8,12 @@ import { ExecutionSettings } from './ExecutionSettings'
 import { TagsSettings } from './TagsSettings'
 import { TemplatesSettings } from './TemplatesSettings'
 import { TimezoneSettings } from './TimezoneSettings'
+import type { ChartSyncFlags } from '../../chart-workspace/types'
 
-type SettingsSection = 'timezone' | 'execution' | 'tags' | 'deleted' | 'templates'
+type SettingsSection = 'charts' | 'timezone' | 'execution' | 'tags' | 'deleted' | 'templates'
 
 const NAV_ITEMS = [
+  { id: 'charts', label: 'Chart synchronization', description: 'Crosshair, range & zoom', icon: Crosshair },
   { id: 'timezone', label: 'Timezone', description: 'Workspace clock', icon: Clock3 },
   { id: 'execution', label: 'Spreads & commissions', description: 'Execution costs', icon: Settings2 },
   { id: 'tags', label: 'Journal tags', description: 'Review taxonomy', icon: Tags },
@@ -23,7 +25,40 @@ interface SettingsDialogProps {
   symbols: SymbolMeta[]
   timezone: ChartTimezone
   onTimezoneChange: (timezone: ChartTimezone) => void
+  syncFlags: ChartSyncFlags
+  onSyncFlagsChange: (syncFlags: Partial<ChartSyncFlags>) => void
   onClose: () => void
+}
+
+interface SyncControl {
+  flag: keyof ChartSyncFlags
+  label: string
+  description: string
+  icon: LucideIcon
+}
+
+const SYNC_CONTROLS: readonly SyncControl[] = [
+  { flag: 'crosshair', label: 'Crosshair', description: 'Share crosshair time and price across every chart.', icon: Crosshair },
+  { flag: 'dateRange', label: 'Date range', description: 'Keep every chart centered on the same visible dates.', icon: CalendarRange },
+  { flag: 'lockZoom', label: 'Zoom', description: 'Use the same horizontal zoom span on every chart.', icon: Lock },
+]
+
+function ChartSynchronizationSettings({ value, onChange }: { value: ChartSyncFlags; onChange: (syncFlags: Partial<ChartSyncFlags>) => void }): ReactElement {
+  return (
+    <section className="p-4 sm:p-6" aria-labelledby="chart-sync-title">
+      <h2 id="chart-sync-title" className="text-xl font-semibold tracking-tight text-ink">Chart synchronization</h2>
+      <p className="mt-2 max-w-2xl text-ui-body leading-5 text-muted">Choose which interactions stay linked across the workspace. Each setting applies immediately.</p>
+      <div className="mt-6 divide-y divide-line border-y border-line">
+        {SYNC_CONTROLS.map(({ flag, label, description, icon: Icon }) => (
+          <div key={flag} className="flex min-h-16 items-center gap-3 py-3">
+            <span className={`grid size-9 shrink-0 place-items-center rounded-control bg-surface-3 ${value[flag] ? 'text-active-bright' : 'text-muted'}`}><Icon size={16} /></span>
+            <div className="min-w-0 flex-1"><h3 className="text-ui-body font-semibold text-ink">{label}</h3><p className="mt-0.5 text-ui-meta leading-4 text-dim">{description}</p></div>
+            <button type="button" role="switch" aria-label={`Sync ${label.toLowerCase()} across charts`} aria-checked={value[flag]} onClick={() => onChange({ [flag]: !value[flag] })} className="group relative h-7 w-12 shrink-0 rounded-full bg-surface-3 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-active aria-checked:bg-active"><span className="absolute left-1 top-1 size-5 rounded-full bg-white transition-transform group-aria-checked:translate-x-5" /></button>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
 }
 
 function trapFocus(event: KeyboardEvent<HTMLDivElement>): void {
@@ -36,7 +71,7 @@ function trapFocus(event: KeyboardEvent<HTMLDivElement>): void {
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
 }
 
-export function SettingsDialog({ symbols, timezone, onTimezoneChange, onClose }: SettingsDialogProps): ReactElement {
+export function SettingsDialog({ symbols, timezone, onTimezoneChange, syncFlags, onSyncFlagsChange, onClose }: SettingsDialogProps): ReactElement {
   const [section, setSection] = useState<SettingsSection>('execution')
   const dialogRef = useRef<HTMLDivElement>(null)
   useEffect(() => { dialogRef.current?.focus() }, [])
@@ -53,6 +88,7 @@ export function SettingsDialog({ symbols, timezone, onTimezoneChange, onClose }:
             {NAV_ITEMS.map((item) => { const Icon = item.icon; return <button key={item.id} type="button" onClick={() => setSection(item.id)} aria-current={section === item.id ? 'page' : undefined} className="flex min-h-11 shrink-0 items-center gap-3 rounded-control px-3 text-left text-ui-body text-muted transition-colors hover:bg-surface-2 hover:text-ink aria-[current=page]:bg-surface-3 aria-[current=page]:text-ink md:w-full"><Icon size={16} className={section === item.id ? 'text-active-bright' : 'text-dim'} /><span><strong className="block whitespace-nowrap font-medium">{item.label}</strong><small className="hidden text-ui-meta font-normal text-dim md:block">{item.description}</small></span></button> })}
           </nav>
           <main className="min-h-0 flex-1 overflow-y-auto bg-[#121316]" id={`settings-panel-${section}`} role="tabpanel">
+            {section === 'charts' ? <ChartSynchronizationSettings value={syncFlags} onChange={onSyncFlagsChange} /> : null}
             {section === 'timezone' ? <TimezoneSettings value={timezone} onChange={onTimezoneChange} /> : null}
             {section === 'execution' ? <ExecutionSettings symbols={symbols} /> : null}
             {section === 'tags' ? <TagsSettings /> : null}

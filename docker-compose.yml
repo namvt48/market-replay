@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: market-replay:latest
-    restart: unless-stopped
+    restart: "no"
     # Runs as the host uid/gid (1000:1000, owner of ./data) instead of the
     # image's built-in "replay" user (uid 100) — the bind-mounted app.db is
     # host-owned with no group/other write bit, so a UID mismatch here

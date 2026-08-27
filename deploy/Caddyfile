@@ -1,6 +1,8 @@
-# Replace replay.example.com with the real domain before deploying.
+# Caddy reverse proxy for market-replay.
 # Auto-TLS via Caddy's default ACME config — no manual cert management.
-replay.example.com {
+# The DuckDNS record (market-replay.duckdns.org) is kept pointed at this
+# server's public IP by deploy/duckdns-update.{sh,service,timer}.
+market-replay.duckdns.org {
 	reverse_proxy 127.0.0.1:8080
 	encode gzip
 }

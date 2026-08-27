@@ -40,20 +40,37 @@ const CALENDAR: CalendarEntry[] = [
 describe('EvalSetupScreen', () => {
   afterEach(cleanup)
 
-  it('creates one evaluation account for every available symbol without an instrument field', () => {
+  it('shows one custom configuration without instrument or preset controls', () => {
     render(<EvalSetupScreen />)
 
+    expect(screen.getByLabelText('Account name')).toBeVisible()
     expect(screen.queryByRole('combobox', { name: 'Instrument' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Custom' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /FTMO|TopStep|Apex/ })).not.toBeInTheDocument()
   })
 
-  it('uses fixed presets without exposing rule settings', async () => {
-    const user = userEvent.setup()
+  it('starts from editable custom rules with $500 money increments', () => {
     render(<EvalSetupScreen />)
-    await user.click(screen.getByRole('button', { name: 'TopStep 50K (EOD trail)' }))
-    expect(screen.getByText(/Pass at \$53,000/)).toBeVisible()
-    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Evaluation summary' })).toHaveTextContent('Pass balance$54,000')
+    const moneyFields = screen.getAllByRole('spinbutton').filter((field) => field.getAttribute('step') === '500')
+    expect(moneyFields).toHaveLength(4)
+    expect(screen.getByLabelText(/Account size/i)).toHaveValue(50000)
+    fireEvent.change(screen.getByLabelText(/Profit target/i), { target: { value: '3500' } })
+    expect(screen.getByRole('region', { name: 'Evaluation summary' })).toHaveTextContent('Pass balance$53,500')
     expect(screen.queryByRole('heading', { name: /payout/i })).not.toBeInTheDocument()
     expect(screen.queryByText(/verification|funded/i)).not.toBeInTheDocument()
+  })
+
+  it('supports disabling and re-enabling the consistency rule', async () => {
+    const user = userEvent.setup()
+    render(<EvalSetupScreen />)
+
+    const consistency = screen.getByLabelText(/Consistency \(0 = none\)/i)
+    expect(consistency).toHaveValue(40)
+    await user.click(screen.getByText('Consistency rule'))
+    expect(consistency).toHaveValue(0)
+    await user.click(screen.getByText('Consistency rule'))
+    expect(consistency).toHaveValue(40)
   })
 
   describe('start date picker', () => {
@@ -87,8 +104,9 @@ describe('EvalSetupScreen', () => {
       await vi.waitFor(() => expect(picker).toHaveValue('2020-04-28'))
       fireEvent.change(picker, { target: { value: '2020-04-29' } })
       expect(picker).toHaveValue('2020-04-29')
+      await user.type(screen.getByLabelText('Account name'), 'ES custom eval')
 
-      await user.click(screen.getByRole('button', { name: /CREATE EVALUATION ACCOUNT/i }))
+      await user.click(screen.getByRole('button', { name: /START EVALUATION/i }))
       await vi.waitFor(() => expect(assign).toHaveBeenCalledWith('/'))
 
       const session = localStorage.getItem('replay:eval')
@@ -120,14 +138,19 @@ describe('EvalSetupScreen', () => {
 
       const picker = await screen.findByLabelText('Start date')
       await vi.waitFor(() => expect(picker).toHaveValue('2020-04-28'))
-      await user.click(screen.getByRole('button', { name: /CREATE EVALUATION ACCOUNT/i }))
+      await user.type(screen.getByLabelText('Account name'), 'August evaluation')
+      await user.click(screen.getByRole('button', { name: /START EVALUATION/i }))
       await vi.waitFor(() => expect(assign).toHaveBeenCalledWith('/'))
 
       const session = localStorage.getItem('replay:eval')
       const registry = localStorage.getItem('replay:eval:accounts')
       expect(session).toBeTruthy()
       expect(registry).toBeTruthy()
-      const parsed = JSON.parse(session ?? '{}') as { config?: { verificationProfitTarget?: number; payout?: unknown } }
+      const parsed = JSON.parse(session ?? '{}') as { phase?: string; instrument?: string; name?: string; config?: { firm?: string; verificationProfitTarget?: number; payout?: unknown } }
+      expect(parsed.phase).toBe('running')
+      expect(parsed.instrument).toBeNull()
+      expect(parsed.name).toBe('August evaluation')
+      expect(parsed.config?.firm).toBe('Custom')
       expect(parsed.config?.verificationProfitTarget).toBe(0)
       expect(parsed.config?.payout).toBeUndefined()
       expect(api.putPreference).toHaveBeenCalledWith('replay:eval', session)

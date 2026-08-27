@@ -93,6 +93,20 @@ describe('EvalProgressPanel', () => {
     expect(localStorage.getItem('replay:eval:accounts')).toContain(accountId)
   })
 
+  it('can collapse the live strip to the bottom rail and restore it', async () => {
+    const user = userEvent.setup()
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '2024-01-15', START_TS)
+    render(<EvalProgressPanel />)
+
+    await user.click(screen.getByRole('button', { name: 'Hide evaluation progress' }))
+
+    expect(screen.queryByRole('region', { name: 'Evaluation progress' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Collapsed evaluation progress' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Show evaluation progress' }))
+
+    expect(screen.getByRole('region', { name: 'Evaluation progress' })).toBeVisible()
+  })
+
   it('shows the consistency percentage and the profit still needed to satisfy it', () => {
     const config = customConfig()
     getEvalState().startEvaluation(config, 'NQ', '2024-01-15', START_TS)

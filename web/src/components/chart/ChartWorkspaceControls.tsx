@@ -1,23 +1,8 @@
-import { CalendarRange, ChevronDown, Crosshair, Lock, type LucideIcon } from 'lucide-react'
+import { ChevronDown } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import { createPortal } from 'react-dom'
-import type { ChartSyncFlags } from '../../chart-workspace/types'
 import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
 import { useDismissableLayer, type DismissReason } from '../../hooks/use-dismissable-layer'
-
-interface SyncControl {
-  flag: keyof ChartSyncFlags
-  label: string
-  shortLabel: string
-  title: string
-  icon: LucideIcon
-}
-
-const SYNC_CONTROLS: readonly SyncControl[] = [
-  { flag: 'crosshair', label: 'Sync crosshair across charts', shortLabel: 'Crosshair', title: 'Share crosshair time and price across charts', icon: Crosshair },
-  { flag: 'dateRange', label: 'Sync date range across charts', shortLabel: 'Range', title: 'Keep charts centered on the same time range', icon: CalendarRange },
-  { flag: 'lockZoom', label: 'Lock zoom across charts', shortLabel: 'Zoom', title: 'Use the same horizontal zoom span on every chart', icon: Lock },
-]
 
 const MARKET_SESSIONS = [
   { value: 'rth', label: 'RTH', accessibleLabel: 'Regular trading hours (RTH)', title: 'RTH · Show 09:30–16:00 in the symbol timezone' },
@@ -73,11 +58,6 @@ export function ChartWorkspaceControls(): ReactElement {
       window.removeEventListener('scroll', updatePosition, true)
     }
   }, [sessionMenuOpen])
-
-  const toggleSyncFlag = (flag: keyof ChartSyncFlags): void => {
-    const syncFlags: Partial<ChartSyncFlags> = { [flag]: !state.syncFlags[flag] }
-    dispatch({ type: 'set-sync-flags', syncFlags })
-  }
 
   const selectMarketSession = (marketSession: 'eth' | 'rth'): void => {
     if (marketSession !== state.marketSession) dispatch({ type: 'set-market-session', marketSession })
@@ -145,23 +125,6 @@ export function ChartWorkspaceControls(): ReactElement {
           </div>,
           document.body,
         ) : null}
-
-      <div className="flex items-center rounded-control border border-line bg-surface-0 p-0.5" role="group" aria-label="Chart synchronization">
-        {SYNC_CONTROLS.map(({ flag, label, shortLabel, title, icon: Icon }) => (
-          <button
-            key={flag}
-            type="button"
-            onClick={() => toggleSyncFlag(flag)}
-            aria-label={label}
-            aria-pressed={state.syncFlags[flag]}
-            title={title}
-            className="flex h-7 shrink-0 items-center gap-1.5 rounded-[3px] px-1.5 text-ui-meta font-medium text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-active aria-pressed:bg-surface-3 aria-pressed:text-active-bright xl:px-2"
-          >
-            <Icon size={14} strokeWidth={1.75} />
-            <span className="hidden xl:inline">{shortLabel}</span>
-          </button>
-        ))}
-      </div>
     </div>
   )
 }

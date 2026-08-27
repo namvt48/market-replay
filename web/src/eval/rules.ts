@@ -66,7 +66,7 @@ export const EVAL_PRESETS: EvalConfig[] = [
     firm: 'FTMO 100K (static)', accountSize: 100000, profitTarget: 10000, verificationProfitTarget: 5000,
     maxDailyLoss: 5000, maxTotalLoss: 10000, drawdownType: 'static', trailingLocksAtStart: false,
     trailingLockAtTarget: false, lockMargin: 0, trailingEod: false, maxPositionSize: 0,
-    minTradingDays: 4, consistencyRulePct: 0, consistencyMode: 'net-profit', dailyLossBase: 'midnight-balance', dayResetHour: 0,
+    minTradingDays: 0, consistencyRulePct: 0, consistencyMode: 'net-profit', dailyLossBase: 'midnight-balance', dayResetHour: 0,
     payout: {
       profitSplit: 90, eligibilityMode: 'min-days', minWinningDays: 0, minDailyProfit: 0,
       eligibilityConsistencyPct: 0, minFundedDays: 14, maxPayoutPct: 0, maxPayoutAmount: 0,

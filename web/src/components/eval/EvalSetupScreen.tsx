@@ -1,16 +1,19 @@
-import { ArrowLeft, ArrowRight } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, ArrowRight, Check } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { fetchCalendar, fetchSymbols } from '../../api/client'
 import type { CalendarEntry, SymbolMeta } from '../../api/types'
 import {
-  EVAL_PRESETS,
+  customConfig,
   evalConfigSchema,
   evalStatus,
   newRuntime,
   type EvalConfig,
 } from '../../eval/rules'
-import { useEvalStore } from '../../store/eval-store'
+import { SOURCE_NAME_MAX_LENGTH, normalizedSourceName } from '../../sources/source-name'
+import { getEvalState, renameEvalAccount, useEvalStore } from '../../store/eval-store'
 import { flushPreferenceSync } from '../../store/preference-sync'
+
+const MONEY_STEP = 500
 
 function terminalEvalConfig(config: EvalConfig): EvalConfig {
   return { ...config, phase: 'eval', verificationProfitTarget: 0, payout: undefined }
@@ -30,20 +33,72 @@ function epochToDate(timestamp: number): string {
   return new Date(timestamp * 1000).toISOString().slice(0, 10)
 }
 
-export function EvalSetupScreen() {
-  const createEvaluation = useEvalStore((state) => state.createEvaluation)
+interface NumberFieldProps {
+  label: string
+  value: number
+  min: number
+  max?: number
+  step?: number
+  hint?: string
+  onChange: (value: number) => void
+}
+
+function NumberField({ label, value, min, max, step = MONEY_STEP, hint, onChange }: NumberFieldProps): ReactElement {
+  return (
+    <label className="field-label min-w-0">
+      <span className="font-medium uppercase tracking-[0.08em] text-dim">
+        {label}{hint ? <span className="font-normal"> {hint}</span> : null}
+      </span>
+      <input
+        type="number"
+        inputMode="numeric"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => {
+          const next = event.currentTarget.valueAsNumber
+          if (Number.isFinite(next)) onChange(next)
+        }}
+        className="field-input h-11 w-full text-ui-control tabular-nums hover:border-line-strong focus-visible:border-active"
+      />
+    </label>
+  )
+}
+
+interface CheckOptionProps {
+  checked: boolean
+  label: string
+  onChange: (checked: boolean) => void
+}
+
+function CheckOption({ checked, label, onChange }: CheckOptionProps): ReactElement {
+  return (
+    <label className="flex min-h-11 cursor-pointer items-center gap-2.5 text-ui-meta font-medium uppercase tracking-[0.06em] text-muted">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} className="peer sr-only" />
+      <span className="grid size-4 shrink-0 place-items-center rounded-[3px] border border-line-strong bg-surface-0 text-transparent transition-colors peer-checked:border-active peer-checked:bg-active peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-active">
+        <Check size={11} strokeWidth={3} aria-hidden="true" />
+      </span>
+      <span>{label}</span>
+    </label>
+  )
+}
+
+export function EvalSetupScreen(): ReactElement {
+  const startEvaluation = useEvalStore((state) => state.startEvaluation)
 
   const [symbols, setSymbols] = useState<SymbolMeta[]>([])
   const [symbolsFailed, setSymbolsFailed] = useState(false)
   const [calendar, setCalendar] = useState<CalendarEntry[]>([])
   const [calendarFailed, setCalendarFailed] = useState(false)
   const [startDate, setStartDate] = useState('')
-  const [config, setConfig] = useState<EvalConfig>(() => terminalEvalConfig(EVAL_PRESETS[0]))
+  const [accountName, setAccountName] = useState('')
+  const [config, setConfig] = useState<EvalConfig>(() => terminalEvalConfig(customConfig()))
   const [starting, setStarting] = useState(false)
   const startingRef = useRef(false)
 
-  // Evaluations are account-wide. The first available market only provides
-  // the shared replay calendar/timezone anchor; it does not restrict trading.
+  // The selected market provides the initial chart, calendar, and timezone
+  // anchor. The account can still accumulate trades across symbols afterward.
   useEffect(() => {
     let cancelled = false
     fetchSymbols()
@@ -59,8 +114,6 @@ export function EvalSetupScreen() {
     return () => { cancelled = true }
   }, [])
 
-  // Load one canonical 1m calendar and use its epoch timestamp as the shared
-  // cursor. Every chart source is then aligned to this cursor by the engine.
   useEffect(() => {
     const meta = symbols[0]
     if (!meta) return
@@ -95,36 +148,36 @@ export function EvalSetupScreen() {
     return () => window.removeEventListener('keydown', handleKey)
   }, [])
 
-  const presets = useMemo(() => EVAL_PRESETS.map(terminalEvalConfig), [])
+  const selectedMeta = symbols[0] ?? null
+  const updateConfig = (changes: Partial<EvalConfig>): void => {
+    setConfig((current) => ({ ...current, ...changes, firm: 'Custom' }))
+  }
 
-  const previewLine = useMemo(() => {
+  const preview = useMemo(() => {
     const runtime = newRuntime(config)
     const status = evalStatus(config, runtime, {
       balance: config.accountSize,
       equity: config.accountSize,
       trades: [],
     })
-    const passAt = config.accountSize + config.profitTarget
-    const parts = [
-      `Pass at $${formatMoney(passAt)}`,
-      `fail below $${formatMoney(status.floor)}`,
-    ]
-    if (config.maxDailyLoss > 0) parts.push(`daily stop $${formatMoney(config.maxDailyLoss)}`)
-    return parts.join(' \u00b7 ')
+    return { passAt: config.accountSize + config.profitTarget, floor: status.floor }
   }, [config])
 
   const validation = evalConfigSchema.safeParse(config)
-  const canStart = symbols.length > 0 && startDate !== '' && validation.success
+  const normalizedAccountName = normalizedSourceName(accountName)
+  const canStart = selectedMeta !== null && startDate !== '' && normalizedAccountName !== '' && validation.success
   const calendarBounds = useMemo(() => {
     const first = calendar[0]
     const last = calendar[calendar.length - 1]
     if (first && last) return { min: first.date, max: last.date }
-    const range = symbols[0]?.ranges['1m']
+    const range = selectedMeta?.ranges['1m']
     if (!range) return null
     return { min: epochToDate(range.from), max: epochToDate(range.to) }
-  }, [calendar, symbols])
+  }, [calendar, selectedMeta])
   const validationMessage = validation.success
-    ? null
+    ? normalizedAccountName === ''
+      ? 'Enter a name for this evaluation account.'
+      : null
     : config.accountSize <= 0
       ? 'Account size must be greater than 0.'
       : config.profitTarget <= 0
@@ -141,87 +194,113 @@ export function EvalSetupScreen() {
     setStarting(true)
     const entry = calendar.find((e) => e.date === startDate)
     const startTs = entry?.firstTs ?? parseDateToEpoch(startDate)
-    const sessionTimezone = symbols[0]?.sessionTz ?? 'UTC'
-    createEvaluation(config, null, startDate, startTs, sessionTimezone)
+    if (!selectedMeta) return
+    // The first available market only supplies the shared calendar/timezone
+    // anchor. Evaluation ownership is workspace-wide, never symbol-owned.
+    startEvaluation(config, null, startDate, startTs, selectedMeta.sessionTz || 'UTC')
+    const accountId = getEvalState().accountId
+    if (accountId) renameEvalAccount(accountId, normalizedAccountName)
     await flushPreferenceSync()
     window.location.assign('/')
   }
 
+  const trailing = config.drawdownType === 'trailing'
+  const consistencyEnabled = config.consistencyRulePct > 0
+
   return (
-    <div className="h-[100dvh] overflow-y-auto bg-surface-0 text-ink">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-4 py-8 sm:px-6 sm:py-12">
-        <header className="flex flex-col gap-3">
-          <button
-            type="button"
-            onClick={() => window.location.assign('/')}
-            className="secondary-button min-h-11 w-fit sm:min-h-9"
-            aria-label="Back to workspace"
-          >
-            <ArrowLeft size={14} /> BACK
+    <main className="h-[100dvh] overflow-y-auto bg-surface-0 text-ink">
+      <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-9 lg:px-8">
+        <header className="mb-7 flex items-start gap-3 sm:mb-9">
+          <button type="button" onClick={() => window.location.assign('/')} className="secondary-button mt-0.5 size-11 shrink-0 px-0 sm:size-9" aria-label="Back to workspace">
+            <ArrowLeft size={15} aria-hidden="true" />
           </button>
-          <span className="text-ui-body font-semibold tracking-[0.14em] text-dim">EVALUATION</span>
-          <h1
-            className="font-bold leading-[1.05] tracking-[-0.02em] text-ink"
-            style={{ fontSize: 'clamp(1.75rem, 4vw, 2.875rem)' }}
-          >
-            Evaluation Simulator
-          </h1>
-          <p className="max-w-xl text-ui-title leading-relaxed text-muted">
-            Chase the profit target without breaching the daily-loss or drawdown limits on historical replay data. Pure simulation: no real firm, account, or funding.
-          </p>
+          <div>
+            <p className="text-ui-meta font-semibold uppercase tracking-[0.14em] text-dim">New evaluation</p>
+            <h1 className="mt-1 text-[clamp(1.65rem,4vw,2.4rem)] font-bold leading-tight tracking-[-0.025em] text-ink">Evaluation Simulator</h1>
+            <p className="mt-2 max-w-2xl text-ui-body leading-relaxed text-muted">Configure the prop-firm rules, choose a historical starting point, then trade forward without peeking.</p>
+          </div>
         </header>
 
-        <section className="flex flex-col gap-2">
-          <h2 className="text-ui-body font-medium text-muted">Account preset</h2>
-          <div className="flex flex-wrap gap-2">
-            {presets.map((preset) => {
-              const active = preset.firm === config.firm
-              return (
-                <button
-                  key={preset.firm}
-                  type="button"
-                  onClick={() => setConfig({ ...preset })}
-                  aria-pressed={active}
-                  className={`min-h-11 rounded-control border px-3 py-1.5 text-ui-control font-medium transition-colors sm:min-h-9 ${
-                    active
-                      ? 'border-active bg-active text-white'
-                      : 'border-line bg-surface-2 text-muted hover:border-line-strong hover:text-ink'
-                  }`}
-                >
-                  {preset.firm}
+        <section className="grid grid-cols-1 gap-x-4 gap-y-5 sm:grid-cols-2 lg:grid-cols-6" aria-label="Evaluation rules">
+          <label className="field-label min-w-0 lg:col-span-3">
+            <span className="font-medium uppercase tracking-[0.08em] text-dim">Account name</span>
+            <input
+              type="text"
+              value={accountName}
+              maxLength={SOURCE_NAME_MAX_LENGTH}
+              required
+              autoComplete="off"
+              placeholder="e.g. August NQ evaluation"
+              onChange={(event) => setAccountName(event.currentTarget.value)}
+              className="field-input h-11 w-full font-sans text-ui-control hover:border-line-strong focus-visible:border-active"
+              aria-label="Account name"
+            />
+          </label>
+
+          <label className="field-label min-w-0 lg:col-span-3">
+            <span className="font-medium uppercase tracking-[0.08em] text-dim">Start date <span className="font-normal">(locked once you begin)</span></span>
+            <input type="date" value={startDate} min={calendarBounds?.min || undefined} max={calendarBounds?.max || undefined} onChange={(event) => { if (event.currentTarget.value) setStartDate(event.currentTarget.value) }} className="field-input h-11 w-full text-ui-control [color-scheme:dark] hover:border-line-strong focus-visible:border-active" aria-label="Start date" />
+            {symbolsFailed ? <span role="alert" className="text-loss-bright">Markets are unavailable. Reload to try again.</span> : null}
+            {calendarFailed ? <span role="alert" className="text-loss-bright">Calendar is unavailable. Reload to try again.</span> : null}
+          </label>
+
+          <div className="lg:col-span-2"><NumberField label="Account size" value={config.accountSize} min={MONEY_STEP} onChange={(accountSize) => updateConfig({ accountSize })} /></div>
+          <div className="lg:col-span-2"><NumberField label="Profit target" value={config.profitTarget} min={MONEY_STEP} onChange={(profitTarget) => updateConfig({ profitTarget })} /></div>
+          <div className="lg:col-span-2"><NumberField label="Max daily loss" hint="(0 = none)" value={config.maxDailyLoss} min={0} onChange={(maxDailyLoss) => updateConfig({ maxDailyLoss })} /></div>
+          <div className="lg:col-span-2"><NumberField label="Max total loss" value={config.maxTotalLoss} min={MONEY_STEP} onChange={(maxTotalLoss) => updateConfig({ maxTotalLoss })} /></div>
+          <div className="lg:col-span-2"><NumberField label="Min trading days" hint="(0 = none)" value={config.minTradingDays} min={0} max={365} step={1} onChange={(minTradingDays) => updateConfig({ minTradingDays })} /></div>
+          <div className="lg:col-span-2"><NumberField label="Consistency" hint="(0 = none)" value={config.consistencyRulePct} min={0} max={100} step={5} onChange={(consistencyRulePct) => updateConfig({ consistencyRulePct })} /></div>
+        </section>
+
+        <section className="mt-6" aria-labelledby="drawdown-heading">
+          <h2 id="drawdown-heading" className="text-ui-meta font-medium uppercase tracking-[0.08em] text-dim">Drawdown type</h2>
+          <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="grid grid-cols-2 gap-2" role="group" aria-label="Drawdown type">
+              {(['static', 'trailing'] as const).map((type) => (
+                <button key={type} type="button" onClick={() => updateConfig({ drawdownType: type, ...(type === 'static' ? { trailingLocksAtStart: false, trailingEod: false } : {}) })} aria-pressed={config.drawdownType === type} className={`min-h-11 min-w-28 rounded-control border px-4 text-ui-meta font-semibold uppercase tracking-[0.08em] transition-colors ${config.drawdownType === type ? 'border-active bg-active text-white' : 'border-line-strong bg-surface-0 text-muted hover:border-muted hover:text-ink'}`}>
+                  {type}
                 </button>
-              )
-            })}
+              ))}
+            </div>
+            {trailing ? (
+              <div className="flex flex-col gap-x-5 sm:flex-row sm:items-center">
+                <CheckOption checked={config.trailingLocksAtStart} label="Lock at starting balance" onChange={(trailingLocksAtStart) => updateConfig({ trailingLocksAtStart })} />
+                <CheckOption checked={config.trailingEod} label="EOD trailing" onChange={(trailingEod) => updateConfig({ trailingEod })} />
+              </div>
+            ) : null}
+            <CheckOption checked={consistencyEnabled} label="Consistency rule" onChange={(enabled) => updateConfig({ consistencyRulePct: enabled ? 40 : 0 })} />
           </div>
         </section>
 
-        <label className="field-label max-w-sm">
-          <span>Start date</span>
-          <input
-            type="date"
-            value={startDate}
-            min={calendarBounds?.min || undefined}
-            max={calendarBounds?.max || undefined}
-            onChange={(event) => { if (event.target.value) setStartDate(event.target.value) }}
-            className="h-11 w-full rounded-control border border-line bg-surface-2 px-3 text-ui-control text-ink outline-none transition-colors hover:border-line-strong focus-visible:border-active [color-scheme:dark] sm:h-9"
-            aria-label="Start date"
-          />
-          {symbolsFailed ? <span className="text-ui-body text-loss">Markets are unavailable.</span> : null}
-          {calendarFailed ? <span className="text-ui-body text-loss">Calendar is unavailable.</span> : null}
-        </label>
-
-        <p className="font-mono text-ui-body text-muted">{previewLine}</p>
-        {validationMessage ? <p role="alert" className="text-ui-body text-loss-bright">Check rule parameters: {validationMessage}</p> : null}
-
-        <button
-          type="button"
-          onClick={handleStart}
-          disabled={!canStart || starting}
-          className="primary-button min-h-11 w-full sm:min-h-9 sm:w-auto"
-        >
-          CREATE EVALUATION ACCOUNT <ArrowRight size={14} />
-        </button>
+        <section className="mt-8 border-t border-line pt-5" aria-label="Evaluation summary">
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+            <div>
+              <dt className="text-ui-meta text-dim">Pass balance</dt>
+              <dd className="mt-0.5 font-mono text-ui-title font-semibold tabular-nums text-profit-bright">${formatMoney(preview.passAt)}</dd>
+            </div>
+            <div>
+              <dt className="text-ui-meta text-dim">Loss floor · {config.drawdownType}{config.trailingEod ? ' EOD' : ''}</dt>
+              <dd className="mt-0.5 font-mono text-ui-title font-semibold tabular-nums text-loss-bright">${formatMoney(preview.floor)}</dd>
+            </div>
+            <div>
+              <dt className="text-ui-meta text-dim">Daily stop</dt>
+              <dd className="mt-0.5 font-mono text-ui-title font-semibold tabular-nums text-ink">{config.maxDailyLoss > 0 ? `$${formatMoney(config.maxDailyLoss)}` : 'None'}</dd>
+            </div>
+            <div>
+              <dt className="text-ui-meta text-dim">Best day limit</dt>
+              <dd className={`mt-0.5 font-mono text-ui-title font-semibold tabular-nums ${consistencyEnabled ? 'text-caution-bright' : 'text-muted'}`}>{consistencyEnabled ? `≤ ${config.consistencyRulePct}%` : 'None'}</dd>
+            </div>
+          </dl>
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-h-5">
+              {validationMessage ? <p role="alert" className="text-ui-body text-loss-bright">{validationMessage}</p> : <p className="text-ui-body text-muted">Ready to start from <span className="font-mono text-ink">{startDate || '—'}</span></p>}
+            </div>
+            <button type="button" onClick={() => { void handleStart() }} disabled={!canStart || starting} className="primary-button min-h-11 w-full shrink-0 gap-2 px-5 uppercase tracking-[0.08em] sm:w-auto">
+              {starting ? 'Starting evaluation…' : 'Start evaluation'} {!starting ? <ArrowRight size={14} aria-hidden="true" /> : null}
+            </button>
+          </div>
+        </section>
       </div>
-    </div>
+    </main>
   )
 }

@@ -119,7 +119,7 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
         if (evalLocked) replayEngine.requestChartViewSymbol(targetPaneId, meta.symbol)
         else void replayEngine.selectSymbol(meta.symbol).then(() => replayEngine.requestChartViewSymbol(targetPaneId, meta.symbol))
       }} /></Suspense> : null}
-      {settingsOpen ? <Suspense fallback={null}><SettingsDialog symbols={replay.symbols} timezone={chartWorkspace.timezone} onTimezoneChange={(timezone) => dispatchChartWorkspace({ type: 'set-timezone', timezone })} onClose={() => setSettingsOpen(false)} /></Suspense> : null}
+      {settingsOpen ? <Suspense fallback={null}><SettingsDialog symbols={replay.symbols} timezone={chartWorkspace.timezone} onTimezoneChange={(timezone) => dispatchChartWorkspace({ type: 'set-timezone', timezone })} syncFlags={chartWorkspace.syncFlags} onSyncFlagsChange={(syncFlags) => dispatchChartWorkspace({ type: 'set-sync-flags', syncFlags })} onClose={() => setSettingsOpen(false)} /></Suspense> : null}
     </header>
   )
 }

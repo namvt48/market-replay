@@ -1,0 +1,20 @@
+[Unit]
+Description=DuckDNS dynamic IP update for market-replay
+Documentation=https://www.duckdns.org/install.jsp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The token/domain live in /etc/duckdns/duckdns.conf (root-only, see script).
+# Override with Environment=DUCKDNS_TOKEN=... DUCKDNS_DOMAINS=... if you
+# prefer env vars over a config file.
+ExecStart=/usr/local/bin/duckdns-update.sh /etc/duckdns/duckdns.conf
+# Harden: the script only needs outbound HTTPS to duckdns.org.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

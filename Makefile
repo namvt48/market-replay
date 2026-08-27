@@ -5,7 +5,7 @@ BINARY := bin/replay-server
 ECON_DUCKDB ?=
 ECON_JSONL ?=
 
-.PHONY: build web-install web-build web-dev vet test test-race run econ-import econ-reload clean
+.PHONY: build web-install web-build web-dev vet test test-race run deploy econ-import econ-reload clean
 
 web-install:
 	cd web && pnpm install
@@ -32,6 +32,13 @@ test-race:
 
 run: build
 	./$(BINARY)
+
+# Build the production image and replace the local Compose service. The
+# frontend is embedded into the Go binary by the Docker build, so this is the
+# single deploy entrypoint for the server.
+deploy:
+	docker compose up -d --build
+	docker compose ps
 
 # Convert the normalized UTC DuckDB calendar into the spoiler-safe JSONL
 # source consumed by internal/econ. The exporter replaces the shard atomically.

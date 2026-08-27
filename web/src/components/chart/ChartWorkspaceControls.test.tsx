@@ -56,24 +56,11 @@ describe('ChartWorkspaceControls', () => {
     await waitFor(() => expect(trigger).toHaveFocus())
   })
 
-  it('toggles crosshair, date-range and zoom synchronization independently', async () => {
-    const user = userEvent.setup()
+  it('keeps synchronization controls out of the top bar', () => {
     render(<ChartWorkspaceProvider><ChartWorkspaceControls /></ChartWorkspaceProvider>)
 
-    const crosshair = screen.getByRole('button', { name: 'Sync crosshair across charts' })
-    const dateRange = screen.getByRole('button', { name: 'Sync date range across charts' })
-    const lockZoom = screen.getByRole('button', { name: 'Lock zoom across charts' })
-    expect(crosshair).toHaveAttribute('aria-pressed', 'true')
-    expect(dateRange).toHaveAttribute('aria-pressed', 'true')
-    expect(lockZoom).toHaveAttribute('aria-pressed', 'false')
-
-    await user.click(crosshair)
-    await user.click(dateRange)
-    await user.click(lockZoom)
-
-    expect(crosshair).toHaveAttribute('aria-pressed', 'false')
-    expect(dateRange).toHaveAttribute('aria-pressed', 'false')
-    expect(lockZoom).toHaveAttribute('aria-pressed', 'true')
-    await waitFor(() => expect(engineMocks.setSyncFlags).toHaveBeenLastCalledWith({ crosshair: false, dateRange: false, lockZoom: true }))
+    expect(screen.queryByRole('button', { name: 'Sync crosshair across charts' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Sync date range across charts' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Lock zoom across charts' })).not.toBeInTheDocument()
   })
 })

@@ -47,7 +47,7 @@ describe('EVAL_PRESETS', () => {
   it('models FTMO, Topstep, and Apex pass and payout rules', () => {
     expect(EVAL_PRESETS[0]).toMatchObject({
       accountSize: 100000, profitTarget: 10000, verificationProfitTarget: 5000,
-      maxDailyLoss: 5000, maxTotalLoss: 10000, minTradingDays: 4,
+      maxDailyLoss: 5000, maxTotalLoss: 10000, minTradingDays: 0,
       dailyLossBase: 'midnight-balance', maxPositionSize: 0,
       payout: { profitSplit: 90, eligibilityMode: 'min-days', minFundedDays: 14 },
     })

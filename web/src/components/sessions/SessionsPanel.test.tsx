@@ -83,6 +83,24 @@ describe('SessionsPanel', () => {
     expect(screen.getByText('LONG')).toBeVisible()
   })
 
+  it('keeps evaluation persistence records out of the replay Sessions tab', async () => {
+    const evaluationSession: ReplaySession = {
+      ...saved,
+      id: 'eval-session-1111-7222-8333-abcdef123456',
+      name: 'Evaluation account',
+      kind: 'eval',
+      updatedAt: saved.updatedAt + 1,
+    }
+    mocks.fetchSessions.mockResolvedValue([evaluationSession, saved])
+
+    render(<SessionsPanel />)
+
+    expect(await screen.findByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Inspect replay session Evaluation account/ })).not.toBeInTheDocument()
+    expect(mocks.fetchTrades).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchTrades).toHaveBeenCalledWith(saved.id)
+  })
+
   it('keeps an empty session compact without a closed-trades empty state', async () => {
     mocks.fetchTrades.mockResolvedValue([])
     render(<SessionsPanel />)

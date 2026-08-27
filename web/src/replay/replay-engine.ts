@@ -79,7 +79,6 @@ export type { ReplayStepTimeframe } from './timeframe'
 function replayBaseTimeframe(symbol: SymbolMeta): Timeframe {
   return symbol.ranges['5s'] ? '5s' : '1m'
 }
-const HIGH_THROUGHPUT_BARS_PER_SECOND = 100
 const TIMEFRAME_SWITCH_SETTLE_MS = 48
 /**
  * How often indicators recompute while the replay is playing.
@@ -181,11 +180,19 @@ interface DataTimestampResolution {
 
 export class ReplayEngine {
   private views = new ChartViewRegistry()
+  /** Internal feed that advances the shared cursor; it has no chart/data ownership priority. */
   private source: BarSource | null = null
-  private auxiliarySources = new Map<string, BarSource>()
+  /** Every other visible symbol is a first-class peer with its own independently extended feed. */
+  private peerSources = new Map<string, BarSource>()
+  private peerPrefetchControllers = new Map<string, AbortController>()
+  private peerPrefetchPromises = new Map<string, Promise<void>>()
+  private peerPrefetchFailures = new Set<string>()
   private sourcePrefetchController: AbortController | null = null
   private sourcePrefetchPromise: Promise<void> | null = null
   private resumeAfterSourcePrefetch = false
+  private waitingForPeerData = false
+  private resumeAfterPeerPrefetch = false
+  private playRequestedWhileEvaluationResumes = false
   /** Independent execution state per market, with the active pane selecting which one is projected. */
   private symbolFills = new Map<string, FillEngineState>()
   private snapshot: ReplaySnapshot = initialSnapshot
@@ -196,7 +203,6 @@ export class ReplayEngine {
   private animationFrame = 0
   private lastFrameAt = 0
   private accumulator = 0
-  private highSpeedChartFrame = 0
   private lastEmitAt = 0
   private frameSamples = new Float64Array(FRAME_SAMPLE_WINDOW)
   private frameSortScratch = new Float64Array(FRAME_SAMPLE_WINDOW)
@@ -376,7 +382,7 @@ export class ReplayEngine {
     this.views.all().forEach((view) => view.setMarketSession(marketSession))
     const symbol = this.snapshot.symbol
     if (symbol && this.source) this.views.rebuildSymbol(this.rawHistory(), symbol, false)
-    this.rebuildAuxiliaryCharts(this.snapshot.cursorTs, false)
+    this.rebuildPeerCharts(this.snapshot.cursorTs, false)
     this.syncChartTradingState(true)
   }
 
@@ -735,6 +741,7 @@ export class ReplayEngine {
     cancelAnimationFrame(this.animationFrame)
     this.abortViewportLoads()
     this.abortSourcePrefetch()
+    this.abortPeerPrefetches()
     if (this.persistTimer) clearTimeout(this.persistTimer)
     if (this.drawingTimer) clearTimeout(this.drawingTimer)
     if (this.transientErrorTimer) clearTimeout(this.transientErrorTimer)
@@ -750,7 +757,7 @@ export class ReplayEngine {
     this.pendingTimeframeSwitches.clear()
     this.timeframeControllers.forEach((controller) => controller.abort())
     this.timeframeControllers.clear()
-    this.auxiliarySources.clear()
+    this.peerSources.clear()
     this.views.destroy()
     window.removeEventListener('pagehide', this.handlePageHide)
     this.bootstrapPromise = null
@@ -827,7 +834,7 @@ export class ReplayEngine {
     this.timeframeControllers.set(id, controller)
     try {
       const isReplaySymbol = this.snapshot.symbol?.symbol === symbol.symbol
-      const [page, auxiliarySource] = await Promise.all([
+      const [page, peerSource] = await Promise.all([
         this.viewportClient.load({
           symbol: symbol.symbol,
           visibleTimeframe: view.timeframe,
@@ -843,10 +850,10 @@ export class ReplayEngine {
           : fetchBarsAt(symbol.symbol, replayBaseTimeframe(symbol), this.snapshot.cursorTs, 3000, 10000, controller.signal).then((frame) => new BarSource(frame)),
       ])
       if (controller.signal.aborted || this.timeframeControllers.get(id) !== controller) return
-      if (auxiliarySource) this.auxiliarySources.set(symbol.symbol, auxiliarySource)
+      if (peerSource) this.peerSources.set(symbol.symbol, peerSource)
       const raw = isReplaySymbol && this.source
         ? this.rawHistory()
-        : auxiliarySource ? this.rawHistoryFromSource(auxiliarySource, this.snapshot.cursorTs) : []
+        : peerSource ? this.rawHistoryFromSource(peerSource, this.snapshot.cursorTs) : []
       view.changeSymbol(symbol, raw, page.bars.filter((bar) => bar.time <= this.snapshot.cursorTs))
       view.setReplaySelection(this.currentReplaySelectionState())
       view.syncEconomicEventMarkers(this.economicEventMarkers)
@@ -883,10 +890,15 @@ export class ReplayEngine {
 
   togglePlay(): void {
     if (this.snapshot.playing) this.pause()
+    else if (this.playRequestedWhileEvaluationResumes) this.playRequestedWhileEvaluationResumes = false
     else this.play()
   }
   play(): void {
-    if (this.snapshot.status !== 'ready' || !this.source || this.snapshot.replayMode !== 'active') return
+    if (this.snapshot.status !== 'ready' || !this.source || this.snapshot.replayMode !== 'active') {
+      if (isEvalActive()) this.playRequestedWhileEvaluationResumes = true
+      return
+    }
+    this.playRequestedWhileEvaluationResumes = false
     this.ensureCursorViewport()
     this.lastFrameAt = performance.now()
     this.setSnapshot({ playing: true }, true)
@@ -895,11 +907,11 @@ export class ReplayEngine {
     this.animationFrame = requestAnimationFrame(this.frame)
   }
   pause(): void {
+    this.playRequestedWhileEvaluationResumes = false
     const wasPlaying = this.snapshot.playing
     this.clearIndicatorPlaybackRefresh()
     cancelAnimationFrame(this.animationFrame)
     this.views.flushRawBars()
-    this.highSpeedChartFrame = 0
     this.setSnapshot({ playing: false }, true)
     this.scheduleSessionPersist()
     if (wasPlaying) {
@@ -1075,7 +1087,7 @@ export class ReplayEngine {
       this.recenterViewportCache()
       this.rebuildChart()
       const cursorTs = this.source.at(this.cursorIndex)?.ts ?? targetTimestamp
-      await this.refreshAuxiliaryViewsAtCursor(cursorTs)
+      await this.refreshPeerViewsAtCursor(cursorTs)
       this.setSnapshot({ status: 'ready', cursorTs }, true)
       for (const view of this.views.all()) {
         const viewSymbol = view.symbol()
@@ -1298,13 +1310,19 @@ export class ReplayEngine {
 
   async resumeSession(session: ReplaySession): Promise<void> {
     if (isEvalActive()) {
-      this.setSnapshot({ error: 'Finish or abandon the active evaluation before loading another replay session' }, true)
-      return
+      await this.exitEvaluation()
+      // Persistence/drawing failures intentionally leave the evaluation
+      // active. Never overlap sources when the old owner could not exit.
+      if (isEvalActive()) return
     }
     await this.deactivateReplaySession('paused')
     const recoveryPoint = await this.resolveWorkspaceRecoveryPoint({ kind: 'replay', id: session.id })
     if (recoveryPoint) this.prepareWorkspaceRestore(recoveryPoint)
-    const symbolCode = recoveryPoint?.symbol ?? session.symbol
+    const recoveredPane = recoveryPoint?.layout.panes[recoveryPoint.layout.activePaneId]
+      ?? (recoveryPoint ? Object.values(recoveryPoint.layout.panes)[0] : undefined)
+    // session.symbol/recoveryPoint.symbol are legacy clock anchors, not data
+    // owners. Prefer a symbol that actually belongs to the restored workspace.
+    const symbolCode = recoveredPane?.symbol ?? recoveryPoint?.symbol ?? session.symbol
     const symbol = this.snapshot.symbols.find((item) => item.symbol === symbolCode)
     if (!symbol) {
       this.setSnapshot({ error: `Session symbol ${symbolCode} is unavailable` }, true)
@@ -1369,7 +1387,9 @@ export class ReplayEngine {
     if (evaluation.phase !== 'running' || evaluation.startTs === null) return
     const recoveryPoint = evaluation.accountId ? await this.resolveWorkspaceRecoveryPoint({ kind: 'eval', id: evaluation.accountId }) : null
     if (recoveryPoint) this.prepareWorkspaceRestore(recoveryPoint)
-    const recoveredSymbol = recoveryPoint ? this.snapshot.symbols.find((item) => item.symbol === recoveryPoint.symbol) : null
+    const recoveredPane = recoveryPoint?.layout.panes[recoveryPoint.layout.activePaneId]
+      ?? (recoveryPoint ? Object.values(recoveryPoint.layout.panes)[0] : undefined)
+    const recoveredSymbol = recoveredPane ? this.snapshot.symbols.find((item) => item.symbol === recoveredPane.symbol) : null
     const symbol = recoveredSymbol ?? this.views.active()?.symbol() ?? this.snapshot.symbol ?? this.snapshot.symbols.find((item) => item.symbol === 'NQ') ?? this.snapshot.symbols[0]
     if (!symbol) return
     const checkpoint = recoveryPoint?.cursorTs ?? evaluation.lastCursorTs ?? evaluation.startTs
@@ -1392,6 +1412,7 @@ export class ReplayEngine {
     this.resetAllChartViews()
     if (!resolution.calendarAvailable) this.setSnapshot({ error: 'The trading calendar is unavailable; the evaluation opened on the closest bar returned by history.' }, true)
     await this.ensureEvaluationSession()
+    if (this.playRequestedWhileEvaluationResumes) this.play()
   }
 
   /**
@@ -1448,6 +1469,7 @@ export class ReplayEngine {
   private async loadSymbol(symbol: SymbolMeta, requestedStart?: number): Promise<void> {
     if (this.views.size() === 0) return
     this.abortSourcePrefetch()
+    this.abortPeerPrefetches()
     this.abortViewportLoads()
     this.views.setReplaySelection({ mode: 'inactive' })
     this.setSnapshot({ status: 'loading', error: null, eagerState: 'idle', sessionId: null, sessionStatus: null, replayMode: 'inactive', replayStartTs: null }, true)
@@ -1463,7 +1485,14 @@ export class ReplayEngine {
       this.startIndex = this.cursorIndex
       this.resetFillEngine()
       this.recenterViewportCache()
-      const targetViews = this.views.all().filter((view) => !view.isInitialized() || view.followsReplaySymbol())
+      const targetViews = this.views.all().filter((view) => (
+        !view.isInitialized()
+        || view.followsReplaySymbol()
+        // An explicitly selected pane can show the same symbol as the
+        // internal clock feed. It is neither a follower nor a peer, so it
+        // must be included here or it keeps the pre-resume history window.
+        || view.symbol()?.symbol === symbol.symbol
+      ))
       await Promise.all(targetViews.map(async (view) => {
         if (!view.isInitialized()) await view.initialize(symbol)
         else if (view.symbol()?.symbol !== symbol.symbol) view.changeSymbol(symbol, [], undefined, true)
@@ -1474,7 +1503,7 @@ export class ReplayEngine {
         const displayBars = await this.loadInitialDisplayHistory(view.id, view.timeframe, symbol, raw, cursorTs)
         view.rebuild(raw, symbol, false, displayBars)
       }))
-      await this.refreshAuxiliaryViewsAtCursor(cursorTs)
+      await this.refreshPeerViewsAtCursor(cursorTs)
       this.snapshot = { ...this.snapshot, cursorTs }
       const evaluation = getEvalState()
       for (const view of this.views.all()) {
@@ -1539,7 +1568,7 @@ export class ReplayEngine {
 
   private sourceForSymbol(symbolCode: string): BarSource | null {
     if (this.snapshot.symbol?.symbol === symbolCode) return this.source
-    return this.auxiliarySources.get(symbolCode) ?? null
+    return this.peerSources.get(symbolCode) ?? null
   }
 
   private pruneInactiveSymbolCaches(): void {
@@ -1550,10 +1579,10 @@ export class ReplayEngine {
       const symbol = view.symbol()?.symbol
       if (symbol) retainedSymbols.add(symbol)
     }
-    const retainedAuxiliarySymbols = new Set(
+    const retainedPeerSymbols = new Set(
       [...retainedSymbols].filter((symbol) => symbol !== replaySymbol),
     )
-    pruneSymbolCache(this.auxiliarySources, retainedAuxiliarySymbols)
+    pruneSymbolCache(this.peerSources, retainedPeerSymbols)
     pruneSymbolCache(this.drawingDocuments, retainedSymbols)
   }
 
@@ -1797,10 +1826,13 @@ export class ReplayEngine {
     const previousCursorTs = this.snapshot.cursorTs
     const rawBars: Bar1m[] = []
     let processed = 0
+    let blockedPeerSymbols: string[] = []
     let tradeCheckpoint: { cursorTs: number; fills: Map<string, FillEngineState> } | null = null
     for (let index = 0; index < steps; index += 1) {
       const bar = this.source.at(this.cursorIndex + 1)
       if (!bar) break
+      blockedPeerSymbols = this.peerSymbolsBehind(bar.ts)
+      if (blockedPeerSymbols.length > 0) break
       this.cursorIndex += 1
       const tradesBeforeBar = this.closedTradeCount()
       for (const [fillSymbol, currentFill] of this.symbolFills) {
@@ -1821,6 +1853,10 @@ export class ReplayEngine {
       this.viewportCache.append(bar)
       processed += 1
     }
+    if (processed === 0 && blockedPeerSymbols.length > 0) {
+      this.waitForPeerData(blockedPeerSymbols)
+      return
+    }
     if (processed === 0) {
       this.resumeAfterSourcePrefetch = this.resumeAfterSourcePrefetch || this.snapshot.playing
       void this.prefetchSource(true)
@@ -1829,23 +1865,18 @@ export class ReplayEngine {
       return
     }
     this.pruneFillSnapshots()
-    let viewBudget = this.views.size()
-    if (this.snapshot.playing && this.snapshot.speed * this.stepBars() >= HIGH_THROUGHPUT_BARS_PER_SECOND && this.views.size() > 1) {
-      // Lightweight Charts paints on the animation frame after a series
-      // update. Leave the following frame free for that paint, then rotate
-      // to the next pane; this keeps pointer/input frames responsive while
-      // every pane catches up from its lossless raw-bar queue on pause.
-      viewBudget = this.highSpeedChartFrame % 2 === 0 ? 1 : 0
-      this.highSpeedChartFrame += 1
-    }
     const symbolCode = this.snapshot.symbol?.symbol
-    if (symbolCode) this.views.pushRawBars(rawBars, symbolCode, viewBudget)
+    // Every pane receives the same committed batch in the same engine turn.
+    // Rendering fewer panes at high speed made the queues lossless, but the
+    // charts could visibly disagree until pause — forbidden by the shared
+    // cursor invariant.
+    if (symbolCode) this.views.pushRawBars(rawBars, symbolCode)
     const current = this.source.at(this.cursorIndex)
     const cursorTs = current?.ts ?? this.snapshot.cursorTs
-    for (const [auxiliarySymbol, auxiliarySource] of this.auxiliarySources) {
-      if (auxiliarySymbol === symbolCode) continue
-      const auxiliaryBars = this.sourceBarsBetween(auxiliarySource, previousCursorTs, cursorTs)
-      if (auxiliaryBars.length > 0) this.views.pushRawBars(auxiliaryBars, auxiliarySymbol, viewBudget)
+    for (const [peerSymbol, peerSource] of this.peerSources) {
+      if (peerSymbol === symbolCode) continue
+      const peerBars = this.sourceBarsBetween(peerSource, previousCursorTs, cursorTs)
+      if (peerBars.length > 0) this.views.pushRawBars(peerBars, peerSymbol)
     }
     const activeSymbol = this.tradingSymbol()
     const activeFill = activeSymbol ? this.symbolFills.get(activeSymbol.symbol) ?? null : null
@@ -1866,7 +1897,9 @@ export class ReplayEngine {
     this.scheduleIndicatorRefresh()
     this.scheduleSecondsPaneRefresh()
     if (tradeCheckpoint) this.captureWorkspaceRecoveryPoint('trade-close', tradeCheckpoint)
+    this.prefetchPeerSources(cursorTs)
     void this.prefetchSource()
+    if (blockedPeerSymbols.length > 0) this.waitForPeerData(blockedPeerSymbols)
   }
 
   private abortSourcePrefetch(): void {
@@ -1874,6 +1907,108 @@ export class ReplayEngine {
     this.sourcePrefetchController = null
     this.sourcePrefetchPromise = null
     this.resumeAfterSourcePrefetch = false
+  }
+
+  private abortPeerPrefetches(): void {
+    this.peerPrefetchControllers.forEach((controller) => controller.abort())
+    this.peerPrefetchControllers.clear()
+    this.peerPrefetchPromises.clear()
+    this.peerPrefetchFailures.clear()
+    this.waitingForPeerData = false
+    this.resumeAfterPeerPrefetch = false
+  }
+
+  /** Symbols whose loaded raw feed does not yet cover the requested cursor. */
+  private peerSymbolsBehind(targetTs: number): string[] {
+    const clockSymbol = this.snapshot.symbol?.symbol
+    const lagging: string[] = []
+    for (const [symbolCode, source] of this.peerSources) {
+      if (symbolCode !== clockSymbol && source.lastTs < targetTs) lagging.push(symbolCode)
+    }
+    return lagging
+  }
+
+  /**
+   * Shared-cursor data barrier. No replay bar is committed while any visible
+   * symbol is missing the corresponding time window. Fast playback therefore
+   * applies backpressure to every chart and fill engine as one atomic stream.
+   */
+  private waitForPeerData(symbols: string[]): void {
+    this.waitingForPeerData = true
+    this.resumeAfterPeerPrefetch = this.resumeAfterPeerPrefetch || this.snapshot.playing
+    this.prefetchPeerSources(this.snapshot.cursorTs)
+    this.pause()
+    this.setSnapshot({ status: 'buffering', error: `Synchronizing replay data: ${symbols.join(', ')}` }, true)
+    this.finishPeerDataBarrier()
+  }
+
+  private finishPeerDataBarrier(): void {
+    if (!this.waitingForPeerData || this.peerPrefetchPromises.size > 0 || !this.source) return
+    const nextBar = this.source.at(this.cursorIndex + 1)
+    const lagging = nextBar ? this.peerSymbolsBehind(nextBar.ts) : []
+    if (lagging.length > 0) {
+      // A very large replay step can require more than one 10k-bar page.
+      // Continue paging until every peer covers the next shared cursor bar.
+      if (lagging.some((symbol) => this.peerPrefetchFailures.has(symbol))) return
+      this.prefetchPeerSources(this.snapshot.cursorTs)
+      if (this.peerPrefetchPromises.size === 0) {
+        this.setSnapshot({ error: `Replay cannot continue because ${lagging.join(', ')} has no data for the next synchronized timestamp.` }, true)
+      }
+      return
+    }
+
+    const shouldResume = this.resumeAfterPeerPrefetch
+    this.waitingForPeerData = false
+    this.resumeAfterPeerPrefetch = false
+    this.setSnapshot({ status: 'ready', error: null }, true)
+    if (shouldResume) this.play()
+  }
+
+  /**
+   * Keeps every symbol feed represented by the workspace ahead of the shared
+   * cursor. Session and evaluation modes use the same path: the clock feed
+   * does not grant its symbol exclusive prefetch or chart-update ownership.
+   */
+  private prefetchPeerSources(cursorTs: number): void {
+    for (const [symbolCode, source] of this.peerSources) {
+      if (this.peerPrefetchPromises.has(symbolCode)) continue
+      const symbol = this.snapshot.symbols.find((item) => item.symbol === symbolCode)
+      const baseTimeframe = symbol ? replayBaseTimeframe(symbol) : null
+      const range = symbol && baseTimeframe ? symbol.ranges[baseTimeframe] : null
+      if (!symbol || !baseTimeframe || !range || source.count === 0 || source.lastTs >= range.to) continue
+      const remaining = source.count - source.findIndex(cursorTs) - 1
+      if (remaining > SOURCE_PREFETCH_REMAINING_BARS) continue
+
+      const controller = new AbortController()
+      this.peerPrefetchFailures.delete(symbolCode)
+      this.peerPrefetchControllers.set(symbolCode, controller)
+      const promise = fetchBarsAt(
+        symbolCode,
+        baseTimeframe,
+        source.lastTs,
+        0,
+        SOURCE_PREFETCH_PAGE_BARS,
+        controller.signal,
+      ).then((frame) => {
+        if (controller.signal.aborted || this.peerSources.get(symbolCode) !== source) return
+        const merged = source.append(frame)
+        if (merged === source) return
+        this.peerSources.set(symbolCode, merged)
+        // A peer may have reached its previous edge while this request was
+        // in flight. Rebuild at the current cursor to close that entire gap,
+        // rather than only pushing bars from the latest clock tick.
+        this.rebuildPeerCharts(this.snapshot.cursorTs, true)
+      }).catch((error: unknown) => {
+        if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return
+        this.peerPrefetchFailures.add(symbolCode)
+        this.setSnapshot({ error: `${symbolCode} replay data could not be extended: ${error instanceof Error ? error.message : 'unknown error'}` }, true)
+      }).finally(() => {
+        if (this.peerPrefetchControllers.get(symbolCode) === controller) this.peerPrefetchControllers.delete(symbolCode)
+        if (this.peerPrefetchPromises.get(symbolCode) === promise) this.peerPrefetchPromises.delete(symbolCode)
+        this.finishPeerDataBarrier()
+      })
+      this.peerPrefetchPromises.set(symbolCode, promise)
+    }
   }
 
   private prefetchSource(force = false): Promise<void> {
@@ -1902,8 +2037,8 @@ export class ReplayEngine {
       if (merged === source) return
       this.source = merged
       this.cursorIndex = merged.findIndex(cursorTs)
-      if (this.snapshot.status === 'buffering') this.setSnapshot({ status: 'ready', error: null }, true)
-      if (this.resumeAfterSourcePrefetch) {
+      if (this.snapshot.status === 'buffering' && !this.waitingForPeerData) this.setSnapshot({ status: 'ready', error: null }, true)
+      if (this.resumeAfterSourcePrefetch && !this.waitingForPeerData) {
         this.resumeAfterSourcePrefetch = false
         this.play()
       }
@@ -1927,7 +2062,7 @@ export class ReplayEngine {
     this.views.rebuildSymbol(this.rawHistory(), symbol, true)
     const last = source.at(this.cursorIndex)
     const cursorTs = last?.ts ?? this.snapshot.cursorTs
-    this.rebuildAuxiliaryCharts(cursorTs, true)
+    this.rebuildPeerCharts(cursorTs, true)
     this.snapshot = { ...this.snapshot, cursorTs, lastBar: last }
     this.syncChartTradingState()
   }
@@ -2185,7 +2320,7 @@ export class ReplayEngine {
     return bars
   }
 
-  private auxiliaryViews(): ChartViewController[] {
+  private peerViews(): ChartViewController[] {
     const replaySymbol = this.snapshot.symbol?.symbol
     return this.views.all().filter((view) => {
       const symbol = view.symbol()?.symbol
@@ -2193,18 +2328,18 @@ export class ReplayEngine {
     })
   }
 
-  private rebuildAuxiliaryCharts(cursorTs: number, preserveViewport: boolean): void {
-    for (const view of this.auxiliaryViews()) {
+  private rebuildPeerCharts(cursorTs: number, preserveViewport: boolean): void {
+    for (const view of this.peerViews()) {
       const symbol = view.symbol()
-      const source = symbol ? this.auxiliarySources.get(symbol.symbol) : undefined
+      const source = symbol ? this.peerSources.get(symbol.symbol) : undefined
       if (!symbol || !source) continue
       view.rebuild(this.rawHistoryFromSource(source, cursorTs), symbol, preserveViewport)
       view.syncEconomicEventMarkers(this.economicEventMarkers)
     }
   }
 
-  private async refreshAuxiliaryViewsAtCursor(cursorTs: number): Promise<void> {
-    const views = this.auxiliaryViews()
+  private async refreshPeerViewsAtCursor(cursorTs: number): Promise<void> {
+    const views = this.peerViews()
     if (views.length === 0) return
     const symbols = new Map<string, SymbolMeta>()
     for (const view of views) {
@@ -2212,14 +2347,14 @@ export class ReplayEngine {
       if (symbol) symbols.set(symbol.symbol, symbol)
     }
     await Promise.all([...symbols.values()].map(async (symbol) => {
-      const source = this.auxiliarySources.get(symbol.symbol)
+      const source = this.peerSources.get(symbol.symbol)
       if (source && cursorTs >= source.firstTs && cursorTs <= source.lastTs) return
       const frame = await fetchBarsAt(symbol.symbol, replayBaseTimeframe(symbol), cursorTs, 3000, 10000)
-      this.auxiliarySources.set(symbol.symbol, new BarSource(frame))
+      this.peerSources.set(symbol.symbol, new BarSource(frame))
     }))
     await Promise.all(views.map(async (view) => {
       const symbol = view.symbol()
-      const source = symbol ? this.auxiliarySources.get(symbol.symbol) : undefined
+      const source = symbol ? this.peerSources.get(symbol.symbol) : undefined
       if (!symbol || !source) return
       const raw = this.rawHistoryFromSource(source, cursorTs)
       const displayBars = await this.loadInitialDisplayHistory(view.id, view.timeframe, symbol, raw, cursorTs)
@@ -2422,9 +2557,9 @@ export class ReplayEngine {
   ): Promise<void> {
     cancelAnimationFrame(this.animationFrame)
     this.views.flushRawBars()
-    this.highSpeedChartFrame = 0
     const detachedSessionId = this.snapshot.sessionId
     const hadSession = detachedSessionId !== null
+    this.playRequestedWhileEvaluationResumes = false
     this.setSnapshot({ playing: false }, true)
     if (!options.drawingsFlushed && !await this.flushDrawingPersistence()) {
       this.setSnapshot({ error: 'Session drawings could not be saved. The session remains open so you can retry.' }, true)

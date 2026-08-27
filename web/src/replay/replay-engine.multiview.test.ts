@@ -459,6 +459,127 @@ describe('ReplayEngine multi-view invariant', () => {
     engine.destroy()
   })
 
+  it.each(['session', 'evaluation'] as const)('keeps every visible symbol current across replay buffers in a %s', async (mode) => {
+    const es: SymbolMeta = { ...apiData.symbol, symbol: 'ES', name: 'E-mini S&P', ranges: { '1m': { from: 0, to: 300 } } }
+    const ym: SymbolMeta = { ...apiData.symbol, symbol: 'YM', name: 'E-mini Dow', ranges: { '1m': { from: 0, to: 300 } } }
+    const initialPeerFrame: BarFrame = {
+      ...apiData.frame,
+      count: 3,
+      ts: new Uint32Array([0, 60, 120]),
+      open: new Int32Array([500, 501, 502]), high: new Int32Array([504, 505, 506]),
+      low: new Int32Array([496, 497, 498]), close: new Int32Array([502, 503, 504]), volume: new Uint32Array([10, 10, 10]),
+    }
+    const nextPeerFrame: BarFrame = {
+      ...apiData.frame,
+      count: 3,
+      ts: new Uint32Array([180, 240, 300]),
+      open: new Int32Array([503, 504, 505]), high: new Int32Array([507, 508, 509]),
+      low: new Int32Array([499, 500, 501]), close: new Int32Array([505, 506, 507]), volume: new Uint32Array([10, 10, 10]),
+    }
+    const requests = new Map<string, number>()
+    let releaseNextPeerFrame: (frame: BarFrame) => void = () => { throw new Error('Expected delayed peer prefetch to be pending') }
+    const delayedNextPeerFrame = new Promise<BarFrame>((resolve) => { releaseNextPeerFrame = resolve })
+    engineMocks.fetchSymbols.mockResolvedValueOnce([apiData.symbol, es, ym])
+    engineMocks.fetchBarsAt.mockImplementation((symbol: string) => {
+      if (symbol === 'NQ') return Promise.resolve(apiData.frame)
+      const count = (requests.get(symbol) ?? 0) + 1
+      requests.set(symbol, count)
+      return count === 1 ? Promise.resolve(initialPeerFrame) : delayedNextPeerFrame
+    })
+    if (mode === 'evaluation') getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 0, 'America/New_York')
+    const load = vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false })
+    const engine = new ReplayEngine({ load })
+    const nqView = adapter()
+    const esView = adapter()
+    const ymView = adapter()
+    await engine.registerChartView('pane-nq', document.createElement('div'), nqView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-es', document.createElement('div'), esView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore(), 'ES')
+    await engine.registerChartView('pane-ym', document.createElement('div'), ymView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore(), 'YM')
+    if (mode === 'session') {
+      engine.beginReplaySelection()
+      nqView.fireReplayBarSelect(0)
+      await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+    }
+    esView.pushBars.mockClear()
+    ymView.pushBars.mockClear()
+
+    engine.stepForward()
+    await vi.waitFor(() => expect(Object.fromEntries(requests)).toMatchObject({ ES: 2, YM: 2 }))
+    engine.stepForward()
+    engine.stepForward()
+
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 120, status: 'buffering' })
+    releaseNextPeerFrame(nextPeerFrame)
+    await vi.waitFor(() => expect(engine.getSnapshot().status).toBe('ready'))
+    engine.stepForward()
+
+    expect(esView.pushBars.mock.calls.flatMap(([bars]) => bars)).toContainEqual(expect.objectContaining({ time: 180 }))
+    expect(ymView.pushBars.mock.calls.flatMap(([bars]) => bars)).toContainEqual(expect.objectContaining({ time: 180 }))
+    engine.destroy()
+  })
+
+  it('pauses high-speed playback at the shared data barrier and resumes every pane together', async () => {
+    const es: SymbolMeta = { ...apiData.symbol, symbol: 'ES', name: 'E-mini S&P', ranges: { '1m': { from: 0, to: 300 } } }
+    const initialPeerFrame: BarFrame = {
+      ...apiData.frame,
+      count: 3,
+      ts: new Uint32Array([0, 60, 120]),
+      open: new Int32Array([500, 501, 502]), high: new Int32Array([504, 505, 506]),
+      low: new Int32Array([496, 497, 498]), close: new Int32Array([502, 503, 504]), volume: new Uint32Array([10, 10, 10]),
+    }
+    const nextPeerFrame: BarFrame = {
+      ...initialPeerFrame,
+      ts: new Uint32Array([180, 240, 300]),
+    }
+    let releasePeerFrame: (frame: BarFrame) => void = () => { throw new Error('Expected a peer prefetch request') }
+    const delayedPeerFrame = new Promise<BarFrame>((resolve) => { releasePeerFrame = resolve })
+    let esRequests = 0
+    engineMocks.fetchSymbols.mockResolvedValueOnce([apiData.symbol, es])
+    engineMocks.fetchBarsAt.mockImplementation((symbol: string) => {
+      if (symbol === 'NQ') return Promise.resolve(apiData.frame)
+      esRequests += 1
+      return esRequests === 1 ? Promise.resolve(initialPeerFrame) : delayedPeerFrame
+    })
+
+    const engine = new ReplayEngine({ load: vi.fn<ViewportDataClient['load']>().mockResolvedValue({ bars: displayBars, hasMore: false }) })
+    const nqView = adapter()
+    const esView = adapter()
+    await engine.registerChartView('pane-nq', document.createElement('div'), nqView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.registerChartView('pane-es', document.createElement('div'), esView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore(), 'ES')
+    engine.beginReplaySelection()
+    nqView.fireReplayBarSelect(0)
+    await vi.waitFor(() => expect(engine.getSnapshot().replayMode).toBe('active'))
+    nqView.pushBars.mockClear()
+    esView.pushBars.mockClear()
+
+    let nextAnimationFrame: FrameRequestCallback = () => { throw new Error('Expected playback animation frame') }
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      nextAnimationFrame = callback
+      return 1
+    })
+    try {
+      engine.setSpeed(16)
+      engine.play()
+      nextAnimationFrame(performance.now() + 250)
+
+      expect(engine.getSnapshot()).toMatchObject({ cursorTs: 120, status: 'buffering', playing: false })
+      expect(nqView.pushBars.mock.calls.flatMap(([bars]) => bars).at(-1)).toEqual(expect.objectContaining({ time: 120 }))
+      expect(esView.pushBars.mock.calls.flatMap(([bars]) => bars).at(-1)).toEqual(expect.objectContaining({ time: 120 }))
+
+      releasePeerFrame(nextPeerFrame)
+      await vi.waitFor(() => expect(engine.getSnapshot()).toMatchObject({ status: 'ready', playing: true }))
+      nextAnimationFrame(performance.now() + 100)
+
+      const resumedCursor = engine.getSnapshot().cursorTs
+      expect(resumedCursor).toBeGreaterThan(120)
+      expect(nqView.pushBars.mock.calls.flatMap(([bars]) => bars).at(-1)).toEqual(expect.objectContaining({ time: resumedCursor }))
+      expect(esView.pushBars.mock.calls.flatMap(([bars]) => bars).at(-1)).toEqual(expect.objectContaining({ time: resumedCursor }))
+    } finally {
+      requestFrame.mockRestore()
+      engine.destroy()
+    }
+  })
+
   it('keeps drawing-tool ownership on a pane activated before its adapter finishes registering', async () => {
     const engine = new ReplayEngine()
     const first = adapter()
@@ -1116,6 +1237,19 @@ describe('ReplayEngine multi-view invariant', () => {
     engine.destroy()
   })
 
+  it('opens a new evaluation without assigning account ownership to a symbol', async () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[0], null, '1970-01-01', 60, 'America/New_York')
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+
+    await engine.syncEvaluationSession()
+
+    expect(getEvalState().instrument).toBeNull()
+    expect(engineMocks.createSession).toHaveBeenCalledWith('NQ', '1m', 60, expect.objectContaining({ kind: 'eval' }))
+    engine.destroy()
+  })
+
   it('resumes an evaluation at the locked start date from its last exit cursor', async () => {
     const engine = new ReplayEngine()
     const view = adapter()
@@ -1132,6 +1266,84 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(engine.getSnapshot().cursorTs).toBe(180)
     engine.stepForward()
     expect(engine.getSnapshot().cursorTs).toBe(240)
+    engine.destroy()
+  })
+
+  it('rebuilds an explicitly selected clock-symbol pane at the resumed evaluation cursor', async () => {
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore(), 'NQ')
+    getEvalState().createEvaluation(EVAL_PRESETS[0], null, '1970-01-01', 60, 'America/New_York')
+    getEvalState().activateEvaluation()
+    useEvalStore.setState({ lastCursorTs: 180 })
+    view.setHistory.mockClear()
+
+    await engine.syncEvaluationSession()
+
+    expect(engine.getSnapshot()).toMatchObject({ cursorTs: 180, replayMode: 'active' })
+    expect(view.setHistory).toHaveBeenCalled()
+    expect(view.setHistory.mock.calls.at(-1)?.[0].at(-1)).toEqual(expect.objectContaining({ time: 180 }))
+    engine.destroy()
+  })
+
+  it('exits an active evaluation before activating a replay Session', async () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[0], null, '1970-01-01', 60, 'America/New_York')
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.syncEvaluationSession()
+    const session: ReplaySession = {
+      id: 'replacement-session', name: '', symbol: 'NQ', tf: '1m', startTs: 0, cursorTs: 180,
+      equityCents: 1_000_000, status: 'paused', kind: 'replay', config: {}, createdAt: 0, updatedAt: 180,
+    }
+
+    await engine.resumeSession(session)
+
+    expect(getEvalState().phase).toBe('idle')
+    expect(engine.getSnapshot()).toMatchObject({ sessionId: session.id, sessionStatus: 'active', replayMode: 'active', cursorTs: 180 })
+    engine.destroy()
+  })
+
+  it('can play replay immediately after resuming a paused evaluation', async () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 60, 'America/New_York')
+    const accountId = getEvalState().accountId
+    if (!accountId) throw new Error('Evaluation fixture did not create an account')
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.syncEvaluationSession()
+    await engine.exitEvaluation()
+
+    getEvalState().restoreAccount(accountId)
+    getEvalState().activateEvaluation()
+    await engine.syncEvaluationSession()
+    engine.togglePlay()
+
+    expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', status: 'ready', playing: true })
+    engine.destroy()
+  })
+
+  it('honors a play click made while a paused evaluation is still resuming', async () => {
+    getEvalState().startEvaluation(EVAL_PRESETS[0], 'NQ', '1970-01-01', 60, 'America/New_York')
+    const accountId = getEvalState().accountId
+    if (!accountId) throw new Error('Evaluation fixture did not create an account')
+    const engine = new ReplayEngine()
+    const view = adapter()
+    await engine.registerChartView('pane-a', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+    await engine.syncEvaluationSession()
+    await engine.exitEvaluation()
+    getEvalState().restoreAccount(accountId)
+    getEvalState().activateEvaluation()
+
+    const recovery = { release: null as (() => void) | null }
+    engineMocks.fetchWorkspaceSnapshot.mockImplementationOnce(() => new Promise((resolve) => { recovery.release = () => resolve(null) }))
+    const resume = engine.syncEvaluationSession()
+    await vi.waitFor(() => expect(recovery.release).not.toBeNull())
+    engine.togglePlay()
+    recovery.release?.()
+    await resume
+
+    expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', status: 'ready', playing: true })
     engine.destroy()
   })
 

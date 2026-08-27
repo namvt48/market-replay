@@ -1,0 +1,14 @@
+[Unit]
+# No Requires/After here: the timer itself is the trigger (see systemd.timer(5)).
+# Ordering + dependency on the triggered unit are implicit via Unit= below.
+Description=Run the DuckDNS IP updater every 5 minutes
+
+[Timer]
+# DuckDNS recommends updating at least every 5 minutes so a changed IP is
+# republished quickly; the first run happens shortly after boot.
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=duckdns-update.service
+
+[Install]
+WantedBy=timers.target

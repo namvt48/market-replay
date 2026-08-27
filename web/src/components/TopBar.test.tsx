@@ -11,6 +11,7 @@ const workspaceMocks = vi.hoisted(() => ({
   state: {
     activePaneId: 'pane-1',
     timezone: { kind: 'preset' as const, id: 'ET' as const },
+    syncFlags: { crosshair: true, dateRange: true, lockZoom: false },
     panes: { 'pane-1': { id: 'pane-1' }, 'pane-2': { id: 'pane-2' } },
     root: { kind: 'split', id: 'root', orientation: 'horizontal', ratio: 0.5, first: { kind: 'pane', paneId: 'pane-1' }, second: { kind: 'pane', paneId: 'pane-2' } },
   },

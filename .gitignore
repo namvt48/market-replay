@@ -2,6 +2,15 @@
 /bin/
 /server
 
+# Deploy secrets — DuckDNS token & compose .env must NEVER be committed.
+# deploy/duckdns-update.sh reads /etc/duckdns/duckdns.conf on the server
+# (root-only); if you keep a local copy, it must stay ignored.
+.env
+.env.*
+deploy/.env
+deploy/duckdns.conf
+**/duckdns.conf
+
 # Frontend (web/) — dist is a build artifact; `make build` regenerates it
 # before the Go embed step, so it must never be relied on as committed.
 web/node_modules/

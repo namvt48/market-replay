@@ -7,7 +7,12 @@ import { EvaluationPanel } from './EvaluationPanel'
 
 vi.mock('../../chart-workspace/use-chart-workspace', () => ({ useChartWorkspace: () => ({ state: { timezone: { kind: 'preset', id: 'UTC' } } }) }))
 
-const replayMocks = vi.hoisted(() => ({ syncEvaluationSession: vi.fn(), patchSession: vi.fn() }))
+const replayMocks = vi.hoisted(() => ({
+  syncEvaluationSession: vi.fn(),
+  pauseReplaySession: vi.fn(),
+  getSnapshot: vi.fn(),
+  patchSession: vi.fn(),
+}))
 
 vi.mock('../../replay/replay-engine', () => ({ replayEngine: replayMocks }))
 vi.mock('../../api/client', () => ({ patchSession: replayMocks.patchSession }))
@@ -24,6 +29,9 @@ describe('EvaluationPanel', () => {
     localStorage.clear()
     getEvalState().abandon()
     replayMocks.syncEvaluationSession.mockReset()
+    replayMocks.pauseReplaySession.mockReset()
+    replayMocks.pauseReplaySession.mockResolvedValue(undefined)
+    replayMocks.getSnapshot.mockReturnValue({ sessionId: null, sessionStatus: null })
     replayMocks.patchSession.mockReset()
     replayMocks.patchSession.mockResolvedValue(undefined)
   })
@@ -38,7 +46,7 @@ describe('EvaluationPanel', () => {
   })
 
   it('shows the active account metrics and its closed-trade history', () => {
-    const config = EVAL_PRESETS[0]
+    const config = { ...EVAL_PRESETS[0], minTradingDays: 4 }
     getEvalState().startEvaluation(config, 'NQ', '2024-01-15', START_TS)
     useEvalStore.setState({
       runtime: { ...newRuntime(config), peakEquity: 102000, lastEquity: 101250 },
@@ -61,7 +69,8 @@ describe('EvaluationPanel', () => {
 
     const accountId = getEvalState().accountId
     if (!accountId) throw new Error('Expected an active evaluation account id')
-    expect(screen.getAllByText('FTMO 100K (static)')).toHaveLength(2)
+    expect(screen.getAllByText('FTMO 100K (static)')).toHaveLength(1)
+    expect(screen.queryByText(/Updated /)).not.toBeInTheDocument()
     expect(screen.getAllByText(`#${shortEvalAccountHash(accountId)}`)).toHaveLength(2)
     expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0)
     const liveAccount = screen.getByRole('button', { name: /#.*FTMO 100K/ })
@@ -69,6 +78,10 @@ describe('EvaluationPanel', () => {
     expect(liveAccount).toHaveClass('bg-active/10')
     expect(screen.queryByText('All symbols')).not.toBeInTheDocument()
     expect(screen.getByText('$101,250')).toBeVisible()
+    expect(screen.getByRole('progressbar', { name: 'Profit target' })).toBeVisible()
+    expect(screen.getByText('$1,000 / $10,000')).toBeVisible()
+    expect(screen.getByRole('progressbar', { name: 'Trading days' })).toBeVisible()
+    expect(screen.getByText('1 / 4')).toBeVisible()
     expect(screen.getByText('TRADE HISTORY')).toBeVisible()
     expect(screen.getByText('LONG')).toBeVisible()
     expect(screen.getByText('1 NQ')).toBeVisible()
@@ -95,6 +108,14 @@ describe('EvaluationPanel', () => {
     expect(screen.getByRole('progressbar', { name: 'Consistency' })).toHaveAttribute('aria-valuenow', '100')
   })
 
+  it('does not label custom-only accounts as Custom', () => {
+    getEvalState().startEvaluation(customConfig(), null, '2024-01-15', START_TS)
+
+    render(<EvaluationPanel />)
+
+    expect(screen.queryByText('Custom')).not.toBeInTheDocument()
+  })
+
   it('keeps a passed evaluation terminal without funded or payout actions', () => {
     const config = EVAL_PRESETS[2]
     getEvalState().startEvaluation(config, 'NQ', '2024-01-15', START_TS)
@@ -111,6 +132,45 @@ describe('EvaluationPanel', () => {
     expect(screen.queryByText(/payout|funded|verification/i)).not.toBeInTheDocument()
   })
 
+  it('deletes a passed evaluation via the same two-step guard as a paused account', async () => {
+    const user = userEvent.setup()
+    const config = EVAL_PRESETS[2]
+    getEvalState().startEvaluation(config, 'NQ', '2024-01-15', START_TS)
+    const accountId = getEvalState().accountId
+    if (!accountId) throw new Error('Expected a passed evaluation account id')
+    useEvalStore.setState({
+      phase: 'passed',
+      runtime: { ...newRuntime(config, START_TS), outcome: 'passed', passedAt: START_TS + 3600 },
+      lastEvalBalance: 53000,
+      lastEvalEquity: 53000,
+    })
+    render(<EvaluationPanel />)
+
+    await user.click(screen.getByRole('button', { name: /Delete Apex.*evaluation/ }))
+    await user.click(screen.getByRole('button', { name: /Confirm delete Apex.*evaluation/ }))
+
+    expect(loadEvalAccounts().some((account) => account.accountId === accountId)).toBe(false)
+    expect(getEvalState().phase).toBe('idle')
+  })
+
+  it('keeps retry and delete available after an evaluation fails', async () => {
+    const user = userEvent.setup()
+    const config = EVAL_PRESETS[0]
+    getEvalState().startEvaluation(config, 'NQ', '2024-01-15', START_TS)
+    useEvalStore.setState({
+      phase: 'failed',
+      runtime: { ...newRuntime(config, START_TS), outcome: 'failed', failReason: 'daily', failedAt: START_TS + 3600 },
+      lastEvalBalance: 95000,
+      lastEvalEquity: 95000,
+    })
+    render(<EvaluationPanel />)
+
+    expect(screen.getByRole('button', { name: /Retry with new account/ })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Delete FTMO.*evaluation/ })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /Delete FTMO.*evaluation/ }))
+    expect(screen.getByRole('button', { name: /Confirm delete FTMO.*evaluation/ })).toBeVisible()
+  })
+
   it('hides account metrics until Start Eval is pressed', async () => {
     const user = userEvent.setup()
     getEvalState().createEvaluation(EVAL_PRESETS[0], 'NQ', '2024-01-15', START_TS)
@@ -123,6 +183,9 @@ describe('EvaluationPanel', () => {
     expect(screen.getByText(/No closed trades yet/)).toBeVisible()
     expect(replayMocks.syncEvaluationSession).not.toHaveBeenCalled()
 
+    replayMocks.getSnapshot
+      .mockReturnValueOnce({ sessionId: 'active-session', sessionStatus: 'active' })
+      .mockReturnValue({ sessionId: null, sessionStatus: null })
     await user.click(screen.getByRole('button', { name: 'Start Eval' }))
 
     expect(getEvalState()).toMatchObject({ phase: 'running', needsFillRebase: false })
@@ -130,7 +193,9 @@ describe('EvaluationPanel', () => {
     expect(screen.getByText('Balance')).toBeVisible()
     expect(screen.getByText('TRADE HISTORY')).toBeVisible()
     expect(screen.getByText(/No closed trades yet/)).toBeVisible()
+    expect(replayMocks.pauseReplaySession).toHaveBeenCalledOnce()
     expect(replayMocks.syncEvaluationSession).toHaveBeenCalledOnce()
+    expect(replayMocks.pauseReplaySession.mock.invocationCallOrder[0]).toBeLessThan(replayMocks.syncEvaluationSession.mock.invocationCallOrder[0] ?? 0)
   })
 
   it('lists a paused account trade history with side, size, times, P&L and extremes', async () => {

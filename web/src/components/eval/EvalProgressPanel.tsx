@@ -1,4 +1,4 @@
-import { LogOut } from 'lucide-react'
+import { ChevronDown, ChevronUp, LogOut } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { evalAccountName, evalStatus } from '../../eval/rules'
@@ -18,7 +18,7 @@ const fmtPct = (n: number): string => percentFormatter.format(n)
 
 const clampPct = (pct: number): number => Math.min(100, Math.max(0, pct * 100))
 
-type GaugeTone = 'accent' | 'profit' | 'loss'
+type GaugeTone = 'accent' | 'profit' | 'loss' | 'caution'
 
 interface GaugeProps {
   label: string
@@ -29,9 +29,9 @@ interface GaugeProps {
 }
 
 function Gauge({ label, value, pct, buffer, tone }: GaugeProps): ReactElement {
-  const fill = tone === 'profit' ? 'bg-profit' : tone === 'loss' ? 'bg-loss' : 'bg-active'
+  const fill = tone === 'profit' ? 'bg-profit' : tone === 'loss' ? 'bg-loss' : tone === 'caution' ? 'bg-caution' : 'bg-active'
   return (
-    <div className="min-w-56 flex-1 bg-surface-1 p-2.5">
+    <div className="min-w-0 border-line px-3 py-2.5 sm:[&:not(:last-child)]:border-r">
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-ui-meta text-dim">{label}</span>
         <span className="font-mono text-ui-body text-ink">{value}</span>
@@ -65,13 +65,17 @@ export function EvalProgressPanel(): ReactElement | null {
   }))
   const replay = useReplaySelector((snapshot) => ({ fill: snapshot.evalFill ?? snapshot.fill }))
   const [dismissed, setDismissed] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
 
   const phase = session.phase
   const config = session.config
   const runtime = session.runtime
 
   useEffect(() => {
-    if (phase === 'running') setDismissed(false)
+    if (phase === 'running') {
+      setDismissed(false)
+      setCollapsed(false)
+    }
   }, [phase])
 
   if (phase === 'idle' || phase === 'ready' || phase === 'paused' || !config || !runtime) return null
@@ -118,16 +122,44 @@ export function EvalProgressPanel(): ReactElement | null {
     )
   }
 
+  if (collapsed) {
+    return (
+      <section className="shrink-0 border-t border-line bg-surface-1" aria-label="Collapsed evaluation progress">
+        <div className="flex min-h-10 items-center justify-between gap-3 px-3">
+          <div className="flex min-w-0 items-center gap-2 text-ui-meta">
+            <span className="hidden font-semibold tracking-wide text-muted sm:inline">EVALUATION</span>
+            <span className="truncate font-medium text-ink">{evalAccountName(config)}</span>
+            <span className="flex shrink-0 items-center gap-1 text-active-bright">
+              <span className="size-1.5 animate-replay-pulse rounded-full bg-active" aria-hidden="true" />
+              LIVE
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            <span className={`hidden font-mono text-ui-body font-semibold tabular-nums sm:inline ${equityTone}`}>{fmt$(derivedEquity)}</span>
+            <button type="button" onClick={() => setCollapsed(false)} className="secondary-button min-h-8 px-2" aria-label="Show evaluation progress" aria-expanded="false">
+              Show Eval
+              <ChevronUp size={14} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
   return (
     <section className="relative shrink-0 border-t border-line bg-surface-1" aria-label="Evaluation progress">
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-line px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2 text-ui-body">
-          <span className="hidden text-ui-meta font-semibold tracking-wide text-muted lg:inline">EVALUATION</span>
+          <span className="hidden text-ui-meta font-semibold tracking-wide text-muted md:inline">EVALUATION</span>
           <span className="max-w-36 truncate font-medium text-ink sm:max-w-none">{evalAccountName(config)}</span>
           <span className="hidden text-dim sm:inline" aria-hidden="true">·</span>
           <span className="hidden font-mono text-dim sm:inline">{session.startDate || '—'}</span>
         </div>
         <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setCollapsed(true)} className="secondary-button min-h-11 px-2 sm:min-h-8" aria-label="Hide evaluation progress" aria-expanded="true">
+            <span className="hidden sm:inline">Hide</span>
+            <ChevronDown size={14} aria-hidden="true" />
+          </button>
           <button type="button" onClick={() => { void replayEngine.exitEvaluation() }} className="secondary-button min-h-11 px-2 sm:min-h-9" aria-label="Exit evaluation">
             <LogOut size={13} aria-hidden="true" />
             Exit Eval
@@ -136,16 +168,16 @@ export function EvalProgressPanel(): ReactElement | null {
             <span className="size-1.5 animate-replay-pulse rounded-full bg-active" aria-hidden="true" />
             LIVE
           </span>
-          <div className="text-right">
-            <span className="block text-ui-meta text-dim">Equity</span>
-            <span className={`block font-mono text-ui-body font-semibold tabular-nums ${equityTone}`}>
+          <div className="text-right leading-tight">
+            <span className="mr-1 text-ui-meta text-dim">Equity</span>
+            <span className={`font-mono text-ui-body font-semibold tabular-nums ${equityTone}`}>
               {fmt$(derivedEquity)}
             </span>
           </div>
         </div>
       </div>
 
-      <div className="px-3 pb-2.5">
+      <div className="px-3 py-2">
         <div className="flex items-center justify-between text-ui-meta text-dim">
           <span className="font-mono">{fmt$(config.accountSize)}</span>
           <span>{Math.round(status.targetPct * 100)}%</span>
@@ -159,7 +191,7 @@ export function EvalProgressPanel(): ReactElement | null {
         </div>
       </div>
 
-      <div className="flex gap-px overflow-x-auto border-t border-line bg-line [scrollbar-width:thin]">
+      <div className="grid grid-cols-1 border-t border-line sm:grid-cols-2 xl:grid-cols-4">
         <Gauge
           label="Profit target"
           value={`${fmt$(status.realizedProfit)} / ${fmt$(config.profitTarget)}`}
@@ -171,7 +203,7 @@ export function EvalProgressPanel(): ReactElement | null {
           label="Drawdown"
           value={`${fmt$(status.totalDrawdown)} / ${fmt$(config.maxTotalLoss)}`}
           pct={status.totalPct}
-          tone={status.totalPct >= 1 ? 'loss' : 'accent'}
+          tone={status.totalPct >= 1 ? 'loss' : 'caution'}
           buffer={status.totalPct >= 1 ? 'Breached' : `${fmt$(status.totalRemaining)} to breach`}
         />
         {config.maxDailyLoss > 0 ? (
@@ -179,7 +211,7 @@ export function EvalProgressPanel(): ReactElement | null {
             label="Daily loss"
             value={`${fmt$(status.dailyLoss)} / ${fmt$(config.maxDailyLoss)}`}
             pct={status.dailyPct}
-            tone={status.dailyPct >= 1 ? 'loss' : 'accent'}
+            tone={status.dailyPct >= 1 ? 'loss' : 'caution'}
             buffer={status.dailyPct >= 1 ? 'Limit hit' : `${fmt$(status.dailyRemaining)} to limit`}
           />
         ) : null}
@@ -197,7 +229,7 @@ export function EvalProgressPanel(): ReactElement | null {
             label="Consistency"
             value={`${status.realizedProfit > 0 ? fmtPct(status.consistencyPct) : '—'} / ${config.consistencyRulePct}%`}
             pct={status.consistencyPct / (config.consistencyRulePct / 100)}
-            tone={status.consistencyMet ? 'profit' : status.targetPct >= 1 ? 'loss' : 'accent'}
+            tone={status.consistencyMet ? 'profit' : status.targetPct >= 1 ? 'loss' : 'caution'}
             buffer={status.consistencyMet
               ? `Best day ${fmt$(status.bestDayProfit)} · Within rule`
               : status.realizedProfit <= 0
