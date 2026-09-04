@@ -237,6 +237,50 @@ func TestListTrades_EmptyIsNotError(t *testing.T) {
 	}
 }
 
+// TestListTrades_LiveSessionsBypassCursor is the regression for the live
+// journal being invisible end-to-end: hand-entered trades are stamped with
+// wall-clock timestamps that always sit past the session cursor (nothing
+// advances a live session's cursor — eval sessions advance it as their engine
+// ticks), so the cursor bound used to filter every trade out of both the
+// panel and analytics.
+func TestListTrades_LiveSessionsBypassCursor(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	live, err := s.CreateSession(ctx, model.Session{Symbol: "LIVE", Tf: "1d", StartTs: 1000, Kind: model.SessionKindLive})
+	if err != nil {
+		t.Fatalf("CreateSession(live): %v", err)
+	}
+	journal := []model.Trade{
+		{ID: "trade-1", Symbol: "AAPL", Side: "long", Qty: 2, ExitTs: 2000, CreatedAt: 2000},
+		{ID: "trade-2", Symbol: "MSFT", Side: "short", Qty: 1, ExitTs: 3000, CreatedAt: 3000},
+	}
+	if err := s.ReplaceTrades(ctx, live.ID, journal); err != nil {
+		t.Fatalf("ReplaceTrades: %v", err)
+	}
+	// Cursor is still at StartTs (1000); both trades exit after it.
+	trades, err := s.ListTrades(ctx, live.ID)
+	if err != nil {
+		t.Fatalf("ListTrades: %v", err)
+	}
+	if len(trades) != 2 {
+		t.Fatalf("live session has %d trades, want 2 (cursor exemption)", len(trades))
+	}
+
+	// A replay session with the same cursor must still hide the same trades:
+	// the bound exists so a rewind can never hand back a future trade.
+	replay := newTestSession(t, s)
+	if err := s.ReplaceTrades(ctx, replay.ID, journal); err != nil {
+		t.Fatalf("ReplaceTrades (replay): %v", err)
+	}
+	trades, err = s.ListTrades(ctx, replay.ID)
+	if err != nil {
+		t.Fatalf("ListTrades (replay): %v", err)
+	}
+	if len(trades) != 0 {
+		t.Fatalf("replay session has %d trades, want 0 (cursor bound still applies)", len(trades))
+	}
+}
+
 // TestListTrades_PreservesJournalOrder pins the ordering contract the client
 // depends on: the journal comes back in the order the engine closed the
 // trades, even though a replace writes every row inside one transaction.

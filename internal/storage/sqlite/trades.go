@@ -94,15 +94,20 @@ func (s *Store) ReplaceTrades(ctx context.Context, sessionID string, trades []mo
 // Filtering on read means a resume can never be handed a trade from the
 // future, whatever state the write path left behind.
 //
+// Live sessions are exempt from the bound. A live journal is hand-entered at
+// wall-clock time — nothing advances its cursor (eval sessions advance it as
+// their engine ticks), so bounding by cursor_ts would hide every trade.
+// There is no replay to rewind, hence no spoiler to protect.
+//
 // The join also keeps ListTrades on an unknown session an empty result rather
 // than an error, which is what callers already relied on.
 func (s *Store) ListTrades(ctx context.Context, sessionID string) ([]model.Trade, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT t.id, t.session_id, t.symbol, t.side, t.qty, t.entry_ts, t.entry_price_ticks, t.exit_ts, t.exit_price_ticks, t.realized_cents, t.fees_cents, t.mfe_ticks, t.mae_ticks, t.r_multiple, t.initial_stop_ticks, t.initial_take_profit_ticks, t.protection_adjustments_json, t.exit_reason, t.created_at
 		FROM trades t JOIN sessions s ON s.id = t.session_id
-		WHERE t.session_id = ? AND t.exit_ts <= s.cursor_ts
+		WHERE t.session_id = ? AND (s.kind = ? OR t.exit_ts <= s.cursor_ts)
 		ORDER BY t.created_at ASC, t.rowid ASC
-	`, sessionID)
+	`, sessionID, model.SessionKindLive)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list trades for session %s: %w", sessionID, err)
 	}
