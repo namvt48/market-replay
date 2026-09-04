@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"market-replay/internal/model"
+	"market-replay/internal/storage"
 )
 
 // journalImagesSchema is its own fragment (appended to schema in Init), the
@@ -25,14 +26,13 @@ CREATE TABLE IF NOT EXISTS journal_images (
 CREATE INDEX IF NOT EXISTS idx_ji_session ON journal_images(session_id, created_at);
 `
 
-// errJournalImageNotFound is only for internal use; no shared sentinel
-// exists in the storage package for journal images yet.
-var errJournalImageNotFound = errors.New("journal image not found")
-
 func (s *Store) SaveJournalImage(ctx context.Context, img model.JournalImage) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO journal_images (id, session_id, mime, size, data, caption, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		img.ID, img.SessionID, img.Mime, img.Size, img.Data, img.Caption, img.CreatedAt.UnixMilli())
-	return err
+	if err != nil {
+		return fmt.Errorf("sqlite: journal image save %s: %w", img.ID, err)
+	}
+	return nil
 }
 
 func (s *Store) GetJournalImage(ctx context.Context, id string) (model.JournalImage, error) {
@@ -41,9 +41,9 @@ func (s *Store) GetJournalImage(ctx context.Context, id string) (model.JournalIm
 	var createdAt int64
 	if err := row.Scan(&img.ID, &img.SessionID, &img.Mime, &img.Size, &img.Data, &img.Caption, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return model.JournalImage{}, errJournalImageNotFound
+			return model.JournalImage{}, storage.ErrJournalImageNotFound
 		}
-		return model.JournalImage{}, fmt.Errorf("journal_images get %s: %w", id, err)
+		return model.JournalImage{}, fmt.Errorf("sqlite: journal image get %s: %w", id, err)
 	}
 	img.CreatedAt = time.UnixMilli(createdAt)
 	return img, nil
@@ -52,7 +52,7 @@ func (s *Store) GetJournalImage(ctx context.Context, id string) (model.JournalIm
 func (s *Store) ListJournalImages(ctx context.Context, sessionID string) ([]model.JournalImage, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, mime, size, caption, created_at FROM journal_images WHERE session_id = ? ORDER BY created_at`, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("journal_images list %s: %w", sessionID, err)
+		return nil, fmt.Errorf("sqlite: journal image list %s: %w", sessionID, err)
 	}
 	defer rows.Close()
 	out := []model.JournalImage{}
@@ -60,21 +60,24 @@ func (s *Store) ListJournalImages(ctx context.Context, sessionID string) ([]mode
 		var img model.JournalImage
 		var createdAt int64
 		if err := rows.Scan(&img.ID, &img.SessionID, &img.Mime, &img.Size, &img.Caption, &createdAt); err != nil {
-			return nil, fmt.Errorf("journal_images scan: %w", err)
+			return nil, fmt.Errorf("sqlite: scan journal image: %w", err)
 		}
 		img.CreatedAt = time.UnixMilli(createdAt)
 		out = append(out, img)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: journal image list %s: %w", sessionID, err)
+	}
+	return out, nil
 }
 
 func (s *Store) DeleteJournalImage(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM journal_images WHERE id = ?`, id)
 	if err != nil {
-		return fmt.Errorf("journal_images delete %s: %w", id, err)
+		return fmt.Errorf("sqlite: journal image delete %s: %w", id, err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return errJournalImageNotFound
+		return storage.ErrJournalImageNotFound
 	}
 	return nil
 }

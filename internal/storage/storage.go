@@ -26,6 +26,11 @@ var ErrDrawingTemplateNameTaken = errors.New("storage: drawing template name alr
 // snapshot exists for the given owner.
 var ErrWorkspaceSnapshotNotFound = errors.New("storage: workspace snapshot not found")
 
+// ErrJournalImageNotFound is returned by GetJournalImage when no image
+// exists with the given id, and by DeleteJournalImage when the delete
+// matched no row.
+var ErrJournalImageNotFound = errors.New("storage: journal image not found")
+
 // Store persists sessions, their trade journals, the watchlist, and chart
 // drawings (docs §6.3, §14.2).
 type Store interface {

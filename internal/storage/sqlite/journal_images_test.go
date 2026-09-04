@@ -60,13 +60,20 @@ func TestListJournalImagesExcludesOtherSessions(t *testing.T) {
 		t.Fatalf("seed other session: %v", err)
 	}
 	now := time.Now()
-	for _, id := range []string{"img-a", "img-b", "img-other"} {
-		sid := sessionID
-		if id == "img-other" {
-			sid = other.ID
-		}
-		if err := store.SaveJournalImage(context.Background(), model.JournalImage{ID: id, SessionID: sid, Mime: "image/png", Size: 1, Data: []byte{0}, CreatedAt: now}); err != nil {
-			t.Fatalf("save %s: %v", id, err)
+	// Staggered timestamps lock the oldest-first list contract. img-a is
+	// seeded last (oldest timestamp, newest row) so the order assertion
+	// proves ORDER BY created_at, not insertion order.
+	for _, fix := range []struct {
+		id        string
+		sessionID string
+		createdAt time.Time
+	}{
+		{"img-b", sessionID, now.Add(-time.Minute)},
+		{"img-a", sessionID, now.Add(-2 * time.Minute)},
+		{"img-other", other.ID, now},
+	} {
+		if err := store.SaveJournalImage(context.Background(), model.JournalImage{ID: fix.id, SessionID: fix.sessionID, Mime: "image/png", Size: 1, Data: []byte{0}, CreatedAt: fix.createdAt}); err != nil {
+			t.Fatalf("save %s: %v", fix.id, err)
 		}
 	}
 	got, err := store.ListJournalImages(context.Background(), sessionID)
@@ -76,9 +83,15 @@ func TestListJournalImagesExcludesOtherSessions(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2 (%+v)", len(got), got)
 	}
+	if got[0].ID != "img-a" || got[1].ID != "img-b" {
+		t.Fatalf("order = [%s %s], want [img-a img-b] (oldest-first)", got[0].ID, got[1].ID)
+	}
 	for _, img := range got {
 		if img.SessionID != sessionID {
 			t.Fatalf("leaked image %s", img.ID)
+		}
+		if img.Data != nil {
+			t.Fatalf("list must not load BLOB data: image %s has %d bytes", img.ID, len(img.Data))
 		}
 	}
 }
