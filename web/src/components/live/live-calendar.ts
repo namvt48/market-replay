@@ -5,8 +5,9 @@ export type AccountStage = 'eval' | 'funded'
 
 export interface LiveCalendarReport {
   source: Pick<AnalyticsPerformance['source'], 'id'>
-  overview: Pick<AnalyticsPerformance['overview'], 'accountBalance' | 'totalPnl'>
-  riskReward: Pick<AnalyticsPerformance['riskReward'], 'series'>
+  overview: Pick<AnalyticsPerformance['overview'], 'accountBalance' | 'totalPnl' | 'winRate' | 'totalTrades'>
+  riskReward: Pick<AnalyticsPerformance['riskReward'], 'series' | 'averageRr'>
+  equityCurve: AnalyticsPerformance['equityCurve']
   calendar: AnalyticsPerformance['calendar']
 }
 
@@ -15,9 +16,13 @@ function round2(value: number): number {
 }
 
 // Reports are fetched with timezone=UTC, so the UTC calendar day matches the
-// day key the backend used for calendar rows.
-function dayKey(timestamp: string): string {
-  return new Date(timestamp).toISOString().slice(0, 10)
+// day key the backend used for calendar rows. Unparseable timestamps (e.g. a
+// bad CSV import or legacy data) yield null instead of throwing, so one bad
+// trade cannot take down the whole Live page; callers skip those points.
+function dayKey(timestamp: string): string | null {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return null
+  return date.toISOString().slice(0, 10)
 }
 
 /**
@@ -35,6 +40,7 @@ export function mergeLiveCalendars(reports: LiveCalendarReport[]): { entries: Ca
     report.riskReward.series.actual.forEach((point) => {
       if (!point.closedAt) return
       const date = dayKey(point.closedAt)
+      if (!date) return
       rrByDate.set(date, (rrByDate.get(date) ?? 0) + point.rr)
     })
     report.calendar.forEach((item) => {

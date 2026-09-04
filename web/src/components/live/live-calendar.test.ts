@@ -8,16 +8,26 @@ function report(
   calendar: LiveCalendarReport['calendar'],
   actualRr: Array<{ closedAt: string; rr: number }> = [],
 ): LiveCalendarReport {
+  const totalTrades = calendar.reduce((sum, day) => sum + day.trades, 0)
+  const wins = calendar.reduce((sum, day) => sum + day.wins, 0)
+  const averageRr = actualRr.length > 0 ? actualRr.reduce((sum, point) => sum + point.rr, 0) / actualRr.length : 0
   return {
     source: { id },
-    overview: { accountBalance: initialBalance + totalPnl, totalPnl },
+    overview: {
+      accountBalance: initialBalance + totalPnl,
+      totalPnl,
+      winRate: totalTrades > 0 ? (wins / totalTrades) * 100 : 0,
+      totalTrades,
+    },
     riskReward: {
       series: {
         actual: actualRr.map((point) => ({ tradeIndex: 0, tradeId: 'trade', closedAt: point.closedAt, rr: point.rr })),
         ideal: [],
         missed: [],
       },
+      averageRr,
     },
+    equityCurve: [{ tradeIndex: 0, tradeId: null, closedAt: null, cumulativePnl: 0, balance: initialBalance }],
     calendar,
   }
 }
@@ -84,5 +94,18 @@ describe('mergeLiveCalendars', () => {
 
     expect(entries).toEqual([])
     expect(initialDate).toBe(new Date().toISOString().slice(0, 10))
+  })
+
+  it('skips risk-reward points with unparseable close times instead of crashing', () => {
+    const first = report('live-1', 10000, 100, [
+      { date: '2026-01-05', trades: 1, wins: 1, losses: 0, breakeven: 0, pnl: 25, pnlPercent: 0.25, endingBalance: 10100 },
+    ], [
+      { closedAt: '55840-11-11T05:46:40Z', rr: 3 },
+      { closedAt: '2026-01-05T10:00:00Z', rr: 1.5 },
+    ])
+
+    const { entries } = mergeLiveCalendars([first])
+
+    expect(entries[0]).toMatchObject({ date: '2026-01-05', riskReward: 1.5 })
   })
 })
