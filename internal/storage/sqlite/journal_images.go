@@ -50,7 +50,10 @@ func (s *Store) GetJournalImage(ctx context.Context, id string) (model.JournalIm
 }
 
 func (s *Store) ListJournalImages(ctx context.Context, sessionID string) ([]model.JournalImage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, mime, size, caption, created_at FROM journal_images WHERE session_id = ? ORDER BY created_at`, sessionID)
+	// The id tie-break makes the order total: created_at is UnixMilli from
+	// server-side time.Now(), so two uploads in the same millisecond tie and
+	// would otherwise list nondeterministically.
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, mime, size, caption, created_at FROM journal_images WHERE session_id = ? ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: journal image list %s: %w", sessionID, err)
 	}

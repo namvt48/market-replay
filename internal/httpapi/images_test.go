@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 )
 
@@ -52,7 +53,8 @@ func TestUploadGetDeleteJournalImage(t *testing.T) {
 	s := newTestServer(t)
 	sessionID := seedLiveSession(t, s)
 
-	rec := uploadImage(t, s, sessionID, []byte{1, 2, 3, 4}, "image/png")
+	data := []byte{1, 2, 3, 4}
+	rec := uploadImage(t, s, sessionID, data, "image/png")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
@@ -71,7 +73,13 @@ func TestUploadGetDeleteJournalImage(t *testing.T) {
 	if ct := get.Header().Get("Content-Type"); ct != "image/png" {
 		t.Fatalf("content-type = %q, want image/png", ct)
 	}
-	if !bytes.Equal(get.Body.Bytes(), []byte{1, 2, 3, 4}) {
+	if cl := get.Header().Get("Content-Length"); cl != strconv.Itoa(len(data)) {
+		t.Fatalf("content-length = %q, want %d", cl, len(data))
+	}
+	if cc := get.Header().Get("Cache-Control"); cc != "private, max-age=86400" {
+		t.Fatalf("cache-control = %q, want \"private, max-age=86400\"", cc)
+	}
+	if !bytes.Equal(get.Body.Bytes(), data) {
 		t.Fatal("image bytes mismatch")
 	}
 
@@ -93,6 +101,41 @@ func TestUploadRejectsNonImage(t *testing.T) {
 	rec := uploadImage(t, s, sessionID, []byte("hello"), "text/plain")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("upload text/plain = %d, want 400", rec.Code)
+	}
+}
+
+func TestUploadRejectsSVG(t *testing.T) {
+	s := newTestServer(t)
+	sessionID := seedLiveSession(t, s)
+	rec := uploadImage(t, s, sessionID, []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), "image/svg+xml")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("upload image/svg+xml = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUploadRejectsMissingContentType(t *testing.T) {
+	s := newTestServer(t)
+	sessionID := seedLiveSession(t, s)
+	rec := uploadImage(t, s, sessionID, []byte{1}, "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("upload with no declared content type = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUploadRejectsOversizedImage(t *testing.T) {
+	s := newTestServer(t)
+	sessionID := seedLiveSession(t, s)
+	rec := uploadImage(t, s, sessionID, bytes.Repeat([]byte{7}, maxJournalImageBytes+1), "image/png")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("upload oversized = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUploadUnknownSession(t *testing.T) {
+	s := newTestServer(t)
+	rec := uploadImage(t, s, "missing", []byte{1}, "image/png")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("upload to unknown session = %d, want 404; body: %s", rec.Code, rec.Body.String())
 	}
 }
 

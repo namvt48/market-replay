@@ -96,6 +96,29 @@ func TestListJournalImagesExcludesOtherSessions(t *testing.T) {
 	}
 }
 
+func TestListJournalImagesTieBreaksByID(t *testing.T) {
+	store, sessionID := journalImageStore(t)
+	// created_at is stored as UnixMilli, so two saves sharing one ts tie on
+	// the primary sort. Seeding the lexicographically larger id first proves
+	// ORDER BY created_at, id decides the order, not insertion order.
+	ts := time.Now()
+	for _, id := range []string{"img-b", "img-a"} {
+		if err := store.SaveJournalImage(context.Background(), model.JournalImage{ID: id, SessionID: sessionID, Mime: "image/png", Size: 1, Data: []byte{0}, CreatedAt: ts}); err != nil {
+			t.Fatalf("save %s: %v", id, err)
+		}
+	}
+	got, err := store.ListJournalImages(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (%+v)", len(got), got)
+	}
+	if got[0].ID != "img-a" || got[1].ID != "img-b" {
+		t.Fatalf("order = [%s %s], want [img-a img-b] (id tie-break on equal created_at)", got[0].ID, got[1].ID)
+	}
+}
+
 func TestDeleteJournalImage(t *testing.T) {
 	store, sessionID := journalImageStore(t)
 	now := time.Now()

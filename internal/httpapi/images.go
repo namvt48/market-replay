@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 	"github.com/google/uuid"
 
 	"market-replay/internal/model"
-	"market-replay/internal/storage"
 )
 
 // maxJournalImageBytes caps one uploaded journal screenshot. 10 MB is
@@ -22,26 +20,45 @@ import (
 // per-install tuning knob.
 const maxJournalImageBytes = 10 << 20
 
-// writeJournalImageError maps storage.ErrJournalImageNotFound to 404 in the
-// same JSON shape writeError produces, and defers everything else to
-// writeError. respond.go's package-wide sentinel table is deliberately not
-// extended, keeping this feature's diff self-contained (the same reason the
-// storage schema lives in its own journal_images.go fragment).
-func writeJournalImageError(w http.ResponseWriter, id string, err error) {
-	if errors.Is(err, storage.ErrJournalImageNotFound) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("image %q not found", id)})
-		return
+// journalImageContentTypes is the raster-only allowlist for uploads. The
+// gate is an allowlist, not an image/* prefix check, because image/* admits
+// image/svg+xml, which can carry scripts and would be served back
+// same-origin by the GET handler (stored XSS). Screenshots only ever need
+// raster types, so the accepted set is closed.
+var journalImageContentTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+func isJournalImageContentType(contentType string) bool {
+	for _, allowed := range journalImageContentTypes {
+		// Exact match on the declared value (case-insensitive): parameters
+		// are not stripped, since none of the allowed types takes one and a
+		// suffixed value is no longer an exact declaration.
+		if strings.EqualFold(contentType, allowed) {
+			return true
+		}
 	}
-	writeError(w, err)
+	return false
 }
 
 // handleUploadJournalImage serves POST /api/v1/sessions/{id}/images: a
-// multipart form whose "image" part holds one screenshot. Returns
+// multipart form whose "image" part holds one screenshot. An upload to an
+// unknown session id is a 404 — the existence check runs first, so the
+// session_id FK failure never surfaces as a 500. Returns
 // {"id": ...} — the server assigns the id (uuid, the codebase's single id
 // generator; storage/sqlite's CreateSession uses the same, and v4 is 16
 // crypto/rand bytes rendered as hex), so clients never choose identity,
 // matching the create-session contract.
 func (s *Server) handleUploadJournalImage(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if _, err := s.Store.GetSession(r.Context(), sessionID); err != nil {
+		writeError(w, err)
+		return
+	}
+	// ParseMultipartForm spools parts larger than its in-memory threshold to
+	// temp files, so without this cap the handler would only reject AFTER the
+	// full (unbounded) body was consumed and spooled — and the server sets no
+	// ReadTimeout/WriteTimeout, so a slow client could pin connections and
+	// exhaust disk. MaxBytesReader fails the read at the cap instead.
+	r.Body = http.MaxBytesReader(w, r.Body, maxJournalImageBytes+1<<20)
 	if err := r.ParseMultipartForm(maxJournalImageBytes + 1<<20); err != nil {
 		writeError(w, fmt.Errorf("%w: invalid multipart body: %v", errBadRequest, err))
 		return
@@ -59,14 +76,14 @@ func (s *Server) handleUploadJournalImage(w http.ResponseWriter, r *http.Request
 	// upload flow's tests use — send the generic application/octet-stream,
 	// which declares nothing, so treat it like an empty value and fall back
 	// to the X-Upload-Content-Type header sent alongside the request. The
-	// image/* gate below applies to whichever source wins; this fallback
+	// raster allowlist below applies to whichever source wins; this fallback
 	// never widens what is accepted.
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" || strings.EqualFold(contentType, "application/octet-stream") {
 		contentType = r.Header.Get("X-Upload-Content-Type")
 	}
-	if !strings.HasPrefix(contentType, "image/") {
-		writeError(w, fmt.Errorf("%w: content type %q, want image/*", errBadRequest, contentType))
+	if !isJournalImageContentType(contentType) {
+		writeError(w, fmt.Errorf("%w: content type %q, want one of %s", errBadRequest, contentType, strings.Join(journalImageContentTypes, ", ")))
 		return
 	}
 
@@ -90,7 +107,7 @@ func (s *Server) handleUploadJournalImage(w http.ResponseWriter, r *http.Request
 
 	img := model.JournalImage{
 		ID:        "img_" + uuid.NewString(),
-		SessionID: r.PathValue("id"),
+		SessionID: sessionID,
 		Mime:      contentType,
 		Size:      int64(len(data)),
 		Data:      data,
@@ -104,13 +121,15 @@ func (s *Server) handleUploadJournalImage(w http.ResponseWriter, r *http.Request
 }
 
 // handleGetJournalImage serves GET /api/v1/images/{id}: the raw BLOB under
-// its stored mime type. Cache-Control is private — screenshots belong to
-// one trader's journal, so shared caches must never store them.
+// its stored mime type. A missing id is a 404 — storage.ErrJournalImageNotFound
+// is mapped by respond.go's sentinel table. Cache-Control is private —
+// screenshots belong to one trader's journal, so shared caches must never
+// store them.
 func (s *Server) handleGetJournalImage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	img, err := s.Store.GetJournalImage(r.Context(), id)
 	if err != nil {
-		writeJournalImageError(w, id, err)
+		writeError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", img.Mime)
@@ -121,9 +140,10 @@ func (s *Server) handleGetJournalImage(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListJournalImages serves GET /api/v1/sessions/{id}/images: metadata
-// only, oldest-first (the store's ORDER BY created_at contract). The list
-// query never loads BLOB bytes, and model.JournalImage.Data is json:"-",
-// so raw image data cannot reach the response.
+// only, oldest-first (the store's ORDER BY created_at, id contract — the id
+// tie-break keeps same-millisecond uploads deterministic). The list query
+// never loads BLOB bytes, and model.JournalImage.Data is json:"-", so raw
+// image data cannot reach the response.
 func (s *Server) handleListJournalImages(w http.ResponseWriter, r *http.Request) {
 	imgs, err := s.Store.ListJournalImages(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -135,11 +155,11 @@ func (s *Server) handleListJournalImages(w http.ResponseWriter, r *http.Request)
 
 // handleDeleteJournalImage serves DELETE /api/v1/images/{id} ->
 // {"deleted": id}; deleting an id that does not exist is a 404, not a
-// silent success.
+// silent success (storage.ErrJournalImageNotFound via writeError).
 func (s *Server) handleDeleteJournalImage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.Store.DeleteJournalImage(r.Context(), id); err != nil {
-		writeJournalImageError(w, id, err)
+		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": id})

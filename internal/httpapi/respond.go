@@ -38,8 +38,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // get a real status code, never a 200 wrapping a missing result.
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
+	// storage.ErrJournalImageNotFound maps in the 404 clause so the image
+	// GET/DELETE handlers use this canonical {"error": ...} shape with the
+	// sentinel's message, not a per-feature helper.
 	switch {
-	case errors.Is(err, bars.ErrUnknownSymbolTF), errors.Is(err, storage.ErrSessionNotFound), errors.Is(err, indicators.ErrUnknownScript), errors.Is(err, storage.ErrWorkspaceSnapshotNotFound):
+	case errors.Is(err, bars.ErrUnknownSymbolTF), errors.Is(err, storage.ErrSessionNotFound), errors.Is(err, indicators.ErrUnknownScript), errors.Is(err, storage.ErrWorkspaceSnapshotNotFound), errors.Is(err, storage.ErrJournalImageNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, errBadRequest), errors.Is(err, indicators.ErrInvalidInput), errors.Is(err, storage.ErrDrawingTemplateNameTaken):
 		status = http.StatusBadRequest
