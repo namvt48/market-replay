@@ -21,7 +21,7 @@ import (
 func loadSourceTrades(ctx context.Context, store storage.Store, sourceType, sourceID string) (model.Session, []model.Trade, error) {
 	wantKind, ok := analytics.KindForSourceType(sourceType)
 	if !ok {
-		return model.Session{}, nil, fmt.Errorf("%w: sourceType must be %q or %q", errBadRequest, "session", "evaluation")
+		return model.Session{}, nil, fmt.Errorf("%w: sourceType must be %q, %q, or %q", errBadRequest, "session", "evaluation", string(analytics.SourceTypeLive))
 	}
 	sess, err := store.GetSession(ctx, sourceID)
 	if err != nil {
@@ -38,10 +38,11 @@ func loadSourceTrades(ctx context.Context, store storage.Store, sourceType, sour
 }
 
 // handleAnalyticsSources serves GET /api/v1/analytics/sources — every
-// session (replay or evaluation alike, distinguished by model.Session.Kind)
-// as one row, real vs. mock. No pagination: no list endpoint in this
-// codebase has a cursor/limit convention yet (see internal/httpapi/sessions.go's
-// handleListSessions), so none is invented here either.
+// session (replay, evaluation, or live alike, distinguished by
+// model.Session.Kind) as one row, real vs. mock. No pagination: no list
+// endpoint in this codebase has a cursor/limit convention yet (see
+// internal/httpapi/sessions.go's handleListSessions), so none is invented
+// here either.
 func (s *Server) handleAnalyticsSources(w http.ResponseWriter, r *http.Request) {
 	sessions, err := s.Store.ListSessions(r.Context())
 	if err != nil {
@@ -75,10 +76,10 @@ type analyticsPerformanceResponse struct {
 // handleAnalyticsPerformance serves
 // GET /api/v1/analytics/performance?sourceType=&sourceId=&breakevenThreshold=&timezone=
 //
-//   - sourceType         required. "session" | "evaluation" — must match the
-//     found session's actual kind, or this 404s exactly as an unknown id
-//     would: a client must never be able to fetch one source's data by
-//     supplying the other source type for its id.
+//   - sourceType         required. "session" | "evaluation" | "live" — must
+//     match the found session's actual kind, or this 404s exactly as an
+//     unknown id would: a client must never be able to fetch one source's
+//     data by supplying another source type for its id.
 //   - sourceId           required.
 //   - breakevenThreshold optional, defaults to 0. Dollars, same unit as
 //     every other money field in this API's JSON.
