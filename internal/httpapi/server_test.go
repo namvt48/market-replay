@@ -43,6 +43,25 @@ func TestHandleStartFallback(t *testing.T) {
 	}
 }
 
+func TestHandleAnalyticsFallback(t *testing.T) {
+	fsys := fstest.MapFS{"index.html": {Data: []byte("<html>analytics shell</html>")}}
+	s := &Server{WebFS: fsys}
+
+	for _, path := range []string{"/analytics", "/analytics/overview"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+			}
+			if !bytes.Contains(rec.Body.Bytes(), []byte("analytics shell")) {
+				t.Fatalf("body missing analytics shell: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleStartEval_NilWebFS(t *testing.T) {
 	s := &Server{} // WebFS nil -> /start routes not registered, no panic
 

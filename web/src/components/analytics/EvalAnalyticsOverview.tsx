@@ -241,6 +241,7 @@ function EvaluationPnlPanel({ performance, account, onThresholdChange }: EvalAna
         <LineChart
           values={points.map((point) => point.cumulativePnl)}
           referenceLines={referenceLines}
+          includeZero
           valueLabel="Cumulative P&L"
           valueFormatter={(value) => currency.format(value)}
           ariaLabel={`Evaluation profit and loss curve for ${periods.find((item) => item.id === period)?.label ?? 'All'} period`}

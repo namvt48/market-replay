@@ -151,11 +151,13 @@ function PnlOverview({ report, onThresholdChange }: { report: AnalyticsReportVie
         </form>
       </div>
       <span className="sr-only" role="status">Applied breakeven threshold: {appliedThreshold}</span>
-      <div className="mt-5 overflow-x-auto">
-        <LineChart values={curve.values} valueLabel="Cumulative PnL" valueFormatter={(value) => money.format(value)} ariaLabel={`${report.kind} profit and loss curve for ${period} period`} />
-      </div>
-      <div className="mt-1 flex min-w-[720px] justify-between px-6 font-mono text-ui-meta text-dim" aria-hidden="true">
-        {curve.labels.map((label, index) => <span key={`${label}-${index}`}>{label}</span>)}
+      <div className="mt-5 overflow-x-auto pb-1">
+        <div className="min-w-[720px]">
+          <LineChart values={curve.values} valueLabel="Cumulative PnL" valueFormatter={(value) => money.format(value)} ariaLabel={`${report.kind} profit and loss curve for ${period} period`} />
+          <div className="mt-1 flex justify-between px-6 font-mono text-ui-meta text-dim" aria-hidden="true">
+            {curve.labels.map((label, index) => <span key={`${label}-${index}`}>{label}</span>)}
+          </div>
+        </div>
       </div>
     </ReportPanel>
   )
@@ -371,6 +373,23 @@ function ResourcePanel<T>({ state, children }: { state: ResourceState<T>; childr
   return <ReportPanel className="flex min-h-64 items-center justify-center"><span className="text-sm text-[#9299a3]">Loading analytics…</span></ReportPanel>
 }
 
+function ReportSourcePicker({ groupedSources, sourceName, loading, failed }: { groupedSources: { evaluations: AnalyticsSource[]; sessions: AnalyticsSource[] }; sourceName: (source: AnalyticsSource) => string; loading: boolean; failed: boolean }) {
+  const groups = [
+    { label: 'Evaluation accounts', entries: groupedSources.evaluations },
+    { label: 'Replay sessions', entries: groupedSources.sessions },
+  ]
+  const count = groups.reduce((total, group) => total + group.entries.length, 0)
+  return (
+    <ReportPanel className="p-5 sm:p-8">
+      <div className="max-w-2xl"><h2 className="text-xl font-semibold text-white">Choose a report</h2><p className="mt-1 text-ui-body text-[#a1a7b0]">Select a replay session or evaluation account to open its performance report.</p></div>
+      {loading ? <p className="py-10 text-center text-ui-body text-muted">Loading report sources…</p> : null}
+      {failed ? <p role="alert" className="mt-5 text-ui-body text-loss-bright">Unable to load report sources. Refresh and try again.</p> : null}
+      {!loading && !failed && count === 0 ? <p className="mt-5 text-ui-body text-muted">No sessions or evaluation accounts have trades yet.</p> : null}
+      {count > 0 ? <div className="mt-6 grid gap-4 lg:grid-cols-2">{groups.map(({ label, entries }) => entries.length > 0 ? <section key={label} aria-labelledby={`analytics-picker-${label.replaceAll(' ', '-').toLowerCase()}`} className="overflow-hidden rounded-[14px] border border-[#3c4046] bg-[#0d0f11]"><h3 id={`analytics-picker-${label.replaceAll(' ', '-').toLowerCase()}`} className="border-b border-[#292c31] px-4 py-3 text-ui-body font-semibold text-ink">{label}</h3><ul className="divide-y divide-[#292c31]">{entries.map((source) => <li key={`${source.type}-${source.id}`}><a href={`/analytics?analytics=${encodeURIComponent(source.id)}&sourceType=${source.type}`} className="flex min-h-16 items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-surface-2 focus-visible:bg-surface-2"><span className="min-w-0"><strong className="block truncate text-ui-body font-semibold text-ink">{sourceName(source)}</strong><span className="mt-0.5 block text-ui-meta text-muted">{source.tradeCount} closed trades · {source.status}</span></span><BarChart3 size={16} className="shrink-0 text-active-bright" aria-hidden="true" /></a></li>)}</ul></section> : null)}</div> : null}
+    </ReportPanel>
+  )
+}
+
 export function AnalyticsScreen() {
   const [tab, setTab] = useState<AnalyticsTab>('performance')
   const [breakevenThreshold, setBreakevenThreshold] = useState(5)
@@ -423,7 +442,7 @@ export function AnalyticsScreen() {
   const switchSource = (event: ChangeEvent<HTMLSelectElement>): void => {
     const selected = sources.status === 'success' ? sources.data.find((source) => `${source.type}:${source.id}` === event.target.value) : undefined
     if (!selected) return
-    window.location.assign(`/?analytics=${encodeURIComponent(selected.id)}&sourceType=${selected.type}`)
+    window.location.assign(`/analytics?analytics=${encodeURIComponent(selected.id)}&sourceType=${selected.type}`)
   }
   const groupedSources = sources.status === 'success' ? {
     evaluations: sources.data.filter((source) => source.type === 'evaluation'),
@@ -449,7 +468,7 @@ export function AnalyticsScreen() {
           {tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" role="tab" aria-selected={tab === id} aria-controls={`analytics-panel-${id}`} id={`analytics-tab-${id}`} onClick={() => setTab(id)} className="flex min-h-10 min-w-[148px] items-center justify-center gap-2 rounded-[21px] border border-transparent px-3 text-ui-control font-medium text-[#aeb4bd] transition-colors hover:text-white aria-selected:border-[#454a51] aria-selected:bg-[#070809] aria-selected:text-white sm:min-w-0"><Icon size={15} strokeWidth={1.75} />{label}</button>)}
         </nav>
         <div className="mt-6" role="tabpanel" id={`analytics-panel-${tab}`} aria-labelledby={`analytics-tab-${tab}`}>
-          {!validSource ? <ReportPanel className="p-8 text-center"><p className="text-base font-semibold text-white">Choose an analytics source</p><p className="mt-2 text-sm text-[#9299a3]">Open a replay session or evaluation account from the Analytics sidebar.</p><a href="/" className="mt-5 inline-flex rounded-lg bg-active px-4 py-2 text-sm font-medium text-white">Back to workspace</a></ReportPanel> : null}
+          {!validSource ? <ReportSourcePicker groupedSources={groupedSources} sourceName={sourceName} loading={sources.status === 'loading' || sources.status === 'idle'} failed={sources.status === 'error'} /> : null}
           {validSource && tab === 'performance' ? <ResourcePanel state={performance}>{(data) => {
             const performanceReport = toAnalyticsReportView(data, workspaceTimezone)
             return sourceType === 'evaluation'
@@ -463,7 +482,7 @@ export function AnalyticsScreen() {
           {validSource && tab === 'tags' && sourceType ? <TagAnalyticsTab sourceType={sourceType} sourceId={sourceId} /> : null}
         </div>
       </main>
-      <footer className="mx-auto flex max-w-[1500px] items-center justify-between border-t border-[#292c31] px-6 py-5 text-xs text-[#858b94]"><span>Market Replay analytics</span><span className="flex items-center gap-1.5"><BarChart3 size={13} />{report ? `${report.kind} · live trade data` : 'Live analytics'}</span></footer>
+      <footer className="mx-auto flex max-w-[1500px] items-center justify-between gap-3 border-t border-[#292c31] px-3 py-5 text-xs text-[#858b94] sm:px-6"><span>Market Replay analytics</span><span className="flex shrink-0 items-center gap-1.5"><BarChart3 size={13} />{report ? `${report.kind} · live trade data` : 'Live analytics'}</span></footer>
     </div>
   )
 }

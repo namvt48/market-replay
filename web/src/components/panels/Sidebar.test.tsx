@@ -5,6 +5,7 @@ import { useUiStore } from '../../store/ui-store'
 import { Sidebar } from './Sidebar'
 
 const calendarFeature = vi.hoisted(() => ({ available: false, retry: vi.fn() }))
+const evalState = vi.hoisted(() => ({ phase: 'idle' }))
 const replaySnapshot = {
   fill: null,
   symbol: null,
@@ -36,12 +37,13 @@ vi.mock('../../replay/replay-engine', () => ({ replayEngine: {
   placeMarket: vi.fn(), setQty: vi.fn(), placeBracket: vi.fn(), flatten: vi.fn(), reverse: vi.fn(), cancelOrder: vi.fn(),
 } }))
 vi.mock('../../store/eval-store', () => ({
-  useEvalStore: (selector: (state: { accountId: null }) => unknown) => selector({ accountId: null }),
+  useEvalStore: (selector: (state: { accountId: null; phase: string }) => unknown) => selector({ accountId: null, phase: evalState.phase }),
   loadEvalAccounts: () => [],
 }))
 
 beforeEach(() => {
   calendarFeature.available = false
+  evalState.phase = 'idle'
   useUiStore.setState({ sidebarOpen: true, sidebarTab: 'sessions', reviewSource: null })
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ items: [
     { id: 'journal-1', type: 'session', title: 'Verified journal', subtitle: 'March 2025', status: 'completed', tradeCount: 24, startedAt: null, endedAt: null },
@@ -54,7 +56,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 describe('Sidebar economic calendar tab', () => {
   it('hides Calendar when the optional dataset is unavailable', () => {
     render(<Sidebar />)
-    expect(screen.queryByRole('button', { name: 'Calendar' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Calendar' })).not.toBeInTheDocument()
   })
 
   it('shows Calendar from metadata and opens the weekly panel', async () => {
@@ -63,33 +65,77 @@ describe('Sidebar economic calendar tab', () => {
     render(<Sidebar />)
 
     const labels = [...screen.getByRole('navigation', { name: 'Workspace panels' }).querySelectorAll('button')].map((button) => button.textContent)
-    expect(labels).toEqual(['Sessions', 'Eval', 'Calendar', 'Analytics'])
+    expect(labels).toEqual(['Sessions', 'Eval', 'Calendar'])
 
-    await user.click(screen.getByRole('button', { name: 'Calendar' }))
+    await user.click(screen.getByRole('tab', { name: 'Calendar' }))
 
     expect(screen.getByText('Economic calendar panel')).toBeVisible()
   })
 
-  it('opens Analytics and exposes API-backed session and evaluation sources', async () => {
-    const user = userEvent.setup()
+  it('removes Analytics from the sidebar while gracefully rendering an old persisted analytics tab as Sessions', () => {
+    useUiStore.setState({ sidebarOpen: true, sidebarTab: 'analytics', reviewSource: null })
     render(<Sidebar />)
 
-    await user.click(screen.getByRole('button', { name: 'Analytics' }))
-
-    expect(await screen.findByRole('link', { name: 'Open replay session Verified journal analytics' })).toHaveAttribute('href', '/?analytics=journal-1&sourceType=session')
-    expect(screen.getByRole('link', { name: 'Open evaluation 50K evaluation analytics' })).toHaveAttribute('href', '/?analytics=eval-1&sourceType=evaluation')
-    expect(screen.getByRole('heading', { name: 'Eval accounts' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Replay sessions' })).toBeVisible()
-    expect(screen.queryByText('Evaluation')).not.toBeInTheDocument()
-    expect(screen.queryByText('Replay session')).not.toBeInTheDocument()
-    expect(document.querySelector('[aria-label="Analytics"] svg')).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Analytics' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Sessions panel')).toBeVisible()
   })
 
   it('keeps Review contextual and removes the obsolete Trade tab', () => {
     render(<Sidebar />)
-    expect(screen.getByRole('button', { name: 'Sessions' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Sessions' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Journal' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Review' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Trade' })).not.toBeInTheDocument()
+  })
+
+  it('replaces the tab list with a review bar and returns to the sessions tab on Back', async () => {
+    const user = userEvent.setup()
+    useUiStore.setState({ sidebarOpen: true, sidebarTab: 'review', reviewSource: { id: 's1', type: 'session', title: 'S1' } })
+    render(<Sidebar />)
+
+    expect(screen.getByRole('button', { name: 'Back to Sessions' })).toBeVisible()
+    expect(screen.getByText('Review')).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Back to Sessions' }))
+    expect(useUiStore.getState().sidebarTab).toBe('sessions')
+  })
+
+  it('returns to the evaluation tab from review when the source is an evaluation', async () => {
+    const user = userEvent.setup()
+    useUiStore.setState({ sidebarOpen: true, sidebarTab: 'review', reviewSource: { id: 'e1', type: 'evaluation', title: 'E1' } })
+    render(<Sidebar />)
+
+    expect(screen.getByRole('button', { name: 'Back to Eval' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Back to Sessions' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Back to Eval' }))
+    expect(useUiStore.getState().sidebarTab).toBe('evaluation')
+  })
+
+  it('moves tab activation with ArrowRight and keeps roving focus', async () => {
+    const user = userEvent.setup()
+    calendarFeature.available = true
+    render(<Sidebar />)
+
+    const sessionsTab = screen.getByRole('tab', { name: 'Sessions' })
+    expect(sessionsTab).toHaveAttribute('tabindex', '0')
+    sessionsTab.focus()
+    await user.keyboard('{ArrowRight}')
+
+    const evalTab = screen.getByRole('tab', { name: 'Evaluation accounts' })
+    expect(evalTab).toHaveFocus()
+    expect(evalTab).toHaveAttribute('aria-selected', 'true')
+    expect(useUiStore.getState().sidebarTab).toBe('evaluation')
+  })
+
+  it('marks the Eval tab live with an accessible name and indicator dot while running', () => {
+    evalState.phase = 'running'
+    render(<Sidebar />)
+
+    const evalTab = screen.getByRole('tab', { name: 'Evaluation accounts, live' })
+    expect(evalTab).toContainElement(document.querySelector('[data-tab-id="evaluation"] span[aria-hidden="true"].bg-active'))
+    expect(screen.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true')
   })
 })

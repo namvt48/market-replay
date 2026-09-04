@@ -68,6 +68,7 @@ import { TradeConnectionsPrimitive } from './trade-connections-primitive'
 
 const PREVIEW_ID = '__drawing-preview__'
 const UI_FONT_FAMILY = '"Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+const CHART_FONT_SIZE = 14
 const MAX_ADAPTER_HISTORY_BARS = 6_000
 const BULK_PUSH_BARS = 32
 const CURSOR_MODE_CLASSES = ['chart-cursor-cross', 'chart-cursor-dot', 'chart-cursor-arrow', 'chart-cursor-demonstration', 'chart-cursor-eraser'] as const
@@ -440,13 +441,24 @@ export class LwcAdapter implements ChartAdapter {
     this.symbolCode = symbol.symbol
     this.currentTimeframe = timeframe
     this.secondsVisible = parseTimeframe(timeframe)?.unit === 's'
+    // Canvas text is rasterized only when Lightweight Charts creates its
+    // panes. Wait for the shipped UI face so price/time labels do not retain
+    // a fallback raster on first paint.
+    if ('fonts' in document) {
+      try {
+        await document.fonts.load(`${CHART_FONT_SIZE}px "Roboto Variable"`)
+      } catch {
+        // The system fallbacks remain valid when a browser cannot expose the
+        // Font Loading API (for example in an embedded webview).
+      }
+    }
     const existingChildren = new Set(element.children)
     this.chart = createChart(element, {
       // This adapter already owns one guarded ResizeObserver below. Keeping
       // Lightweight Charts autoSize enabled creates a second observer whose
       // queued callback can outlive a chart moved back from a pop-out window.
       autoSize: false,
-      layout: { background: { type: ColorType.Solid, color: this.appearance.backgroundColor }, textColor: this.appearance.textColor, fontFamily: UI_FONT_FAMILY, fontSize: 13, attributionLogo: false, panes: { separatorColor: '#2a2e39', enableResize: true } },
+      layout: { background: { type: ColorType.Solid, color: this.appearance.backgroundColor }, textColor: this.appearance.textColor, fontFamily: UI_FONT_FAMILY, fontSize: CHART_FONT_SIZE, attributionLogo: false, panes: { separatorColor: '#2a2e39', enableResize: true } },
       grid: { vertLines: { color: this.appearance.verticalGridColor, visible: this.appearance.showGrid }, horzLines: { color: this.appearance.horizontalGridColor, visible: this.appearance.showGrid } },
       crosshair: { mode: CrosshairMode.Normal, vertLine: { color: '#787b8688', labelBackgroundColor: '#2a2e39' }, horzLine: { color: '#787b8688', labelBackgroundColor: '#2a2e39' } },
       rightPriceScale: { borderColor: '#434651', scaleMargins: { top: 0.08, bottom: 0.06 } },

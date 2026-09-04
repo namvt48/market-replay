@@ -287,7 +287,7 @@ describe('LwcAdapter lifecycle', () => {
     const adapter = new LwcAdapter()
     await adapter.init(document.createElement('div'), symbol, '1m')
 
-    expect(chartMocks.createChartOptions).toMatchObject({ autoSize: false })
+    expect(chartMocks.createChartOptions).toMatchObject({ autoSize: false, layout: { fontSize: 14 } })
     adapter.destroy()
   })
 

@@ -71,6 +71,12 @@ describe('TopBar timeframe visibility', () => {
     expect(screen.queryByText(/bars · bounded/i)).not.toBeInTheDocument()
   })
 
+  it('provides Reports as a top-bar destination outside the sidebar', () => {
+    render(<TopBar />)
+
+    expect(screen.getByRole('link', { name: 'Open reports' })).toHaveAttribute('href', '/analytics')
+  })
+
   it('enters bar-selection mode from the Replay command', async () => {
     const user = userEvent.setup()
     render(<TopBar />)

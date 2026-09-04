@@ -39,10 +39,10 @@ function WorkspaceShell() {
   const hotkeys = useHotkeys()
   useEvalTicker()
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-ink">
+    <div className="workspace-shell flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-ink">
       <EconomicCalendarChartSync />
       <TopBar layoutMenuRequest={hotkeys.layoutMenuRequest} onOpenShortcuts={hotkeys.openShortcutHelp} />
-      <main className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden xl:flex-row">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <ChartWorkspace />
         </div>

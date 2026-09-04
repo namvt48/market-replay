@@ -36,6 +36,15 @@ describe('AnalyticsScreen', () => {
     expect(document.querySelector('.scrollbar-gutter-stable')).not.toBeNull()
   })
 
+  it('lists available accounts and sessions when opened at the analytics root', async () => {
+    window.history.replaceState({}, '', '/analytics')
+    render(<AnalyticsScreen />)
+
+    expect(await screen.findByRole('heading', { name: 'Choose a report' })).toBeVisible()
+    expect(screen.getByRole('link', { name: /Opening range/ })).toHaveAttribute('href', '/analytics?analytics=source-1&sourceType=session')
+    expect(screen.getByRole('link', { name: /#EVAL02/ })).toHaveAttribute('href', '/analytics?analytics=eval-2&sourceType=evaluation')
+  })
+
   it('renders performance data returned by the analytics API', async () => {
     render(<AnalyticsScreen />)
     expect(await screen.findByRole('heading', { name: 'Profit and loss' })).toBeVisible()

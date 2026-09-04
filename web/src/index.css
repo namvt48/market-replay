@@ -41,6 +41,10 @@ body,
   margin: 0;
 }
 
+html {
+  background: #131722;
+}
+
 body {
   min-width: 320px;
   overflow: hidden;
@@ -55,6 +59,50 @@ body {
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* The workspace is deliberately dense, but its mobile version remains a
+ * chart-first tool: the panel becomes a bounded lower work area until there
+ * is enough width for a persistent operations rail.  Dynamic viewport units
+ * avoid a jump when browser chrome expands or collapses. */
+.workspace-shell {
+  min-height: 100dvh;
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}
+
+@media (max-width: 1279px) {
+  .workspace-sidebar {
+    max-height: 52dvh;
+  }
+}
+
+/* Landscape phones have the least vertical real estate. Keep both the chart
+ * and its operations panel usable, and make the long drawing rail scroll
+ * instead of silently losing its lower tools. */
+@media (max-width: 1279px) and (max-height: 600px) {
+  #chart-workspace {
+    min-height: 11.75rem;
+  }
+
+  .workspace-sidebar {
+    height: min(35dvh, 9rem);
+    min-height: 7.5rem;
+  }
+
+  .drawing-toolbar {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+@media (pointer: coarse) {
+  .workspace-topbar .topbar-control {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
 }
 
 button,

@@ -1,4 +1,4 @@
-import { useMemo, type ReactElement, type ReactNode } from 'react'
+import { useMemo, type ReactElement } from 'react'
 import { chartTimezoneDisplayTimestamp, chartTimezoneIntlContext, DEFAULT_CHART_TIMEZONE, type ChartTimezone } from '../../replay/chart-timezone'
 
 const tradeMoney = new Intl.NumberFormat('en-US', {
@@ -24,9 +24,10 @@ export interface TradeHistoryTableRecord {
 interface TradeHistoryTableProps {
   trades: readonly TradeHistoryTableRecord[]
   loading?: boolean
-  action?: ReactNode
   headingId: string
   timezone?: ChartTimezone
+  /** Lets a table inside a padded detail panel align with the dialog edges. */
+  fullBleed?: boolean
 }
 
 interface TradeTimeLabel {
@@ -95,7 +96,7 @@ function sideLabel(side: TradeHistoryTableRecord['side']): string {
   return side?.toUpperCase() ?? '—'
 }
 
-export function TradeHistoryTable({ trades, loading = false, action, headingId, timezone = DEFAULT_CHART_TIMEZONE }: TradeHistoryTableProps): ReactElement {
+export function TradeHistoryTable({ trades, loading = false, headingId, timezone = DEFAULT_CHART_TIMEZONE, fullBleed = false }: TradeHistoryTableProps): ReactElement {
   const recentTrades = trades.toReversed()
   const formatters = useMemo<TradeTimeFormatters>(() => {
     const context = chartTimezoneIntlContext(timezone)
@@ -109,40 +110,42 @@ export function TradeHistoryTable({ trades, loading = false, action, headingId, 
   }, [timezone])
 
   return (
-    <section className="border-t border-line" aria-labelledby={headingId}>
+    <section className={`${fullBleed ? '-mx-4 mt-5 sm:-mx-5' : ''} border-t border-line`} aria-labelledby={headingId}>
       <div className="flex min-h-11 items-center justify-between gap-2 px-3">
         <div className="flex min-w-0 items-baseline gap-2">
           <h4 id={headingId} className="shrink-0 text-ui-meta font-semibold tracking-[0.04em] text-muted">TRADE HISTORY</h4>
           <span className="truncate font-mono text-ui-meta tabular-nums text-dim">{loading ? 'Loading…' : `${trades.length} closed`}</span>
         </div>
-        {action}
       </div>
 
       {recentTrades.length > 0 ? (
         <div className="overflow-x-auto border-t border-line" role="region" aria-label="Scrollable trade history" tabIndex={0}>
-          <table className="w-full min-w-[26rem] table-fixed border-collapse text-left" aria-label="Trade history">
+          <table className="w-full min-w-[30rem] table-fixed border-collapse text-left" aria-label="Trade history">
             <colgroup>
-              <col className="w-[20%]" />
-              <col className="w-[40%]" />
+              <col className="w-[8%]" />
               <col className="w-[17%]" />
-              <col className="w-[23%]" />
+              <col className="w-[37%]" />
+              <col className="w-[18%]" />
+              <col className="w-[20%]" />
             </colgroup>
             <thead className="bg-surface-2/45 text-ui-meta text-dim">
               <tr>
-                <th scope="col" className="px-3 py-1.5 font-medium">Trade</th>
+                <th scope="col" className="px-4 py-1.5 font-medium">STT</th>
+                <th scope="col" className="px-2 py-1.5 font-medium">Trade</th>
                 <th scope="col" className="px-1 py-1.5 font-medium">Time</th>
                 <th scope="col" className="px-1 py-1.5 text-right font-medium">MFE/MAE</th>
                 <th scope="col" className="py-1.5 pl-1 pr-3 text-right font-medium">P&amp;L / R</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line font-mono text-ui-meta tabular-nums">
-              {recentTrades.map((trade) => {
+              {recentTrades.map((trade, index) => {
                 const time = formatTradeTime(trade.entryTime, trade.exitTime, formatters)
                 const favorable = Math.abs(trade.mfeTicks)
                 const adverse = Math.abs(trade.maeTicks)
                 return (
                   <tr key={trade.id} className="align-top hover:bg-surface-2/35">
-                    <td className="px-3 py-2">
+                    <td className="px-4 py-2 text-dim">{index + 1}</td>
+                    <td className="px-2 py-2">
                       <span className={`block font-semibold ${trade.side === 'long' ? 'text-profit-bright' : trade.side === 'short' ? 'text-loss-bright' : 'text-muted'}`}>{sideLabel(trade.side)}</span>
                       <span className="mt-0.5 block truncate text-ink">{trade.qty} {trade.symbol}</span>
                     </td>

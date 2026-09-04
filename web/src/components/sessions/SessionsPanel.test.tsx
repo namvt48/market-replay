@@ -71,6 +71,7 @@ afterEach(cleanup)
 
 describe('SessionsPanel', () => {
   it('shows a compact hash, lifecycle, core stats, and trade history', async () => {
+    const user = userEvent.setup()
     render(<SessionsPanel />)
 
     const hash = shortReplaySessionHash(saved.id)
@@ -78,8 +79,10 @@ describe('SessionsPanel', () => {
     expect(screen.getAllByText(/paused/i).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('$250.00')).length).toBeGreaterThan(0)
     expect(screen.getByText('100%')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: `Inspect replay session #${hash}` }))
+    expect(screen.getByRole('dialog', { name: `#${hash}` })).toBeVisible()
     expect(screen.getByRole('table', { name: 'Trade history' })).toBeVisible()
-    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual(['Trade', 'Time', 'MFE/MAE', 'P&L / R'])
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual(['STT', 'Trade', 'Time', 'MFE/MAE', 'P&L / R'])
     expect(screen.getByText('LONG')).toBeVisible()
   })
 
@@ -101,11 +104,21 @@ describe('SessionsPanel', () => {
     expect(mocks.fetchTrades).toHaveBeenCalledWith(saved.id)
   })
 
+  it('links each replay session directly to its reports', async () => {
+    const user = userEvent.setup()
+    render(<SessionsPanel />)
+
+    await user.click(await screen.findByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` }))
+    expect(screen.getByRole('link', { name: `Open replay session #${shortReplaySessionHash(saved.id)} reports` })).toHaveAttribute('href', `/analytics?analytics=${saved.id}&sourceType=session`)
+  })
+
   it('keeps an empty session compact without a closed-trades empty state', async () => {
+    const user = userEvent.setup()
     mocks.fetchTrades.mockResolvedValue([])
     render(<SessionsPanel />)
 
-    await screen.findByRole('button', { name: 'Activate' })
+    await user.click(await screen.findByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` }))
+    await screen.findByRole('button', { name: 'Resume' })
     expect(screen.getByText('0 closed')).toBeVisible()
     expect(screen.queryByText('No closed trades in this session.')).not.toBeInTheDocument()
   })
@@ -113,10 +126,11 @@ describe('SessionsPanel', () => {
   it('activates only after the explicit Activate action', async () => {
     const user = userEvent.setup()
     render(<SessionsPanel />)
-    await screen.findByRole('button', { name: 'Activate' })
+    await user.click(await screen.findByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` }))
+    await screen.findByRole('button', { name: 'Resume' })
     expect(mocks.resumeSession).not.toHaveBeenCalled()
 
-    await user.click(screen.getByRole('button', { name: 'Activate' }))
+    await user.click(screen.getByRole('button', { name: 'Resume' }))
     expect(mocks.resumeSession).toHaveBeenCalledWith(saved)
   })
 
@@ -149,6 +163,23 @@ describe('SessionsPanel', () => {
     expect(mocks.deleteSession).toHaveBeenCalledWith(saved.id)
   })
 
+  it('opens details from a row, closes on Escape or backdrop, and returns focus to the row', async () => {
+    const user = userEvent.setup()
+    render(<SessionsPanel />)
+    const row = await screen.findByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` })
+
+    await user.click(row)
+    expect(screen.getByRole('dialog')).toBeVisible()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(row).toHaveFocus()
+
+    await user.click(row)
+    const dialog = screen.getByRole('dialog')
+    fireEvent.mouseDown(dialog.parentElement!)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
   it('marks only the Journal action as an explicit session creation', async () => {
     const user = userEvent.setup()
     render(<SessionsPanel />)
@@ -167,6 +198,7 @@ describe('SessionsPanel', () => {
       .mockResolvedValue([{ ...saved, name: 'London open practice' }])
     render(<SessionsPanel />)
 
+    await user.click(await screen.findByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` }))
     await user.click(await screen.findByRole('button', { name: 'Rename replay session' }))
     await user.type(screen.getByLabelText('Display name'), 'London open practice')
     await user.click(screen.getByRole('button', { name: 'Save' }))

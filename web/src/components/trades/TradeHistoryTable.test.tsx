@@ -36,8 +36,9 @@ describe('TradeHistoryTable', () => {
     render(<TradeHistoryTable headingId="trade-history-heading" trades={trades} timezone={{ kind: 'preset', id: 'UTC' }} />)
 
     const table = screen.getByRole('table', { name: 'Trade history' })
-    expect(table).toHaveClass('min-w-[26rem]')
+    expect(table).toHaveClass('min-w-[30rem]')
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'STT',
       'Trade',
       'Time',
       'MFE/MAE',
@@ -45,6 +46,7 @@ describe('TradeHistoryTable', () => {
     ])
 
     const rows = within(table).getAllByRole('row')
+    expect(within(rows[1]).getByText('1')).toBeVisible()
     expect(within(rows[1]).getByText('SHORT')).toBeVisible()
     expect(within(rows[1]).getByText('2 ES')).toBeVisible()
     expect(within(rows[1]).getByText('-$2,500.00')).toBeVisible()

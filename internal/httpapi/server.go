@@ -99,6 +99,8 @@ func (s *Server) Handler() http.Handler {
 		// /start/, and both beat the "/" wildcard regardless of order.
 		mux.HandleFunc("GET /start/eval", s.handleSPA)
 		mux.HandleFunc("GET /start/", s.handleSPA)
+		mux.HandleFunc("GET /analytics", s.handleSPA)
+		mux.HandleFunc("GET /analytics/", s.handleSPA)
 	}
 
 	return withCompression(withLogging(mux))

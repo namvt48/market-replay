@@ -90,7 +90,7 @@ export function ChartWorkspaceControls(): ReactElement {
           aria-haspopup="listbox"
           aria-expanded={sessionMenuOpen}
           title={activeSession.title}
-          className={`flex h-7 min-w-[4.25rem] items-center justify-between gap-2 rounded-control border px-2.5 font-mono text-ui-meta font-semibold transition-[border-color,background-color,color] duration-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-active ${sessionMenuOpen ? 'border-line-strong bg-surface-2 text-ink' : 'border-line bg-surface-1 text-ink hover:border-line-strong hover:bg-surface-2'}`}
+          className={`topbar-control flex h-7 min-w-[4.25rem] items-center justify-between gap-2 rounded-control border px-2.5 font-mono text-ui-meta font-semibold transition-[border-color,background-color,color] duration-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-active ${sessionMenuOpen ? 'border-line-strong bg-surface-2 text-ink' : 'border-line bg-surface-1 text-ink hover:border-line-strong hover:bg-surface-2'}`}
         >
           <span>{activeSession.label}</span>
           <ChevronDown aria-hidden="true" className={`text-muted transition-transform duration-100 ${sessionMenuOpen ? 'rotate-180' : ''}`} size={12} strokeWidth={2} />

@@ -1,4 +1,4 @@
-import { useState, type FocusEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { useId, useState, type FocusEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { PointDatum, SessionDatum, SplitPointDatum } from './analytics-view-model'
 
@@ -102,7 +102,11 @@ interface LineChartProps {
   valueLabel?: string
   valueFormatter?: (value: number) => string
   referenceLines?: readonly LineChartReferenceLine[]
+  /** P&L charts need a zero baseline; absolute equity charts do not. */
+  includeZero?: boolean
   showPoints?: boolean
+  fillArea?: boolean
+  xLabels?: readonly string[]
 }
 
 export interface LineChartReferenceLine {
@@ -123,13 +127,14 @@ function linePoints(values: number[], width: number, height: number, plot: Chart
   }))
 }
 
-export function LineChart({ values, compact = false, ariaLabel, valueLabel = 'Value', valueFormatter = number, referenceLines = [], showPoints = false }: LineChartProps) {
+export function LineChart({ values, compact = false, ariaLabel, valueLabel = 'Value', valueFormatter = number, referenceLines = [], includeZero = false, showPoints = false, fillArea = false, xLabels = [] }: LineChartProps) {
   const [keyboardIndex, setKeyboardIndex] = useState<number | null>(null)
-  const width = 1000
+  const areaId = useId().replaceAll(':', '')
+  const width = compact ? 1000 : 640
   const height = compact ? 92 : 260
-  const plot = compact ? { left: 108, right: 10, top: 8, bottom: 8 } : { left: 82, right: 22, top: 22, bottom: 22 }
+  const plot = compact ? { left: 108, right: 10, top: 8, bottom: 8 } : { left: 116, right: 16, top: 18, bottom: xLabels.length > 0 ? 38 : 22 }
   const plottedValues = values.length > 0 ? values : [0]
-  const domainValues = referenceLines.length > 0 ? [0, ...plottedValues, ...referenceLines.map((line) => line.value)] : plottedValues
+  const domainValues = [...(includeZero ? [0] : []), ...plottedValues, ...referenceLines.map((line) => line.value)]
   const axis = domainAxisTicks(Math.min(...domainValues), Math.max(...domainValues))
   const points = linePoints(plottedValues, width, height, plot, axis.minimum, axis.maximum)
   const yForValue = (value: number): number => plot.top + (axis.maximum - value) / Math.max(1, axis.maximum - axis.minimum) * (height - plot.top - plot.bottom)
@@ -145,17 +150,23 @@ export function LineChart({ values, compact = false, ariaLabel, valueLabel = 'Va
     setKeyboardIndex((current) => Math.min(plottedValues.length - 1, Math.max(0, (current ?? 0) + delta)))
   }
   const active = keyboardIndex === null ? null : points[keyboardIndex]
+  const labelIndexes = xLabels.length > 0
+    ? Array.from(new Set([0, Math.round((points.length - 1) / 3), Math.round((points.length - 1) * 2 / 3), points.length - 1]))
+    : []
   return (
-    <TooltipSurface className={`w-full ${compact ? 'h-20' : 'h-64 min-w-[720px]'}`} inspectAtRatio={inspect}>
+    <TooltipSurface className={`w-full ${compact ? 'h-20' : 'h-64 min-w-[35rem]'}`} inspectAtRatio={inspect}>
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={`${ariaLabel}. Move the pointer across the chart to inspect each trade.`} tabIndex={0} onKeyDown={onKeyDown} onFocus={() => setKeyboardIndex(0)} onBlur={() => setKeyboardIndex(null)} className="h-full w-full outline-none focus-visible:ring-2 focus-visible:ring-active">
-        {compact ? null : axis.values.map((value) => { const y = yForValue(value); const zero = Math.abs(value) < Number.EPSILON; return <g key={value}><line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke={zero ? colors.axis : colors.grid} strokeOpacity={zero ? "0.8" : undefined} strokeDasharray="7 7" vectorEffect="non-scaling-stroke" /><text x={plot.left - 8} y={Math.max(9, y - 3)} textAnchor="end" fill={colors.text} fontSize="9.5" fontFamily="JetBrains Mono Variable">{valueFormatter(value)}</text></g> })}
+        {fillArea ? <defs><linearGradient id={areaId} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor={colors.blue} stopOpacity="0.26" /><stop offset="100%" stopColor={colors.blue} stopOpacity="0.02" /></linearGradient></defs> : null}
+        {compact ? null : axis.values.map((value) => { const y = yForValue(value); const zero = Math.abs(value) < Number.EPSILON; return <g key={value}><line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke={zero ? colors.axis : colors.grid} strokeOpacity={zero ? "0.8" : undefined} strokeDasharray="7 7" vectorEffect="non-scaling-stroke" /><text x={plot.left - 9} y={Math.max(13, y - 4)} textAnchor="end" fill={colors.text} fontSize="13" fontFamily="JetBrains Mono Variable">{valueFormatter(value)}</text></g> })}
         {referenceLines.map((line) => {
           const y = yForValue(line.value)
           const color = line.tone === 'profit' ? colors.greenBright : colors.redBright
-          return <g key={`${line.label}-${line.value}`}><line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke={color} strokeWidth="1.25" vectorEffect="non-scaling-stroke" /><text x={width - plot.right - 4} y={Math.max(12, y - 5)} textAnchor="end" fill={color} fontSize="11" fontWeight="600">{line.label}</text></g>
+          return <g key={`${line.label}-${line.value}`}><line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke={color} strokeWidth="1.25" vectorEffect="non-scaling-stroke" /><text x={width - plot.right - 4} y={Math.max(14, y - 6)} textAnchor="end" fill={color} fontSize="12" fontWeight="600">{line.label}</text></g>
         })}
+        {fillArea ? <polygon points={`${points[0]?.x ?? plot.left},${height - plot.bottom} ${points.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ')} ${points.at(-1)?.x ?? width - plot.right},${height - plot.bottom}`} fill={`url(#${areaId})`} /> : null}
         <polyline points={points.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ')} fill="none" stroke={colors.blue} strokeWidth={compact ? 2 : 2.4} vectorEffect="non-scaling-stroke" />
         {showPoints ? points.map((point, index) => <circle key={`${point.x}-${point.y}-${index}`} cx={point.x} cy={point.y} r="2.75" fill="#0d0f12" stroke="#f4f5f7" strokeWidth="1.25" vectorEffect="non-scaling-stroke" aria-hidden="true" />) : null}
+        {labelIndexes.map((index) => <text key={`${index}-${xLabels[index] ?? ''}`} x={points[index]?.x ?? plot.left} y={height - 12} textAnchor="middle" fill={colors.text} fontSize="12" fontFamily="JetBrains Mono Variable">{xLabels[index]}</text>)}
         {active ? <circle cx={active.x} cy={active.y} r="5" fill="#0d0f12" stroke="#fff" strokeWidth="2" vectorEffect="non-scaling-stroke" /> : null}
       </svg>
     </TooltipSurface>
