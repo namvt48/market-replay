@@ -7,6 +7,7 @@ import { CalendarErrorPanel, EconomicCalendarPanel } from '../calendar/EconomicC
 import { useEconMeta } from '../calendar/use-econ-meta'
 import { SessionsPanel } from '../sessions/SessionsPanel'
 import { ReviewPanel } from '../review/ReviewPanel'
+import { LivePanel } from '../live/LivePanel'
 
 export function Sidebar() {
   const open = useUiStore((state) => state.sidebarOpen)
@@ -52,7 +53,9 @@ export function Sidebar() {
             : <div role="status" className="grid h-full place-items-center text-ui-body text-dim">Loading calendar metadata…</div>
         : tab === 'evaluation'
           ? <EvaluationPanel />
-          : <SessionsPanel />
+          : tab === 'live'
+            ? <LivePanel />
+            : <SessionsPanel />
 
   const handleTabListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
