@@ -10,6 +10,7 @@ const clientMocks = vi.hoisted(() => ({
   createSession: vi.fn(),
   fetchSessions: vi.fn(),
   patchSession: vi.fn(),
+  deleteSession: vi.fn(),
 }))
 const analyticsMocks = vi.hoisted(() => ({
   fetchAnalyticsSources: vi.fn(),
@@ -19,11 +20,13 @@ const storeMocks = vi.hoisted(() => ({
   loadLiveTemplates: vi.fn(),
   createLiveTemplate: vi.fn(),
 }))
+const detailProps = vi.hoisted(() => ({ latest: {} as Record<string, unknown> }))
 
 vi.mock('../../api/client', () => ({
   createSession: clientMocks.createSession,
   fetchSessions: clientMocks.fetchSessions,
   patchSession: clientMocks.patchSession,
+  deleteSession: clientMocks.deleteSession,
 }))
 vi.mock('../../api/analytics', () => ({
   fetchAnalyticsSources: analyticsMocks.fetchAnalyticsSources,
@@ -34,9 +37,15 @@ vi.mock('../../store/live-store', () => ({
   createLiveTemplate: storeMocks.createLiveTemplate,
 }))
 vi.mock('./LiveJournalDetail', () => ({
-  LiveJournalDetail: ({ sessionId, title }: { sessionId: string; title: string }) => (
-    <div data-testid="live-journal-detail" data-session-id={sessionId} data-title={title} />
-  ),
+  LiveJournalDetail: (props: { sessionId: string; title: string; stage: string; onDelete: () => Promise<void> }) => {
+    detailProps.latest = props
+    return (
+      <div data-testid="live-journal-detail" data-session-id={props.sessionId} data-title={props.title} data-stage={props.stage}>
+        <button type="button" onClick={() => void props.onDelete()}>Delete account</button>
+      </div>
+    )
+  },
+  StatCard: ({ label, value }: { label: string; value: string }) => <div data-testid="stat-card" data-label={label} data-value={value} />,
 }))
 vi.mock('./JournalComposer', () => ({
   JournalComposer: () => <div data-testid="journal-composer" />,
@@ -50,6 +59,9 @@ vi.mock('../analytics/PerformanceCalendar', () => ({
   PerformanceCalendar: ({ entries, initialDate }: { entries: unknown[]; initialDate: string }) => (
     <div data-testid="performance-calendar" data-entries={entries.length} data-initial-date={initialDate} />
   ),
+}))
+vi.mock('../analytics/InteractiveAnalyticsCharts', () => ({
+  LineChart: ({ values }: { values: number[] }) => <div data-testid="equity-chart" data-points={values.length} />,
 }))
 
 function liveSession(id: string, name: string, config: Record<string, unknown> | null = null): ReplaySession {
@@ -68,9 +80,22 @@ function source(id: string, title: string, tradeCount: number): AnalyticsSource 
 function performance(): LiveCalendarReport {
   return {
     source: { id: 'live-1' },
-    overview: { accountBalance: 10100, totalPnl: 100 },
-    riskReward: { series: { actual: [], ideal: [], missed: [] } },
+    overview: { accountBalance: 10100, totalPnl: 100, winRate: 50, totalTrades: 4 },
+    riskReward: { series: { actual: [], ideal: [], missed: [] }, averageRr: 1.25 },
+    equityCurve: [{ tradeIndex: 0, tradeId: null, closedAt: null, cumulativePnl: 0, balance: 10100 }],
     calendar: [{ date: '2026-01-05', trades: 1, wins: 1, losses: 0, breakeven: 0, pnl: 25, pnlPercent: 0.25, endingBalance: 10100 }],
+  }
+}
+
+function equityPerformance(closed: boolean): LiveCalendarReport {
+  return {
+    ...performance(),
+    equityCurve: closed
+      ? [
+        { tradeIndex: 0, tradeId: 't1', closedAt: '2026-01-05T10:00:00Z', cumulativePnl: 0, balance: 10100 },
+        { tradeIndex: 1, tradeId: 't2', closedAt: '2026-01-06T10:00:00Z', cumulativePnl: 25, balance: 10125 },
+      ]
+      : [{ tradeIndex: 0, tradeId: null, closedAt: null, cumulativePnl: 0, balance: 10100 }],
   }
 }
 
@@ -81,6 +106,7 @@ function renderScreen(): void {
 beforeEach(() => {
   clientMocks.createSession.mockReset().mockResolvedValue(undefined)
   clientMocks.patchSession.mockReset().mockResolvedValue(undefined)
+  clientMocks.deleteSession.mockReset().mockResolvedValue(undefined)
   clientMocks.fetchSessions.mockReset().mockResolvedValue([
     liveSession('live-1', 'Account A'),
     liveSession('live-2', 'Funded B', { stage: 'funded' }),
@@ -93,6 +119,7 @@ beforeEach(() => {
     .mockImplementation((_: string, id: string) => Promise.resolve({ ...performance(), source: { id } }))
   storeMocks.loadLiveTemplates.mockReset().mockReturnValue([])
   storeMocks.createLiveTemplate.mockReset()
+  detailProps.latest = {}
 })
 
 afterEach(cleanup)
@@ -108,6 +135,35 @@ describe('LiveAccountsScreen', () => {
     expect(screen.getByText('3 trades')).toBeInTheDocument()
     expect(screen.getByText('5 trades')).toBeInTheDocument()
     expect(screen.getAllByText('$100')).toHaveLength(2)
+  })
+
+  it('shows inline stats for an account when its row is clicked, and collapses again', async () => {
+    const user = userEvent.setup()
+    renderScreen()
+
+    await user.click(await screen.findByRole('button', { name: 'Show stats for Account A' }))
+    expect(screen.getByRole('button', { name: 'Show stats for Account A' })).toHaveAttribute('aria-expanded', 'true')
+
+    const cards = screen.getAllByTestId('stat-card')
+    expect(cards).toHaveLength(4)
+    expect(cards[1]).toHaveAttribute('data-label', 'Win rate')
+    expect(cards[1]).toHaveAttribute('data-value', '50.0%')
+    expect(cards[3]).toHaveAttribute('data-label', 'Avg R')
+    expect(cards[3]).toHaveAttribute('data-value', '+1.25R')
+
+    await user.click(screen.getByRole('button', { name: 'Show stats for Account A' }))
+    expect(screen.getByRole('button', { name: 'Show stats for Account A' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryAllByTestId('stat-card')).toHaveLength(0)
+  })
+
+  it('plots closed-trade equity points inside the inline stats', async () => {
+    analyticsMocks.fetchAnalyticsPerformance.mockReset()
+      .mockImplementation((_: string, id: string) => Promise.resolve({ ...equityPerformance(id === 'live-1'), source: { id } }))
+    const user = userEvent.setup()
+    renderScreen()
+
+    await user.click(await screen.findByRole('button', { name: 'Show stats for Account A' }))
+    expect(screen.getByTestId('equity-chart')).toHaveAttribute('data-points', '2')
   })
 
   it('disables account creation until a name is typed', async () => {
@@ -158,15 +214,30 @@ describe('LiveAccountsScreen', () => {
     await waitFor(() => expect(clientMocks.patchSession).toHaveBeenCalledWith('live-2', { config: { stage: 'eval' } }))
   })
 
-  it('opens the trade-entry dialog for the clicked account', async () => {
+  it('opens the trade-entry popup from the Add-trade button with the account stage', async () => {
     const user = userEvent.setup()
     renderScreen()
 
-    await user.click(await screen.findByText('Account A'))
+    await user.click(await screen.findByRole('button', { name: 'Add trade to Account A' }))
 
     const detail = screen.getByTestId('live-journal-detail')
     expect(detail).toHaveAttribute('data-session-id', 'live-1')
     expect(detail).toHaveAttribute('data-title', 'Account A')
+    expect(detail).toHaveAttribute('data-stage', 'eval')
+    expect(screen.queryByText('Win rate')).not.toBeInTheDocument()
+  })
+
+  it('closes the popup and deletes the account after confirmation', async () => {
+    const user = userEvent.setup()
+    renderScreen()
+
+    await user.click(await screen.findByRole('button', { name: 'Add trade to Account A' }))
+    expect(screen.getByTestId('live-journal-detail')).toBeInTheDocument()
+
+    // The popup's onDelete removes the account and closes itself.
+    await user.click(screen.getByRole('button', { name: 'Delete account' }))
+    await waitFor(() => expect(clientMocks.deleteSession).toHaveBeenCalledWith('live-1'))
+    await waitFor(() => expect(screen.queryByTestId('live-journal-detail')).not.toBeInTheDocument())
   })
 
   it('renders a performance calendar merged across all accounts', async () => {
@@ -178,14 +249,15 @@ describe('LiveAccountsScreen', () => {
     expect(screen.getByTestId('performance-calendar')).toHaveAttribute('data-initial-date', '2026-01-05')
   })
 
-  it('shows an empty state without the calendar when no accounts exist', async () => {
+  it('keeps the performance calendar visible when no accounts exist', async () => {
     clientMocks.fetchSessions.mockReset().mockResolvedValue([])
     analyticsMocks.fetchAnalyticsSources.mockReset().mockResolvedValue([])
 
     renderScreen()
 
     expect(await screen.findByText(/No live accounts yet/)).toBeInTheDocument()
-    expect(screen.queryByTestId('performance-calendar')).not.toBeInTheDocument()
+    expect(screen.getByTestId('performance-calendar')).toHaveAttribute('data-entries', '0')
+    expect(screen.getByTestId('performance-calendar')).toHaveAttribute('data-initial-date', new Date().toISOString().slice(0, 10))
   })
 
   it('opens the stats template editor from the header', async () => {
