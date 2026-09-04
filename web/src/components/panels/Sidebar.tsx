@@ -1,4 +1,4 @@
-import { Activity, ArrowLeft, CalendarDays, ClipboardCheck, FolderClock, NotebookPen } from 'lucide-react'
+import { Activity, ArrowLeft, CalendarDays, ClipboardCheck, FolderClock } from 'lucide-react'
 import { useEffect, useRef, type KeyboardEvent } from 'react'
 import { useEvalStore } from '../../store/eval-store'
 import { useUiStore } from '../../store/ui-store'
@@ -7,7 +7,6 @@ import { CalendarErrorPanel, EconomicCalendarPanel } from '../calendar/EconomicC
 import { useEconMeta } from '../calendar/use-econ-meta'
 import { SessionsPanel } from '../sessions/SessionsPanel'
 import { ReviewPanel } from '../review/ReviewPanel'
-import { LivePanel } from '../live/LivePanel'
 
 export function Sidebar() {
   const open = useUiStore((state) => state.sidebarOpen)
@@ -26,7 +25,6 @@ export function Sidebar() {
   const tabs = [
     { id: 'sessions' as const, label: 'Sessions', icon: FolderClock },
     { id: 'evaluation' as const, label: 'Eval', icon: Activity },
-    { id: 'live' as const, label: 'Live', icon: NotebookPen },
     ...(calendarVisible ? [{ id: 'calendar' as const, label: 'Calendar', icon: CalendarDays }] : []),
   ]
 
@@ -53,9 +51,7 @@ export function Sidebar() {
             : <div role="status" className="grid h-full place-items-center text-ui-body text-dim">Loading calendar metadata…</div>
         : tab === 'evaluation'
           ? <EvaluationPanel />
-          : tab === 'live'
-            ? <LivePanel />
-            : <SessionsPanel />
+          : <SessionsPanel />
 
   const handleTabListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'))

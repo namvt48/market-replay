@@ -1,4 +1,4 @@
-import { Activity, BarChart3, Keyboard, PanelRightClose, PanelRightOpen, Rewind, Settings } from 'lucide-react'
+import { Activity, BarChart3, Keyboard, NotebookPen, PanelRightClose, PanelRightOpen, Rewind, Settings } from 'lucide-react'
 import { lazy, Suspense, useState, type ReactElement } from 'react'
 import type { Timeframe } from '../api/types'
 import { replayEngine } from '../replay/replay-engine'
@@ -104,6 +104,10 @@ export function TopBar({ layoutMenuRequest = 0, onOpenShortcuts = () => undefine
         <a href="/analytics" className="topbar-control flex h-8 items-center gap-1.5 rounded-control px-2 text-ui-control font-medium text-muted transition-colors hover:bg-surface-3 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-active" aria-label="Open reports" title="Reports">
           <BarChart3 size={15} strokeWidth={1.75} />
           <span className="hidden lg:inline">Reports</span>
+        </a>
+        <a href="/live" className="topbar-control flex h-8 items-center gap-1.5 rounded-control px-2 text-ui-control font-medium text-muted transition-colors hover:bg-surface-3 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-active" aria-label="Open live accounts" title="Live accounts">
+          <NotebookPen size={15} strokeWidth={1.75} />
+          <span className="hidden lg:inline">Live</span>
         </a>
         <button type="button" onClick={() => setSettingsOpen(true)} className="tool-button" aria-label="Workspace settings" title="Workspace settings"><Settings size={16} strokeWidth={1.7} /></button>
         <button type="button" onClick={onOpenShortcuts} className="tool-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts · ?"><Keyboard size={16} strokeWidth={1.7} /></button>

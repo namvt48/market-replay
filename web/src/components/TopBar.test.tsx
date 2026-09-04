@@ -77,6 +77,14 @@ describe('TopBar timeframe visibility', () => {
     expect(screen.getByRole('link', { name: 'Open reports' })).toHaveAttribute('href', '/analytics')
   })
 
+  it('provides Live as a top-bar destination outside the sidebar', () => {
+    render(<TopBar />)
+
+    const live = screen.getByRole('link', { name: 'Open live accounts' })
+    expect(live).toHaveAttribute('href', '/live')
+    expect(live).toHaveTextContent('Live')
+  })
+
   it('enters bar-selection mode from the Replay command', async () => {
     const user = userEvent.setup()
     render(<TopBar />)

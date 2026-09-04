@@ -13,6 +13,7 @@ const AnalyticsScreen = lazy(() => import('./components/analytics/AnalyticsScree
 // The /start setup screen and the chart workspace are never both on screen,
 // so neither should be in the other's download.
 const EvalSetupScreen = lazy(() => import('./components/eval/EvalSetupScreen').then((module) => ({ default: module.EvalSetupScreen })))
+const LiveAccountsScreen = lazy(() => import('./components/live/LiveAccountsScreen').then((module) => ({ default: module.LiveAccountsScreen })))
 
 // Layout shell matching docs §16.5: chart+toolbar on the left, position/
 // orders/watchlist/study-list stack on the right, replay transport strip
@@ -63,6 +64,9 @@ function App() {
   }
   if (path.startsWith('/start')) {
     return <Suspense fallback={<div className="grid h-full place-items-center bg-surface-0 text-ui-body text-muted" role="status">Loading setup…</div>}><EvalSetupScreen /></Suspense>
+  }
+  if (path.startsWith('/live')) {
+    return <Suspense fallback={<div className="grid h-full place-items-center bg-surface-0 text-ui-body text-muted" role="status">Loading live accounts…</div>}><LiveAccountsScreen /></Suspense>
   }
   return <Workspace />
 }

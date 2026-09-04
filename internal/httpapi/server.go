@@ -106,6 +106,8 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /start/", s.handleSPA)
 		mux.HandleFunc("GET /analytics", s.handleSPA)
 		mux.HandleFunc("GET /analytics/", s.handleSPA)
+		mux.HandleFunc("GET /live", s.handleSPA)
+		mux.HandleFunc("GET /live/", s.handleSPA)
 	}
 
 	return withCompression(withLogging(mux))
