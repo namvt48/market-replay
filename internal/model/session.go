@@ -64,8 +64,9 @@ func ValidSessionStatus(status string) bool {
 const (
 	SessionKindReplay = "replay"
 	SessionKindEval   = "eval"
+	SessionKindLive   = "live"
 )
 
 func ValidSessionKind(kind string) bool {
-	return kind == SessionKindReplay || kind == SessionKindEval
+	return kind == SessionKindReplay || kind == SessionKindEval || kind == SessionKindLive
 }

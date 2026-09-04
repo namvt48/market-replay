@@ -20,13 +20,18 @@ type SourceType string
 const (
 	SourceTypeSession    SourceType = "session"
 	SourceTypeEvaluation SourceType = "evaluation"
+	SourceTypeLive       SourceType = "live"
 )
 
 func SourceTypeForKind(kind string) SourceType {
-	if kind == model.SessionKindEval {
+	switch kind {
+	case model.SessionKindEval:
 		return SourceTypeEvaluation
+	case model.SessionKindLive:
+		return SourceTypeLive
+	default:
+		return SourceTypeSession
 	}
-	return SourceTypeSession
 }
 
 // KindForSourceType is SourceTypeForKind's inverse, used by the httpapi
@@ -39,6 +44,8 @@ func KindForSourceType(sourceType string) (kind string, ok bool) {
 		return model.SessionKindReplay, true
 	case string(SourceTypeEvaluation):
 		return model.SessionKindEval, true
+	case string(SourceTypeLive):
+		return model.SessionKindLive, true
 	default:
 		return "", false
 	}

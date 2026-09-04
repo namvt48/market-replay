@@ -89,7 +89,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Kind != "" && !model.ValidSessionKind(req.Kind) {
-		writeError(w, fmt.Errorf("%w: kind must be %q or %q", errBadRequest, model.SessionKindReplay, model.SessionKindEval))
+		writeError(w, fmt.Errorf("%w: kind must be %q, %q, or %q", errBadRequest, model.SessionKindReplay, model.SessionKindEval, model.SessionKindLive))
 		return
 	}
 	name, err := normalizeSessionName(req.Name)
