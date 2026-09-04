@@ -5,6 +5,8 @@ import { fetchAnalyticsSources } from '../../api/analytics'
 import type { AnalyticsSource } from '../../api/analytics'
 import { createLiveTemplate, loadLiveTemplates } from '../../store/live-store'
 import { LiveJournalDetail } from './LiveJournalDetail'
+import { TemplateEditor } from './TemplateEditor'
+import { JournalComposer } from './JournalComposer'
 
 interface NewJournalDraft {
   name: string
@@ -18,6 +20,8 @@ export function LivePanel() {
   const [draft, setDraft] = useState<NewJournalDraft | null>(null)
   const [creating, setCreating] = useState(false)
   const [templates, setTemplates] = useState(() => loadLiveTemplates())
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [composerTarget, setComposerTarget] = useState<{ sessionId: string; templateId: string } | null>(null)
 
   const refresh = async () => {
     const [all, sessions] = await Promise.all([fetchAnalyticsSources(), fetchSessions()])
@@ -56,12 +60,12 @@ export function LivePanel() {
         <button type="button" className="primary-button ml-auto gap-1.5" onClick={() => setDraft({ name: '', symbol: 'LIVE', startBalanceDollars: '10000' })}>
           <Plus size={14} /> <span className="sr-only">Create live journal</span>Journal
         </button>
-        <button type="button" className="secondary-button gap-1.5" onClick={() => { createLiveTemplate('Untitled stats template'); setTemplates(loadLiveTemplates()) }}>
+        <button type="button" className="secondary-button gap-1.5" onClick={() => { createLiveTemplate('Untitled stats template'); setTemplates(loadLiveTemplates()); setEditorOpen(true) }}>
           <Plus size={14} /> <span className="sr-only">Create stats template</span>Template
         </button>
       </header>
-      {/* TODO(Task 7): after createLiveTemplate() succeeds, open TemplateEditor
-          to edit the new template's name/blocks — the editor ships in Task 7. */}
+
+      {editorOpen && <TemplateEditor onClose={() => setEditorOpen(false)} />}
 
       {draft && (
         <div className="grid gap-2 border-b border-line p-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
@@ -106,9 +110,7 @@ export function LivePanel() {
             <ul className="space-y-1">
               {templates.map((tpl) => (
                 <li key={tpl.id}>
-                  {/* TODO(Task 7): template rows open the JournalComposer; disabled
-                      until the composer ships with TemplateEditor. */}
-                  <button type="button" disabled className="flex min-h-9 w-full cursor-not-allowed items-center rounded-control px-3 text-left text-ui-body text-muted">
+                  <button type="button" onClick={() => { const first = sources[0]; if (first) setComposerTarget({ sessionId: first.id, templateId: tpl.id }) }} className="flex min-h-9 w-full items-center rounded-control px-3 text-left text-ui-body text-ink hover:bg-surface-2">
                     <span className="truncate">{tpl.name}</span>
                   </button>
                 </li>
@@ -124,6 +126,17 @@ export function LivePanel() {
           title={selected.title}
           onClose={() => setSelectedId(null)}
           onChanged={() => void refresh()}
+          templates={templates}
+          onCompose={(templateId) => { if (selectedId) setComposerTarget({ sessionId: selectedId, templateId }) }}
+        />
+      )}
+
+      {composerTarget && (
+        <JournalComposer
+          sessionId={composerTarget.sessionId}
+          title={selected?.title ?? ''}
+          templateId={composerTarget.templateId}
+          onClose={() => setComposerTarget(null)}
         />
       )}
     </section>

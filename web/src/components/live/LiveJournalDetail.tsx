@@ -5,6 +5,7 @@ import type { JournalImageMeta } from '../../api/client'
 import type { ClosedTrade } from '../../api/types'
 import { fetchAnalyticsPerformance } from '../../api/analytics'
 import type { AnalyticsPerformance } from '../../api/analytics'
+import type { LiveTemplate } from '../../store/live-store'
 import { DetailDialog } from '../ui/DetailDialog'
 import { LineChart } from '../analytics/InteractiveAnalyticsCharts'
 import { TradeHistoryTable } from '../trades/TradeHistoryTable'
@@ -24,14 +25,17 @@ interface Props {
   title: string
   onClose: () => void
   onChanged: () => void
+  templates: LiveTemplate[]
+  onCompose: (templateId: string) => void
 }
 
-export function LiveJournalDetail({ sessionId, title, onClose, onChanged }: Props) {
+export function LiveJournalDetail({ sessionId, title, onClose, onChanged, templates, onCompose }: Props) {
   const [report, setReport] = useState<AnalyticsPerformance | null>(null)
   const [images, setImages] = useState<JournalImageMeta[]>([])
   const [trades, setTrades] = useState<ClosedTrade[]>([])
   const [form, setForm] = useState<TradeForm>(emptyForm)
   const [saving, setSaving] = useState(false)
+  const [composeTemplate, setComposeTemplate] = useState('')
 
   const reload = useCallback(async () => {
     const [perf, imgs, trs] = await Promise.all([
@@ -133,6 +137,17 @@ export function LiveJournalDetail({ sessionId, title, onClose, onChanged }: Prop
               ))}
             </ul>
           </div>
+
+          <div className="rounded-control border border-line bg-surface-0 p-3">
+            <h4 className="mb-2 text-ui-meta font-semibold uppercase tracking-[0.08em] text-muted">Journal note</h4>
+            <div className="flex flex-wrap items-center gap-2">
+              <select className="field-input h-9 min-w-40 flex-1" value={composeTemplate} onChange={(e) => setComposeTemplate(e.target.value)} aria-label="Stats template">
+                <option value="" disabled>Pick a template…</option>
+                {templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+              <button type="button" className="primary-button h-9" disabled={!composeTemplate} onClick={() => onCompose(composeTemplate)}>Compose</button>
+            </div>
+          </div>
         </div>
 
         <TradeHistoryTable
@@ -156,7 +171,7 @@ export function LiveJournalDetail({ sessionId, title, onClose, onChanged }: Prop
   )
 }
 
-function StatCard({ label, value, tone = 'text-ink' }: { label: string; value: string; tone?: string }) {
+export function StatCard({ label, value, tone = 'text-ink' }: { label: string; value: string; tone?: string }) {
   return (
     <div className="min-h-20 rounded-[14px] border border-line-strong bg-surface-1 px-4 py-3">
       <dt className="text-ui-body text-muted">{label}</dt>
