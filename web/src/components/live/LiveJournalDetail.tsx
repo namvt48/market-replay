@@ -98,7 +98,7 @@ export function LiveJournalDetail({ sessionId, title, onClose, onChanged, templa
 
           <dl className="grid gap-2 sm:grid-cols-3">
             <StatCard label="Total PnL" value={report ? dollars.format(report.overview.totalPnl) : '—'} tone={report && report.overview.totalPnl >= 0 ? 'text-profit-bright' : 'text-loss-bright'} />
-            <StatCard label="Win rate" value={report ? `${(report.overview.winRate * 100).toFixed(1)}%` : '—'} />
+            <StatCard label="Win rate" value={report ? `${report.overview.winRate.toFixed(1)}%` : '—'} />
             <StatCard label="Trades" value={report ? String(report.overview.totalTrades) : '—'} />
           </dl>
 

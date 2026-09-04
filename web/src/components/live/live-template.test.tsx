@@ -3,7 +3,7 @@ import { resolveMetric } from './live-template'
 import type { LiveStatMetric } from '../../store/live-store'
 
 const report = {
-  overview: { totalPnl: 1234.5, winRate: 0.55, totalTrades: 40 },
+  overview: { totalPnl: 1234.5, winRate: 55, totalTrades: 40 },
   expectancy: { averageWin: 75, averageLoss: -40, profitFactor: 1.9 },
   riskReward: { averageRr: 1.4 },
 }

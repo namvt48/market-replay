@@ -8,7 +8,7 @@ function dollars(n: number): string {
 export function resolveMetric(report: AnalyticsPerformance, metric: LiveStatMetric): string {
   switch (metric) {
     case 'totalPnl': return dollars(report.overview.totalPnl)
-    case 'winRate': return `${(report.overview.winRate * 100).toFixed(1)}%`
+    case 'winRate': return `${report.overview.winRate.toFixed(1)}%`
     case 'totalTrades': return String(report.overview.totalTrades)
     case 'profitFactor': {
       const pf = report.expectancy.profitFactor
