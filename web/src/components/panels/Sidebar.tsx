@@ -1,4 +1,4 @@
-import { Activity, ArrowLeft, CalendarDays, ClipboardCheck, FolderClock } from 'lucide-react'
+import { Activity, ArrowLeft, CalendarDays, ClipboardCheck, FolderClock, NotebookPen } from 'lucide-react'
 import { useEffect, useRef, type KeyboardEvent } from 'react'
 import { useEvalStore } from '../../store/eval-store'
 import { useUiStore } from '../../store/ui-store'
@@ -25,6 +25,7 @@ export function Sidebar() {
   const tabs = [
     { id: 'sessions' as const, label: 'Sessions', icon: FolderClock },
     { id: 'evaluation' as const, label: 'Eval', icon: Activity },
+    { id: 'live' as const, label: 'Live', icon: NotebookPen },
     ...(calendarVisible ? [{ id: 'calendar' as const, label: 'Calendar', icon: CalendarDays }] : []),
   ]
 

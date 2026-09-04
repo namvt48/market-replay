@@ -21,7 +21,7 @@ interface UiState {
   activePaneId: string
   activeTool: string | null
   maximizedPaneId: string | null
-  sidebarTab: 'sessions' | 'calendar' | 'evaluation' | 'review' | 'analytics'
+  sidebarTab: 'sessions' | 'calendar' | 'evaluation' | 'review' | 'analytics' | 'live'
   sidebarOpen: boolean
   reviewSource: ReviewSource | null
   calendarImportance: CalendarImportanceFilter

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { fetchApi } from './client'
 
-export const analyticsSourceTypeSchema = z.enum(['session', 'evaluation'])
+export const analyticsSourceTypeSchema = z.enum(['session', 'evaluation', 'live'])
 export type AnalyticsSourceType = z.infer<typeof analyticsSourceTypeSchema>
 
 const nullableString = z.string().nullable()

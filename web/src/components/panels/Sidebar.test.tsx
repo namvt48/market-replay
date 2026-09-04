@@ -28,6 +28,7 @@ vi.mock('../calendar/use-econ-meta', () => ({
   }),
 }))
 vi.mock('../eval/EvaluationPanel', () => ({ EvaluationPanel: () => <div>Evaluation panel</div> }))
+vi.mock('../live/LivePanel', () => ({ LivePanel: () => <div>Live panel</div> }))
 vi.mock('../sessions/SessionsPanel', () => ({ SessionsPanel: () => <div>Sessions panel</div> }))
 vi.mock('../review/ReviewPanel', () => ({ ReviewPanel: () => <div>Review panel</div> }))
 vi.mock('../../replay/use-replay', () => ({
@@ -65,7 +66,7 @@ describe('Sidebar economic calendar tab', () => {
     render(<Sidebar />)
 
     const labels = [...screen.getByRole('navigation', { name: 'Workspace panels' }).querySelectorAll('button')].map((button) => button.textContent)
-    expect(labels).toEqual(['Sessions', 'Eval', 'Calendar'])
+    expect(labels).toEqual(['Sessions', 'Eval', 'Live', 'Calendar'])
 
     await user.click(screen.getByRole('tab', { name: 'Calendar' }))
 
