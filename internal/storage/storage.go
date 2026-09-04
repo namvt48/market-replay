@@ -49,6 +49,15 @@ type Store interface {
 	ReplaceTrades(ctx context.Context, sessionID string, trades []model.Trade) error
 	ListTrades(ctx context.Context, sessionID string) ([]model.Trade, error)
 
+	// JournalImage methods back the live-trade journal screenshot feature.
+	// SaveJournalImage stores a BLOB owned by sessionID (FK-checked).
+	SaveJournalImage(ctx context.Context, img model.JournalImage) error
+	GetJournalImage(ctx context.Context, id string) (model.JournalImage, error)
+	// ListJournalImages returns metadata only (Data is nil) for one session,
+	// ordered oldest-first.
+	ListJournalImages(ctx context.Context, sessionID string) ([]model.JournalImage, error)
+	DeleteJournalImage(ctx context.Context, id string) error
+
 	GetWatchlist(ctx context.Context) ([]string, error)
 	SetWatchlist(ctx context.Context, symbols []string) error
 
