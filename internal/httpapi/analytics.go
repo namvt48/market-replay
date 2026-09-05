@@ -34,7 +34,26 @@ func loadSourceTrades(ctx context.Context, store storage.Store, sourceType, sour
 	if err != nil {
 		return model.Session{}, nil, err
 	}
-	return sess, trades, nil
+	return sess, normalizeLiveTrades(sess, trades), nil
+}
+
+// normalizeLiveTrades converts live-journal trade timestamps from Unix
+// milliseconds (the client writes Date.now()) to the Unix seconds the
+// analytics engine expects (the replay-trade convention). Live is the
+// only kind that stores ms; replay and evaluation sessions store seconds
+// already. The input slice is returned untouched when there is nothing
+// to normalize, so no copy is made for the common case.
+func normalizeLiveTrades(sess model.Session, trades []model.Trade) []model.Trade {
+	if sess.Kind != model.SessionKindLive {
+		return trades
+	}
+	normalized := make([]model.Trade, len(trades))
+	for i, t := range trades {
+		t.EntryTs /= 1000
+		t.ExitTs /= 1000
+		normalized[i] = t
+	}
+	return normalized
 }
 
 // handleAnalyticsSources serves GET /api/v1/analytics/sources — every
@@ -56,7 +75,7 @@ func (s *Server) handleAnalyticsSources(w http.ResponseWriter, r *http.Request) 
 			writeError(w, err)
 			return
 		}
-		items = append(items, analytics.BuildSourceListItem(sess, trades))
+		items = append(items, analytics.BuildSourceListItem(sess, normalizeLiveTrades(sess, trades)))
 	}
 	// Depends on every session's current trade journal, which grows as
 	// replays/evaluations progress.

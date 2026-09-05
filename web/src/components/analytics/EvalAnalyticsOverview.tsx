@@ -239,6 +239,7 @@ function EvaluationPnlPanel({ performance, account, onThresholdChange }: EvalAna
 
       <div className="mt-6 overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-active" tabIndex={0} role="region" aria-label="Scrollable evaluation profit and loss chart">
         <LineChart
+          reportSized
           values={points.map((point) => point.cumulativePnl)}
           referenceLines={referenceLines}
           includeZero

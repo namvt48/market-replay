@@ -28,6 +28,7 @@ interface TradeHistoryTableProps {
   timezone?: ChartTimezone
   /** Lets a table inside a padded detail panel align with the dialog edges. */
   fullBleed?: boolean
+  onTradeClick?: (trade: TradeHistoryTableRecord) => void
 }
 
 interface TradeTimeLabel {
@@ -96,7 +97,7 @@ function sideLabel(side: TradeHistoryTableRecord['side']): string {
   return side?.toUpperCase() ?? '—'
 }
 
-export function TradeHistoryTable({ trades, loading = false, headingId, timezone = DEFAULT_CHART_TIMEZONE, fullBleed = false }: TradeHistoryTableProps): ReactElement {
+export function TradeHistoryTable({ trades, loading = false, headingId, timezone = DEFAULT_CHART_TIMEZONE, fullBleed = false, onTradeClick }: TradeHistoryTableProps): ReactElement {
   const recentTrades = trades.toReversed()
   const formatters = useMemo<TradeTimeFormatters>(() => {
     const context = chartTimezoneIntlContext(timezone)
@@ -119,18 +120,18 @@ export function TradeHistoryTable({ trades, loading = false, headingId, timezone
       </div>
 
       {recentTrades.length > 0 ? (
-        <div className="overflow-x-auto border-t border-line" role="region" aria-label="Scrollable trade history" tabIndex={0}>
-          <table className="w-full min-w-[30rem] table-fixed border-collapse text-left" aria-label="Trade history">
+        <div className="overflow-hidden border-t border-line" role="region" aria-label="Trade history" tabIndex={0}>
+          <table className="w-full table-fixed border-collapse text-left" aria-label="Trade history">
             <colgroup>
-              <col className="w-[8%]" />
-              <col className="w-[17%]" />
-              <col className="w-[37%]" />
-              <col className="w-[18%]" />
+              <col className="w-[7%]" />
               <col className="w-[20%]" />
+              <col className="w-[29%]" />
+              <col className="w-[18%]" />
+              <col className="w-[26%]" />
             </colgroup>
             <thead className="bg-surface-2/45 text-ui-meta text-dim">
               <tr>
-                <th scope="col" className="px-4 py-1.5 font-medium">STT</th>
+                <th scope="col" className="px-2 py-1.5 font-medium">STT</th>
                 <th scope="col" className="px-2 py-1.5 font-medium">Trade</th>
                 <th scope="col" className="px-1 py-1.5 font-medium">Time</th>
                 <th scope="col" className="px-1 py-1.5 text-right font-medium">MFE/MAE</th>
@@ -143,16 +144,16 @@ export function TradeHistoryTable({ trades, loading = false, headingId, timezone
                 const favorable = Math.abs(trade.mfeTicks)
                 const adverse = Math.abs(trade.maeTicks)
                 return (
-                  <tr key={trade.id} className="align-top hover:bg-surface-2/35">
-                    <td className="px-4 py-2 text-dim">{index + 1}</td>
+                  <tr key={trade.id} onClick={() => onTradeClick?.(trade)} onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && onTradeClick) { event.preventDefault(); onTradeClick(trade) } }} tabIndex={onTradeClick ? 0 : undefined} role={onTradeClick ? 'button' : undefined} aria-label={onTradeClick ? `Open review for ${trade.symbol} trade ${index + 1}` : undefined} className={`align-top ${onTradeClick ? 'cursor-pointer outline-none hover:bg-surface-2/60 focus-visible:bg-surface-2/60' : 'hover:bg-surface-2/35'}`}>
+                    <td className="px-2 py-2 text-dim">{index + 1}</td>
                     <td className="px-2 py-2">
                       <span className={`block font-semibold ${trade.side === 'long' ? 'text-profit-bright' : trade.side === 'short' ? 'text-loss-bright' : 'text-muted'}`}>{sideLabel(trade.side)}</span>
-                      <span className="mt-0.5 block truncate text-ink">{trade.qty} {trade.symbol}</span>
+                      <span className="mt-0.5 block truncate text-ink" title={`${trade.qty} ${trade.symbol}`}>{trade.qty} {trade.symbol}</span>
                     </td>
                     <td className="px-1 py-2">
                       <time className="block text-ink" dateTime={time.dateTime} aria-label={time.accessible}>
-                        <span className="block whitespace-nowrap">{time.primary}</span>
-                        <span className="mt-0.5 block whitespace-nowrap text-dim">{time.secondary}</span>
+                        <span className="block truncate" title={time.primary}>{time.primary}</span>
+                        <span className="mt-0.5 block truncate text-dim" title={time.secondary}>{time.secondary}</span>
                       </time>
                     </td>
                     <td className="px-1 py-2 text-right text-muted" aria-label={`Maximum favorable excursion: ${favorable} ticks. Maximum adverse excursion: ${adverse} ticks.`}>
@@ -160,7 +161,7 @@ export function TradeHistoryTable({ trades, loading = false, headingId, timezone
                       <span className="mt-0.5 block whitespace-nowrap">−{adverse}t</span>
                     </td>
                     <td className="py-2 pl-1 pr-3 text-right">
-                      <span className={`block whitespace-nowrap font-semibold ${trade.realizedCents >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{pnlLabel(trade.realizedCents)}</span>
+                      <span className={`block truncate font-semibold ${trade.realizedCents >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`} title={pnlLabel(trade.realizedCents)}>{pnlLabel(trade.realizedCents)}</span>
                       <span className="mt-0.5 block whitespace-nowrap text-dim">R {trade.rMultiple === null ? '—' : trade.rMultiple.toFixed(2)}</span>
                     </td>
                   </tr>

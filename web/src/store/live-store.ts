@@ -33,8 +33,15 @@ export interface LiveComposition {
   updatedAt: number
 }
 
+export interface LiveNote {
+  sessionId: string
+  markdown: string
+  updatedAt: number
+}
+
 const TEMPLATES_KEY = 'replay:live:templates'
 const COMPOSITIONS_KEY = 'replay:live:compositions'
+const NOTES_KEY = 'replay:live:notes'
 
 const blockSchema = z.object({
   id: z.string(),
@@ -56,6 +63,12 @@ const compositionSchema = z.object({
   sessionId: z.string(),
   templateId: z.string(),
   blockOverrides: z.record(z.string(), z.object({ imageId: z.string().optional(), text: z.string().optional() })),
+  updatedAt: z.number(),
+})
+
+const noteSchema = z.object({
+  sessionId: z.string(),
+  markdown: z.string(),
   updatedAt: z.number(),
 })
 
@@ -139,4 +152,31 @@ export function saveLiveComposition(sessionId: string, composition: LiveComposit
   }
   const next = existing.filter((c) => c.sessionId !== sessionId)
   localStorage.setItem(COMPOSITIONS_KEY, JSON.stringify([...next, { ...composition, sessionId }]))
+}
+
+export function loadLiveNote(sessionId: string): string {
+  try {
+    const raw = localStorage.getItem(NOTES_KEY)
+    if (!raw) return ''
+    const parsed = z.array(noteSchema).safeParse(JSON.parse(raw))
+    if (!parsed.success) return ''
+    return parsed.data.find((n) => n.sessionId === sessionId)?.markdown ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function saveLiveNote(sessionId: string, markdown: string): void {
+  let existing: LiveNote[] = []
+  try {
+    const raw = localStorage.getItem(NOTES_KEY)
+    if (raw) {
+      const parsed = z.array(noteSchema).safeParse(JSON.parse(raw))
+      if (parsed.success) existing = parsed.data
+    }
+  } catch {
+    // A corrupt registry must not block the write; start from empty.
+  }
+  const next = existing.filter((n) => n.sessionId !== sessionId)
+  localStorage.setItem(NOTES_KEY, JSON.stringify([...next, { sessionId, markdown, updatedAt: Date.now() }]))
 }

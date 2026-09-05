@@ -153,7 +153,7 @@ function PnlOverview({ report, onThresholdChange }: { report: AnalyticsReportVie
       <span className="sr-only" role="status">Applied breakeven threshold: {appliedThreshold}</span>
       <div className="mt-5 overflow-x-auto pb-1">
         <div className="min-w-[720px]">
-          <LineChart values={curve.values} valueLabel="Cumulative PnL" valueFormatter={(value) => money.format(value)} ariaLabel={`${report.kind} profit and loss curve for ${period} period`} />
+          <LineChart reportSized values={curve.values} valueLabel="Cumulative PnL" valueFormatter={(value) => money.format(value)} ariaLabel={`${report.kind} profit and loss curve for ${period} period`} />
           <div className="mt-1 flex justify-between px-6 font-mono text-ui-meta text-dim" aria-hidden="true">
             {curve.labels.map((label, index) => <span key={`${label}-${index}`}>{label}</span>)}
           </div>
@@ -373,19 +373,20 @@ function ResourcePanel<T>({ state, children }: { state: ResourceState<T>; childr
   return <ReportPanel className="flex min-h-64 items-center justify-center"><span className="text-sm text-[#9299a3]">Loading analytics…</span></ReportPanel>
 }
 
-function ReportSourcePicker({ groupedSources, sourceName, loading, failed }: { groupedSources: { evaluations: AnalyticsSource[]; sessions: AnalyticsSource[] }; sourceName: (source: AnalyticsSource) => string; loading: boolean; failed: boolean }) {
+function ReportSourcePicker({ groupedSources, sourceName, loading, failed }: { groupedSources: { evaluations: AnalyticsSource[]; sessions: AnalyticsSource[]; live: AnalyticsSource[] }; sourceName: (source: AnalyticsSource) => string; loading: boolean; failed: boolean }) {
   const groups = [
     { label: 'Evaluation accounts', entries: groupedSources.evaluations },
     { label: 'Replay sessions', entries: groupedSources.sessions },
+    { label: 'Live accounts', entries: groupedSources.live },
   ]
   const count = groups.reduce((total, group) => total + group.entries.length, 0)
   return (
-    <ReportPanel className="p-5 sm:p-8">
-      <div className="max-w-2xl"><h2 className="text-xl font-semibold text-white">Choose a report</h2><p className="mt-1 text-ui-body text-[#a1a7b0]">Select a replay session or evaluation account to open its performance report.</p></div>
+    <ReportPanel className="p-3 sm:p-4">
+      <div className="flex h-9 items-center justify-between px-1"><h2 className="text-ui-title font-semibold text-white">Reports</h2><span className="font-mono text-ui-meta text-dim">{count}</span></div>
       {loading ? <p className="py-10 text-center text-ui-body text-muted">Loading report sources…</p> : null}
       {failed ? <p role="alert" className="mt-5 text-ui-body text-loss-bright">Unable to load report sources. Refresh and try again.</p> : null}
-      {!loading && !failed && count === 0 ? <p className="mt-5 text-ui-body text-muted">No sessions or evaluation accounts have trades yet.</p> : null}
-      {count > 0 ? <div className="mt-6 grid gap-4 lg:grid-cols-2">{groups.map(({ label, entries }) => entries.length > 0 ? <section key={label} aria-labelledby={`analytics-picker-${label.replaceAll(' ', '-').toLowerCase()}`} className="overflow-hidden rounded-[14px] border border-[#3c4046] bg-[#0d0f11]"><h3 id={`analytics-picker-${label.replaceAll(' ', '-').toLowerCase()}`} className="border-b border-[#292c31] px-4 py-3 text-ui-body font-semibold text-ink">{label}</h3><ul className="divide-y divide-[#292c31]">{entries.map((source) => <li key={`${source.type}-${source.id}`}><a href={`/analytics?analytics=${encodeURIComponent(source.id)}&sourceType=${source.type}`} className="flex min-h-16 items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-surface-2 focus-visible:bg-surface-2"><span className="min-w-0"><strong className="block truncate text-ui-body font-semibold text-ink">{sourceName(source)}</strong><span className="mt-0.5 block text-ui-meta text-muted">{source.tradeCount} closed trades · {source.status}</span></span><BarChart3 size={16} className="shrink-0 text-active-bright" aria-hidden="true" /></a></li>)}</ul></section> : null)}</div> : null}
+      {!loading && !failed && count === 0 ? <p className="px-1 py-8 text-ui-body text-muted">No traded accounts yet.</p> : null}
+      {count > 0 ? <div className="mt-3 grid gap-3 lg:grid-cols-3">{groups.map(({ label, entries }) => entries.length > 0 ? <section key={label} aria-labelledby={`analytics-picker-${label.replaceAll(' ', '-').toLowerCase()}`} className="overflow-hidden rounded-panel border border-[#3c4046] bg-[#0d0f11]"><h3 id={`analytics-picker-${label.replaceAll(' ', '-').toLowerCase()}`} className="flex h-9 items-center justify-between border-b border-[#292c31] px-3 text-ui-meta font-semibold text-muted"><span>{label}</span><span className="font-mono text-dim">{entries.length}</span></h3><ul className="divide-y divide-[#292c31]">{entries.map((source) => <li key={`${source.type}-${source.id}`}><a href={`/analytics?analytics=${encodeURIComponent(source.id)}&sourceType=${source.type}`} className="flex min-h-12 items-center gap-2 px-3 py-2 transition-colors hover:bg-surface-2 focus-visible:bg-surface-2"><span className="min-w-0 flex-1"><strong className="block truncate text-ui-body font-semibold text-ink">{sourceName(source)}</strong><span className="font-mono text-ui-meta text-dim">{source.tradeCount} trades</span></span><span className="shrink-0 font-mono text-[10px] text-muted">{source.status.toUpperCase()}</span></a></li>)}</ul></section> : null)}</div> : null}
     </ReportPanel>
   )
 }
@@ -447,18 +448,42 @@ export function AnalyticsScreen() {
   const groupedSources = sources.status === 'success' ? {
     evaluations: sources.data.filter((source) => source.type === 'evaluation'),
     sessions: sources.data.filter((source) => source.type === 'session'),
-  } : { evaluations: [], sessions: [] }
+    live: sources.data.filter((source) => source.type === 'live'),
+  } : { evaluations: [], sessions: [], live: [] }
+
+  // The reports landing route is a picker, not an empty report. Keeping the
+  // report-only controls out of this state makes the next action unambiguous.
+  if (!validSource) {
+    return (
+      <div className="scrollbar-gutter-stable h-full overflow-y-auto bg-[#070809] font-sans text-ink">
+        <main className="mx-auto max-w-[1500px] px-3 py-5 sm:px-6 sm:py-7">
+          <a href="/" className="mb-4 inline-flex min-h-10 items-center gap-2 rounded-control px-2 text-ui-control font-medium text-muted transition-colors hover:bg-surface-2 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-active" aria-label="Back to chart">
+            <ArrowLeft size={16} strokeWidth={1.75} aria-hidden="true" />
+            Back to chart
+          </a>
+          <ReportSourcePicker
+            groupedSources={groupedSources}
+            sourceName={sourceName}
+            loading={sources.status === 'loading' || sources.status === 'idle'}
+            failed={sources.status === 'error'}
+          />
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div className="scrollbar-gutter-stable h-full overflow-y-auto bg-[#070809] font-sans text-ink">
       <header className="sticky top-0 z-30 border-b border-[#292c31] bg-[#0d0f11]/95 backdrop-blur-sm">
         <div className="mx-auto flex min-h-14 max-w-[1500px] flex-wrap items-center gap-2 px-3 py-2 sm:flex-nowrap sm:gap-3 sm:px-6">
-          <a href="/" className="tool-button shrink-0" aria-label="Back to replay workspace"><ArrowLeft size={18} /></a>
+          <a href="/analytics" className="tool-button shrink-0" aria-label="Back to reports"><ArrowLeft size={18} /></a>
           <div className="min-w-0 flex-1 border-l border-[#34373c] pl-3"><h1 className="truncate text-[16px] font-semibold leading-5 tracking-[-0.01em] text-[#f4f5f7]">{evalAccount ? evaluationDisplayName(evalAccount) : report?.title ?? 'Analytics report'}</h1></div>
           <label className="flex min-w-0 basis-full items-center gap-2 sm:basis-auto">
             <span className="shrink-0 text-xs font-medium text-[#9ba2ad]">Report</span>
             <select aria-label="Analytics source" value={sourceType ? `${sourceType}:${sourceId}` : ''} onChange={switchSource} disabled={sources.status !== 'success' || sources.data.length === 0} className="h-9 min-w-0 flex-1 rounded-lg border border-[#454a52] bg-[#090b0d] px-3 text-sm font-medium text-[#edf0f3] outline-none transition-colors hover:border-[#626873] focus:border-active disabled:opacity-50 sm:w-64">
               {groupedSources.evaluations.length > 0 ? <optgroup label="Eval accounts">{groupedSources.evaluations.map((source) => <option key={`evaluation:${source.id}`} value={`evaluation:${source.id}`}>{sourceName(source)}</option>)}</optgroup> : null}
               {groupedSources.sessions.length > 0 ? <optgroup label="Replay sessions">{groupedSources.sessions.map((source) => <option key={`session:${source.id}`} value={`session:${source.id}`}>{sourceName(source)}</option>)}</optgroup> : null}
+              {groupedSources.live.length > 0 ? <optgroup label="Live accounts">{groupedSources.live.map((source) => <option key={`live:${source.id}`} value={`live:${source.id}`}>{sourceName(source)}</option>)}</optgroup> : null}
             </select>
           </label>
         </div>
@@ -468,18 +493,17 @@ export function AnalyticsScreen() {
           {tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" role="tab" aria-selected={tab === id} aria-controls={`analytics-panel-${id}`} id={`analytics-tab-${id}`} onClick={() => setTab(id)} className="flex min-h-10 min-w-[148px] items-center justify-center gap-2 rounded-[21px] border border-transparent px-3 text-ui-control font-medium text-[#aeb4bd] transition-colors hover:text-white aria-selected:border-[#454a51] aria-selected:bg-[#070809] aria-selected:text-white sm:min-w-0"><Icon size={15} strokeWidth={1.75} />{label}</button>)}
         </nav>
         <div className="mt-6" role="tabpanel" id={`analytics-panel-${tab}`} aria-labelledby={`analytics-tab-${tab}`}>
-          {!validSource ? <ReportSourcePicker groupedSources={groupedSources} sourceName={sourceName} loading={sources.status === 'loading' || sources.status === 'idle'} failed={sources.status === 'error'} /> : null}
-          {validSource && tab === 'performance' ? <ResourcePanel state={performance}>{(data) => {
+          {tab === 'performance' ? <ResourcePanel state={performance}>{(data) => {
             const performanceReport = toAnalyticsReportView(data, workspaceTimezone)
             return sourceType === 'evaluation'
               ? <EvaluationPerformanceContent performance={data} account={evalAccount} report={performanceReport} onThresholdChange={setBreakevenThreshold} />
               : <PerformanceContent report={performanceReport} onThresholdChange={setBreakevenThreshold} />
           }}</ResourcePanel> : null}
-          {validSource && tab === 'drawdown' ? <ResourcePanel state={drawdown}>{(data) => <DrawdownTab report={data} />}</ResourcePanel> : null}
-          {validSource && tab === 'simulation' ? <ResourcePanel state={performance}>{(data) => sourceType ? <SimulationTab source={{ id: sourceId, type: sourceType }} performance={data} /> : null}</ResourcePanel> : null}
-          {validSource && tab === 'edge' ? <ResourcePanel state={edge}>{(data) => <EdgeTab report={data} />}</ResourcePanel> : null}
-          {validSource && tab === 'discipline' ? <ResourcePanel state={execution}>{(data) => <ExecutionDisciplineTab report={data} />}</ResourcePanel> : null}
-          {validSource && tab === 'tags' && sourceType ? <TagAnalyticsTab sourceType={sourceType} sourceId={sourceId} /> : null}
+          {tab === 'drawdown' ? <ResourcePanel state={drawdown}>{(data) => <DrawdownTab report={data} />}</ResourcePanel> : null}
+          {tab === 'simulation' ? <ResourcePanel state={performance}>{(data) => sourceType ? <SimulationTab source={{ id: sourceId, type: sourceType }} performance={data} /> : null}</ResourcePanel> : null}
+          {tab === 'edge' ? <ResourcePanel state={edge}>{(data) => <EdgeTab report={data} />}</ResourcePanel> : null}
+          {tab === 'discipline' ? <ResourcePanel state={execution}>{(data) => <ExecutionDisciplineTab report={data} />}</ResourcePanel> : null}
+          {tab === 'tags' && sourceType ? <TagAnalyticsTab sourceType={sourceType} sourceId={sourceId} /> : null}
         </div>
       </main>
       <footer className="mx-auto flex max-w-[1500px] items-center justify-between gap-3 border-t border-[#292c31] px-3 py-5 text-xs text-[#858b94] sm:px-6"><span>Market Replay analytics</span><span className="flex shrink-0 items-center gap-1.5"><BarChart3 size={13} />{report ? `${report.kind} · live trade data` : 'Live analytics'}</span></footer>

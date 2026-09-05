@@ -1,7 +1,7 @@
-import { ArrowLeft, NotebookPen, Plus } from 'lucide-react'
+import { ArrowLeft, BarChart3, NotebookPen, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { createSession, deleteSession, fetchSessions, patchSession } from '../../api/client'
-import type { ReplaySession } from '../../api/types'
+import { createSession, deleteSession, fetchSessions, fetchTrades, patchSession } from '../../api/client'
+import type { ClosedTrade, ReplaySession } from '../../api/types'
 import { fetchAnalyticsPerformance, fetchAnalyticsSources } from '../../api/analytics'
 import type { AnalyticsPerformance, AnalyticsSource } from '../../api/analytics'
 import { createLiveTemplate, loadLiveTemplates } from '../../store/live-store'
@@ -12,12 +12,16 @@ import { JournalComposer } from './JournalComposer'
 import { PerformanceCalendar } from '../analytics/PerformanceCalendar'
 import { LineChart } from '../analytics/InteractiveAnalyticsCharts'
 import { mergeLiveCalendars, type AccountStage, type LiveCalendarReport } from './live-calendar'
+import { DetailDialog } from '../ui/DetailDialog'
 
 const dollars = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
   maximumFractionDigits: 0,
 })
+const pnlMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const calendarDate = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })
+const calendarTime = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })
 
 // Default $10,000 starting balance, matching the live journal default.
 const DEFAULT_BALANCE_CENTS = 1_000_000
@@ -28,6 +32,50 @@ interface AccountRow {
   report: LiveCalendarReport | undefined
   stage: AccountStage
   equity: number[]
+}
+
+interface CalendarDayState {
+  date: string
+  status: 'loading' | 'ready' | 'error'
+  accounts: { session: ReplaySession; trades: ClosedTrade[] }[]
+}
+
+function tradeDayKey(trade: ClosedTrade): string {
+  const timestamp = trade.exitTs < 100_000_000_000 ? trade.exitTs * 1000 : trade.exitTs
+  return new Date(timestamp).toISOString().slice(0, 10)
+}
+
+function pnlLabel(value: number): string {
+  const formatted = pnlMoney.format(Math.abs(value))
+  return value > 0 ? `+${formatted}` : value < 0 ? `−${formatted}` : formatted
+}
+
+function CalendarDayDialog({ day, onClose }: { day: CalendarDayState; onClose: () => void }) {
+  const title = calendarDate.format(new Date(`${day.date}T12:00:00Z`))
+  return (
+    <DetailDialog
+      titleId="live-calendar-day-heading"
+      title={<h2 id="live-calendar-day-heading" className="text-ui-title font-semibold text-ink">Trades · {title}</h2>}
+      status={<span className="rounded-control bg-surface-2 px-2 py-1 font-mono text-ui-meta text-muted">{day.status === 'ready' ? `${day.accounts.reduce((count, account) => count + account.trades.length, 0)} trades` : 'Loading'}</span>}
+      onClose={onClose}
+    >
+      <section className="p-4 sm:p-5">
+        {day.status === 'loading' ? <p role="status" className="py-10 text-center text-ui-body text-muted">Loading trades for this day…</p> : null}
+        {day.status === 'error' ? <p role="alert" className="py-10 text-center text-ui-body text-loss-bright">Unable to load this day’s trade history. Try again.</p> : null}
+        {day.status === 'ready' && day.accounts.length === 0 ? <p className="py-10 text-center text-ui-body text-muted">No trade records found for this day.</p> : null}
+        {day.status === 'ready' ? <ul className="space-y-3">{day.accounts.map(({ session, trades }) => (
+          <li key={session.id} className="overflow-hidden rounded-control border border-line bg-surface-0">
+            <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-2.5"><strong className="min-w-0 truncate text-ui-control font-semibold text-ink">{session.name || 'Live account'}</strong><span className="font-mono text-ui-meta text-muted">{trades.length} trades</span></div>
+            <ul className="divide-y divide-line">{trades.map((trade) => {
+              const exitTimestamp = trade.exitTs < 100_000_000_000 ? trade.exitTs * 1000 : trade.exitTs
+              const realized = trade.realizedCents / 100
+              return <li key={trade.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5"><span className="min-w-0"><strong className="block truncate text-ui-body font-semibold text-ink">{trade.symbol} · {trade.side === 'long' ? 'Long' : 'Short'}</strong><time dateTime={new Date(exitTimestamp).toISOString()} className="mt-0.5 block font-mono text-ui-meta text-muted">{calendarTime.format(new Date(exitTimestamp))} UTC · {trade.qty} qty</time></span><strong className={`font-mono text-ui-control tabular-nums ${realized > 0 ? 'text-profit-bright' : realized < 0 ? 'text-loss-bright' : 'text-muted'}`}>{pnlLabel(realized)}</strong></li>
+            })}</ul>
+          </li>
+        ))}</ul> : null}
+      </section>
+    </DetailDialog>
+  )
 }
 
 export function LiveAccountsScreen() {
@@ -44,6 +92,7 @@ export function LiveAccountsScreen() {
   const [templates, setTemplates] = useState<LiveTemplate[]>(() => loadLiveTemplates())
   const [editorOpen, setEditorOpen] = useState(false)
   const [composerTarget, setComposerTarget] = useState<{ sessionId: string; templateId: string } | null>(null)
+  const [calendarDay, setCalendarDay] = useState<CalendarDayState | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -112,8 +161,19 @@ export function LiveAccountsScreen() {
     await refresh()
   }
 
+  const openCalendarDay = async (date: string) => {
+    const liveSessions = [...sessions]
+    setCalendarDay({ date, status: 'loading', accounts: [] })
+    const loaded = await Promise.allSettled(liveSessions.map(async (session) => ({ session, trades: (await fetchTrades(session.id)).filter((trade) => tradeDayKey(trade) === date) })))
+    const accounts = loaded
+      .filter((result): result is PromiseFulfilledResult<{ session: ReplaySession; trades: ClosedTrade[] }> => result.status === 'fulfilled')
+      .map((result) => result.value)
+      .filter((account) => account.trades.length > 0)
+    setCalendarDay({ date, status: loaded.some((result) => result.status === 'rejected') ? 'error' : 'ready', accounts })
+  }
+
   return (
-    <div className="min-h-dvh bg-surface-0 text-ink">
+    <div className="h-full min-h-0 overflow-y-auto overscroll-contain bg-surface-0 text-ink">
       <header className="sticky top-0 z-10 border-b border-line bg-[#101114]/95 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4">
           <a href="/" className="tool-button grid size-9 shrink-0 place-items-center rounded-control" aria-label="Back to workspace" title="Back to workspace">
@@ -166,42 +226,41 @@ export function LiveAccountsScreen() {
                 </div>
               ) : (
                 <ul className="space-y-1.5">
-                  {rows.map(({ session, source, report, stage, equity }) => {
+                  {rows.map(({ session, report, stage, equity }) => {
                     const expanded = expandedId === session.id
                     const name = session.name || 'Live account'
                     return (
                       <li key={session.id}>
-                        <div className="flex min-h-12 w-full items-center gap-2 rounded-control border border-line bg-surface-0 px-3">
+                        <div className="flex min-h-14 w-full flex-wrap items-center gap-2 rounded-control border border-line bg-surface-0 px-3 py-2 sm:flex-nowrap">
                           <button
                             type="button"
                             onClick={() => setExpandedId(expanded ? null : session.id)}
                             aria-expanded={expanded}
                             aria-label={`Show stats for ${name}`}
-                            className="flex min-h-11 min-w-0 flex-1 items-center gap-3 text-left"
+                            className="flex min-h-10 min-w-40 flex-1 items-center text-left"
                           >
-                            <span className="min-w-0 flex-1 truncate text-ui-body font-medium text-ink">{name}</span>
-                            <span className="shrink-0 text-ui-meta text-muted">{source?.tradeCount ?? 0} trades</span>
-                            {report ? (
-                              <span className={`shrink-0 font-mono text-ui-meta font-medium tabular-nums ${report.overview.totalPnl >= 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>
-                                {dollars.format(report.overview.totalPnl)}
-                              </span>
-                            ) : null}
+                            <span className="min-w-0 truncate text-ui-control font-semibold text-ink">{name}</span>
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => { setDetailId(session.id); setExpandedId(null) }}
-                            aria-label={`Add trade to ${name}`}
-                            className="secondary-button h-8 shrink-0 gap-1 px-2.5"
-                          >
-                            <Plus size={13} /> Trade
-                          </button>
+                          <div className="min-w-24 border-l border-line pl-3 sm:order-none" aria-label={`Net P&L ${report ? pnlLabel(report.overview.totalPnl) : 'unavailable'}`}>
+                            <span className="block text-ui-meta text-muted">Net P&amp;L</span>
+                            <strong className={`block font-mono text-ui-control font-semibold tabular-nums ${report && report.overview.totalPnl > 0 ? 'text-profit-bright' : report && report.overview.totalPnl < 0 ? 'text-loss-bright' : 'text-muted'}`}>{report ? pnlLabel(report.overview.totalPnl) : '—'}</strong>
+                          </div>
                           <button
                             type="button"
                             onClick={() => void handleToggleStage(session, stage === 'eval' ? 'funded' : 'eval')}
                             aria-label={`Mark ${name} ${stage === 'eval' ? 'funded' : 'eval'}`}
-                            className={`shrink-0 rounded-control px-2 py-1 font-mono text-ui-meta font-semibold transition-colors ${stage === 'eval' ? 'bg-[#f59e0b]/15 text-[#fbbf24] hover:bg-[#f59e0b]/25' : 'bg-[#10b981]/15 text-[#34d399] hover:bg-[#10b981]/25'}`}
+                            className={`flex w-[4.5rem] shrink-0 items-center justify-center rounded-control px-2 py-1 font-mono text-ui-meta font-semibold transition-colors ${stage === 'eval' ? 'bg-[#f59e0b]/15 text-[#fbbf24] hover:bg-[#f59e0b]/25' : 'bg-[#10b981]/15 text-[#34d399] hover:bg-[#10b981]/25'}`}
                           >
                             {stage === 'eval' ? 'EVAL' : 'FUNDED'}
+                          </button>
+                          <a href={`/analytics?analytics=${encodeURIComponent(session.id)}&sourceType=live`} className="secondary-button h-8 shrink-0 gap-1 px-2.5" aria-label={`Open analytics for ${name}`}><BarChart3 size={13} />Analytics</a>
+                          <button
+                            type="button"
+                            onClick={() => { setDetailId(session.id); setExpandedId(null) }}
+                            aria-label={`Open details for ${name}`}
+                            className="secondary-button h-8 shrink-0 gap-1 px-2.5"
+                          >
+                            Detail
                           </button>
                         </div>
                         {expanded && (
@@ -233,7 +292,7 @@ export function LiveAccountsScreen() {
 
             <section aria-label="Performance calendar">
               <h2 className="mb-3 text-ui-title font-semibold text-ink">Performance</h2>
-              <PerformanceCalendar entries={calendar.entries} initialDate={calendar.initialDate} />
+              <PerformanceCalendar entries={calendar.entries} initialDate={calendar.initialDate} onSelectDate={(date) => void openCalendarDay(date)} />
             </section>
           </div>
         )}
@@ -263,6 +322,7 @@ export function LiveAccountsScreen() {
       )}
 
       {editorOpen && <TemplateEditor onClose={() => setEditorOpen(false)} />}
+      {calendarDay ? <CalendarDayDialog day={calendarDay} onClose={() => setCalendarDay(null)} /> : null}
     </div>
   )
 }

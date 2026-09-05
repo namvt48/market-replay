@@ -89,29 +89,12 @@ describe('Sidebar economic calendar tab', () => {
     expect(screen.queryByRole('button', { name: 'Trade' })).not.toBeInTheDocument()
   })
 
-  it('replaces the tab list with a review bar and returns to the sessions tab on Back', async () => {
-    const user = userEvent.setup()
+  it('renders an old persisted review tab as Sessions now that Review opens in a dialog', () => {
     useUiStore.setState({ sidebarOpen: true, sidebarTab: 'review', reviewSource: { id: 's1', type: 'session', title: 'S1' } })
     render(<Sidebar />)
 
-    expect(screen.getByRole('button', { name: 'Back to Sessions' })).toBeVisible()
-    expect(screen.getByText('Review')).toHaveAttribute('aria-current', 'page')
-    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Back to Sessions' }))
-    expect(useUiStore.getState().sidebarTab).toBe('sessions')
-  })
-
-  it('returns to the evaluation tab from review when the source is an evaluation', async () => {
-    const user = userEvent.setup()
-    useUiStore.setState({ sidebarOpen: true, sidebarTab: 'review', reviewSource: { id: 'e1', type: 'evaluation', title: 'E1' } })
-    render(<Sidebar />)
-
-    expect(screen.getByRole('button', { name: 'Back to Eval' })).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Back to Sessions' })).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Back to Eval' }))
-    expect(useUiStore.getState().sidebarTab).toBe('evaluation')
+    expect(screen.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Sessions panel')).toBeVisible()
   })
 
   it('moves tab activation with ArrowRight and keeps roving focus', async () => {

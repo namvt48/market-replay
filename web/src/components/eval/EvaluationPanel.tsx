@@ -10,7 +10,7 @@ import type { EvalPhase } from '../../store/eval-store'
 import { useUiStore } from '../../store/ui-store'
 import { TradeHistoryTable } from '../trades/TradeHistoryTable'
 import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
-import type { ChartTimezone } from '../../replay/chart-timezone'
+import { formatChartDate, type ChartTimezone } from '../../replay/chart-timezone'
 import { patchSession } from '../../api/client'
 import { evaluationDisplayName } from '../../sources/source-name'
 import { SourceNameEditor } from '../sources/SourceNameEditor'
@@ -35,6 +35,7 @@ interface AccountView {
   config: EvalConfig
   runtime: EvalRuntime
   startDate: string
+  startTs: number
   status: EvalStatus
   balance: number
   equity: number
@@ -68,14 +69,14 @@ function profitFactor(trades: EvalTradeRecord[]): string {
   return losses > 0 ? (wins / losses).toFixed(2) : '—'
 }
 
-function equityCurve(trades: EvalTradeRecord[], startBalance: number, startDate: string): { values: number[]; labels: string[] } {
+function equityCurve(trades: EvalTradeRecord[], startBalance: number, startTs: number, timezone: ChartTimezone): { values: number[]; labels: string[] } {
   const values = [startBalance]
-  const labels = [startDate]
+  const labels = [formatChartDate(startTs, timezone)]
   let balance = startBalance
   for (const trade of trades.toSorted((left, right) => left.exitTime - right.exitTime)) {
     balance += (trade.realizedCents ?? 0) / 100
     values.push(balance)
-    labels.push(new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }).format(new Date(trade.exitTime * 1000)))
+    labels.push(formatChartDate(trade.exitTime, timezone))
   }
   return { values, labels }
 }
@@ -108,7 +109,7 @@ function ProgressLine({ label, value, pct, tone = 'accent' }: { label: string; v
   )
 }
 
-function TradeHistory({ trades, timezone }: { trades: EvalTradeRecord[]; timezone: ChartTimezone }) {
+function TradeHistory({ trades, timezone, onReviewTrade }: { trades: EvalTradeRecord[]; timezone: ChartTimezone; onReviewTrade: (tradeId: string) => void }) {
   return (
     <TradeHistoryTable
       timezone={timezone}
@@ -126,6 +127,7 @@ function TradeHistory({ trades, timezone }: { trades: EvalTradeRecord[]; timezon
         maeTicks: trade.maeTicks ?? 0,
         rMultiple: trade.rMultiple ?? null,
       }))}
+      onTradeClick={(trade) => onReviewTrade(trade.id)}
     />
   )
 }
@@ -200,6 +202,7 @@ export function EvaluationPanel() {
       config: account.config,
       runtime: account.runtime,
       startDate: account.startDate,
+      startTs: account.startTs,
       balance,
       equity,
       status,
@@ -219,6 +222,7 @@ export function EvaluationPanel() {
         config: session.config,
         runtime: session.runtime,
         startDate: session.startDate ?? '—',
+        startTs: session.startTs ?? 0,
         balance: currentFinancials.balance,
         equity: currentFinancials.equity,
         status: currentFinancials.status,
@@ -234,7 +238,7 @@ export function EvaluationPanel() {
 
   const selected = detailAccountId ? accounts.find((account) => account.id === detailAccountId) ?? null : null
   const selectedDisplayName = selected ? evaluationDisplayName({ accountId: selected.id, name: selected.name }) : ''
-  const selectedEquityCurve = selected ? equityCurve(selected.trades, selected.runtime.startBalance, selected.startDate) : null
+  const selectedEquityCurve = selected ? equityCurve(selected.trades, selected.runtime.startBalance, selected.startTs, chartWorkspace.timezone) : null
   const selectedEquityReferenceLines: LineChartReferenceLine[] = selected ? [
     ...(selected.config.profitTarget > 0 ? [{ value: selected.runtime.startBalance + selected.config.profitTarget, label: 'Profit target', tone: 'profit' as const }] : []),
     ...(selected.config.maxTotalLoss > 0 ? [{ value: selected.runtime.startBalance - selected.config.maxTotalLoss, label: 'Max loss', tone: 'loss' as const }] : []),
@@ -286,14 +290,6 @@ export function EvaluationPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex h-11 shrink-0 items-center justify-between border-b border-line px-3">
-        <div>
-          <h2 className="text-ui-body font-semibold text-ink">Evaluation accounts</h2>
-          <p className="text-ui-meta text-dim">{accounts.length} saved</p>
-        </div>
-        <a href="/start/eval" className="primary-button h-7 px-2.5" aria-label="Create new evaluation account"><Plus size={13} />New</a>
-      </header>
-
       {accounts.length === 0 ? (
         <div className="grid min-h-0 flex-1 place-items-center px-6 text-center">
           <div>
@@ -305,35 +301,26 @@ export function EvaluationPanel() {
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <section aria-labelledby="eval-accounts-heading">
-            <h3 id="eval-accounts-heading" className="border-b border-line px-3 py-2 text-ui-meta font-semibold tracking-[0.04em] text-muted">ACCOUNTS</h3>
+          <section aria-label="Saved evaluations">
+            <div className="flex h-10 items-center justify-between border-b border-line px-3">
+              <span className="text-ui-meta font-medium text-muted">Saved evaluations</span>
+              <a href="/start/eval" className="primary-button h-7 px-2.5" aria-label="Create new evaluation account"><Plus size={13} />New</a>
+            </div>
             <ul className="divide-y divide-line">
               {accounts.map((account) => {
                 const live = account.isCurrent && account.phase === 'running'
                 const displayName = evaluationDisplayName({ accountId: account.id, name: account.name })
-                const hash = `#${shortEvalAccountHash(account.id)}`
                 const ruleLabel = evalAccountName(account.config)
                 const metadata = [
                   ruleLabel === 'Custom' ? null : ruleLabel,
-                  displayName !== hash ? hash : null,
-                  account.startDate,
+                  formatChartDate(account.startTs, chartWorkspace.timezone),
                 ].filter((item): item is string => item !== null)
+                const metadataText = metadata.join(' · ')
                 return (
                   <li key={account.id}>
-                    <button type="button" onClick={(event) => { if (account.phase === 'ready') return; detailTriggerRef.current = event.currentTarget; setDetailAccountId(account.id); setConfirmingDelete(false) }} aria-current={live ? 'true' : undefined} aria-label={`Inspect evaluation account ${displayName}, ${ruleLabel}`} className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors ${live ? 'bg-active/10 ring-1 ring-inset ring-active/35 hover:bg-active/15' : account.phase === 'ready' ? 'cursor-default hover:bg-surface-2' : 'hover:bg-surface-2'}`}>
-                      <span className={`size-2 shrink-0 rounded-full ${account.runtime.outcome === 'failed' ? 'bg-loss' : account.runtime.outcome === 'passed' ? 'bg-profit' : live ? 'bg-active' : 'bg-muted'}`} aria-hidden="true" />
-                      <span className="min-w-0 flex-1">
-                        <strong className={`block truncate text-ui-body font-medium ${live ? 'text-active-bright' : 'text-ink'}`}>{displayName}</strong>
-                        <span className="mt-0.5 flex items-center gap-1.5 text-ui-meta text-dim">
-                          {metadata.map((item, index) => (
-                            <span key={item} className="contents">
-                              {index > 0 ? <span aria-hidden="true">·</span> : null}
-                              {item === hash ? <code className="text-muted" title={`Full account ID: ${account.id}`}>{item}</code> : <span className={item === account.startDate ? 'shrink-0 font-mono' : 'truncate'}>{item}</span>}
-                            </span>
-                          ))}
-                        </span>
-                      </span>
-                      <span className={`text-ui-meta font-semibold ${statusTone(account)}`}>{statusLabel(account)}</span>
+                    <button type="button" onClick={(event) => { if (account.phase === 'ready') return; detailTriggerRef.current = event.currentTarget; setDetailAccountId(account.id); setConfirmingDelete(false) }} aria-current={live ? 'true' : undefined} aria-label={`Inspect evaluation account ${displayName}, ${ruleLabel}`} className={`min-h-[4.5rem] w-full px-3 py-2.5 text-left transition-colors ${live ? 'bg-active/10 ring-1 ring-inset ring-active/35 hover:bg-active/15' : account.phase === 'ready' ? 'cursor-default hover:bg-surface-2' : 'hover:bg-surface-2'}`}>
+                      <span className="flex min-w-0 items-center justify-between gap-3"><strong className={`min-w-0 truncate text-ui-body font-semibold ${live ? 'text-active-bright' : 'text-ink'}`}>{displayName}</strong><span className={`shrink-0 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] ${statusTone(account)}`}>{statusLabel(account)}</span></span>
+                      <span title={metadataText} className="mt-1 block truncate font-mono text-ui-meta text-dim">{metadataText}</span>
                     </button>
                   </li>
                 )
@@ -410,13 +397,13 @@ export function EvaluationPanel() {
                   <LineChart values={selectedEquityCurve.values} xLabels={selectedEquityCurve.labels} referenceLines={selectedEquityReferenceLines} fillArea showPoints valueLabel="Equity" valueFormatter={(value) => currency.format(value)} ariaLabel="Equity curve for this evaluation account" />
                 </div>
               </section> : null}
-              {selected.isCurrent && selected.phase === 'running' ? <div className="mt-4 grid w-full grid-cols-2 gap-2 sm:grid-cols-3"><button type="button" disabled={selected.trades.length === 0} onClick={() => downloadEvalTradeHistory(selected)} className="secondary-button w-full justify-center" aria-label="Download evaluation trade history as CSV"><Download size={14} />CSV</button><a href={selectedReportsHref ?? '/analytics'} className="secondary-button w-full justify-center" aria-label={`Open evaluation account ${selectedDisplayName} reports`}><BarChart3 size={14} />Reports</a><button type="button" onClick={() => { openReview({ id: selected.id, type: 'evaluation', title: selectedDisplayName }); setDetailAccountId(null) }} className="secondary-button w-full justify-center"><ClipboardCheck size={14} />Review</button></div> : null}
+              {selected.isCurrent && selected.phase === 'running' ? <div className="mt-4 grid w-full grid-cols-2 gap-2 sm:grid-cols-3"><button type="button" disabled={selected.trades.length === 0} onClick={() => downloadEvalTradeHistory(selected)} className="secondary-button w-full justify-center" aria-label="Download evaluation trade history as CSV"><Download size={14} />CSV</button><a href={selectedReportsHref ?? '/analytics'} className="secondary-button w-full justify-center" aria-label={`Open evaluation account ${selectedDisplayName} analytics`}><BarChart3 size={14} />Analytics</a><button type="button" onClick={() => { openReview({ id: selected.id, type: 'evaluation', title: selectedDisplayName }); setDetailAccountId(null) }} className="secondary-button w-full justify-center"><ClipboardCheck size={14} />Review</button></div> : null}
 
               {selected.runtime.outcome === 'in_progress' && (!selected.isCurrent || selected.phase === 'paused') ? (
                 <div className="mt-4 grid w-full grid-cols-2 gap-2 sm:grid-cols-5">
                   <button type="button" onClick={resumeSelected} className="primary-button w-full justify-center"><ArrowRight size={14} />Resume Eval</button>
                   <button type="button" disabled={selected.trades.length === 0} onClick={() => downloadEvalTradeHistory(selected)} className="secondary-button w-full justify-center" aria-label="Download evaluation trade history as CSV"><Download size={14} />CSV</button>
-                  <a href={selectedReportsHref ?? '/analytics'} className="secondary-button w-full justify-center" aria-label={`Open evaluation account ${selectedDisplayName} reports`}><BarChart3 size={14} />Reports</a>
+                  <a href={selectedReportsHref ?? '/analytics'} className="secondary-button w-full justify-center" aria-label={`Open evaluation account ${selectedDisplayName} analytics`}><BarChart3 size={14} />Analytics</a>
                   <button type="button" onClick={() => { openReview({ id: selected.id, type: 'evaluation', title: selectedDisplayName }); setDetailAccountId(null) }} className="secondary-button w-full justify-center"><ClipboardCheck size={14} />Review</button>
                   <button type="button" onClick={deleteSelected} className={`w-full justify-center ${confirmingDelete ? 'primary-button bg-loss text-white' : 'secondary-button text-loss'}`} aria-label={confirmingDelete ? `Confirm delete ${evalAccountName(selected.config)} evaluation` : `Delete ${evalAccountName(selected.config)} evaluation`}><Trash2 size={14} />{confirmingDelete ? 'Confirm delete' : 'Delete Eval'}</button>
                 </div>
@@ -425,14 +412,14 @@ export function EvaluationPanel() {
                 <div className="mt-4 grid w-full grid-cols-2 gap-2 sm:grid-cols-4">
                   {selected.isCurrent ? <button type="button" onClick={retry} className="primary-button w-full justify-center"><RotateCcw size={14} />Retry with new account</button> : null}
                   <button type="button" disabled={selected.trades.length === 0} onClick={() => downloadEvalTradeHistory(selected)} className="secondary-button w-full justify-center" aria-label="Download evaluation trade history as CSV"><Download size={14} />CSV</button>
-                  <a href={selectedReportsHref ?? '/analytics'} className="secondary-button w-full justify-center" aria-label={`Open evaluation account ${selectedDisplayName} reports`}><BarChart3 size={14} />Reports</a>
+                  <a href={selectedReportsHref ?? '/analytics'} className="secondary-button w-full justify-center" aria-label={`Open evaluation account ${selectedDisplayName} analytics`}><BarChart3 size={14} />Analytics</a>
                   <button type="button" onClick={deleteSelected} className={`w-full justify-center ${confirmingDelete ? 'primary-button bg-loss text-white' : 'secondary-button text-loss'}`} aria-label={confirmingDelete ? `Confirm delete ${evalAccountName(selected.config)} evaluation` : `Delete ${evalAccountName(selected.config)} evaluation`}><Trash2 size={14} />{confirmingDelete ? 'Confirm delete' : 'Delete Eval'}</button>
                 </div>
               ) : null}
               {selected.runtime.outcome === 'passed' ? (
                 <div className="mt-4 grid w-full grid-cols-2 gap-2 sm:grid-cols-4">
                   <button type="button" disabled={selected.trades.length === 0} onClick={() => downloadEvalTradeHistory(selected)} className="secondary-button w-full justify-center" aria-label="Download evaluation trade history as CSV"><Download size={14} />CSV</button>
-                  <a href={selectedReportsHref ?? '/analytics'} className="secondary-button w-full justify-center" aria-label={`Open evaluation account ${selectedDisplayName} reports`}><BarChart3 size={14} />Reports</a>
+                  <a href={selectedReportsHref ?? '/analytics'} className="secondary-button w-full justify-center" aria-label={`Open evaluation account ${selectedDisplayName} analytics`}><BarChart3 size={14} />Analytics</a>
                   <button type="button" onClick={() => { openReview({ id: selected.id, type: 'evaluation', title: selectedDisplayName }); setDetailAccountId(null) }} className="secondary-button w-full justify-center"><ClipboardCheck size={14} />Review</button>
                   <button type="button" onClick={deleteSelected} className={`w-full justify-center ${confirmingDelete ? 'primary-button bg-loss text-white' : 'secondary-button text-loss'}`} aria-label={confirmingDelete ? `Confirm delete ${evalAccountName(selected.config)} evaluation` : `Delete ${evalAccountName(selected.config)} evaluation`}><Trash2 size={14} />{confirmingDelete ? 'Confirm delete' : 'Delete Eval'}</button>
                 </div>
@@ -440,7 +427,7 @@ export function EvaluationPanel() {
                 </>
               )}
 
-              <TradeHistory trades={selected.trades} timezone={chartWorkspace.timezone} />
+              <TradeHistory trades={selected.trades} timezone={chartWorkspace.timezone} onReviewTrade={(tradeId) => { openReview({ id: selected.id, type: 'evaluation', title: selectedDisplayName }, tradeId); setDetailAccountId(null) }} />
             </section>
             </DetailDialog>
           ) : null}

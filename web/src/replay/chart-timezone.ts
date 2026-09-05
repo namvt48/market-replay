@@ -67,6 +67,12 @@ export function formatChartTime(timestamp: number, timezone: ChartTimezone, incl
   return new Intl.DateTimeFormat('en-US', { ...options, timeZone: context.timeZone }).format(date)
 }
 
+export function formatChartDate(timestamp: number, timezone: ChartTimezone): string {
+  const context = chartTimezoneIntlContext(timezone)
+  const date = new Date((timestamp + context.offsetSeconds) * 1000)
+  return new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short', day: '2-digit', timeZone: context.timeZone }).format(date)
+}
+
 export function chartTimezoneDateValue(timestamp: number, timezone: ChartTimezone): string {
   const context = chartTimezoneIntlContext(timezone)
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -74,4 +80,35 @@ export function chartTimezoneDateValue(timestamp: number, timezone: ChartTimezon
   }).formatToParts(new Date((timestamp + context.offsetSeconds) * 1000))
   const value = (type: Intl.DateTimeFormatPartTypes): string => parts.find((part) => part.type === type)?.value ?? ''
   return `${value('year')}-${value('month')}-${value('day')}`
+}
+
+/** A datetime-local value rendered in the workspace timezone, not browser time. */
+export function chartTimezoneDateTimeValue(timestamp: number, timezone: ChartTimezone): string {
+  const context = chartTimezoneIntlContext(timezone)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: context.timeZone,
+  }).formatToParts(new Date((timestamp + context.offsetSeconds) * 1000))
+  const value = (type: Intl.DateTimeFormatPartTypes): string => parts.find((part) => part.type === type)?.value ?? ''
+  return `${value('year')}-${value('month')}-${value('day')}T${value('hour')}:${value('minute')}`
+}
+
+/** Interprets a datetime-local value as wall-clock time in the workspace timezone. */
+export function chartTimezoneTimestampFromDateTimeValue(value: string, timezone: ChartTimezone): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value)
+  if (!match) return null
+  const [, year, month, day, hour, minute] = match
+  const desired = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute))
+  if (!Number.isFinite(desired)) return null
+  if (timezone.kind === 'offset') return Math.floor(desired / 1000) - timezone.minutes * 60
+  let candidate = desired
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const rendered = chartTimezoneDateTimeValue(Math.floor(candidate / 1000), timezone)
+    const renderedMatch = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(rendered)
+    if (!renderedMatch) return null
+    const [, renderedYear, renderedMonth, renderedDay, renderedHour, renderedMinute] = renderedMatch
+    const renderedUtc = Date.UTC(Number(renderedYear), Number(renderedMonth) - 1, Number(renderedDay), Number(renderedHour), Number(renderedMinute))
+    if (renderedUtc === desired) return Math.floor(candidate / 1000)
+    candidate += desired - renderedUtc
+  }
+  return Math.floor(candidate / 1000)
 }

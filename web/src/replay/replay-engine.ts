@@ -32,7 +32,7 @@ import { executionCostFor } from '../store/workspace-settings-store'
 import { aggregateRange } from './aggregate'
 import { BarSource } from './bar-source'
 import { REPLAY_STEP_TIMEFRAMES, parseTimeframe, timeframeSeconds, type ReplayStepTimeframe } from './timeframe'
-import { restoreReplayIndicators, restoreReplayRuntime, serializeReplayRuntime } from './session-state'
+import { restoreReplayIndicators, restoreReplayRuntime, serializeReplayRuntime, shortReplaySessionHash } from './session-state'
 import {
   captureChartWorkspaceState,
   compareSnapshotRank,
@@ -104,12 +104,13 @@ const MAX_FILL_SNAPSHOTS = MAX_VIEWPORT_RAW_BARS
 const EMPTY_STATS: TradeStats = { trades: 0, winRate: 0, netCents: 0, expectancyCents: 0, averageR: null, profitFactor: null }
 
 export interface FrameMetrics { p50: number; p95: number; max: number; samples: number }
-export type ReplayStatus = 'idle' | 'loading' | 'ready' | 'buffering' | 'error'
+export type ReplayStatus = 'idle' | 'loading' | 'seeking' | 'ready' | 'buffering' | 'error'
 export type ReplayMode = 'inactive' | 'selecting' | 'active'
 export type DrawingMode = 'analysis' | 'replay'
 
 export interface ReplaySelectionOptions {
   createSession?: boolean
+  sessionName?: string
 }
 
 export interface ReplaySnapshot {
@@ -129,6 +130,8 @@ export interface ReplaySnapshot {
   eagerState: 'idle' | 'loading' | 'ready' | 'disabled' | 'error'
   viewportCachedBars: number
   sessionId: string | null
+  /** Display name of the current replay session; evaluations read their name from the eval store. */
+  sessionName: string | null
   sessionStatus: ReplaySession['status'] | null
   fill: FillEngineState | null
   /** Account-wide fill totals across every symbol during an evaluation. */
@@ -155,7 +158,7 @@ export interface ReplaySnapshot {
 
 const initialSnapshot: ReplaySnapshot = {
   status: 'idle', error: null, symbols: [], symbol: null, activeSymbol: null, timeframe: '1m', cursorTs: 0,
-  replayMode: 'inactive', replayStartTs: null, playing: false, speed: 1, stepTimeframe: '1m', qty: 1, eagerState: 'idle', viewportCachedBars: 0, sessionId: null, sessionStatus: null, fill: null, evalFill: null,
+  replayMode: 'inactive', replayStartTs: null, playing: false, speed: 1, stepTimeframe: '1m', qty: 1, eagerState: 'idle', viewportCachedBars: 0, sessionId: null, sessionName: null, sessionStatus: null, fill: null, evalFill: null,
   stats: EMPTY_STATS, frameMetrics: { p50: 0, p95: 0, max: 0, samples: 0 }, lastBar: null,
   drawingMode: 'replay', cursorMode: 'cross', activeDrawingTool: null, selectedDrawing: null, drawingInspectorOpen: false,
   keepDrawing: false, drawingsLocked: false, drawingsHidden: false, indicatorsHidden: false, areaZoomSelecting: false, areaZoomed: false,
@@ -270,6 +273,7 @@ export class ReplayEngine {
   private pendingTimeframeSwitches = new Map<string, ReturnType<typeof setTimeout>>()
   private timeframeControllers = new Map<string, AbortController>()
   private createSessionOnSelection = false
+  private sessionNameOnSelection: string | null = null
   private marketSession: MarketSession = DEFAULT_MARKET_SESSION
   private syncFlags: ChartSyncFlags = { ...DEFAULT_CHART_SYNC_FLAGS }
   private economicEventMarkers: EconomicEventMarker[] = []
@@ -995,6 +999,7 @@ export class ReplayEngine {
     this.setDrawingTool(null)
     this.deselectDrawing()
     this.createSessionOnSelection = options.createSession === true
+    this.sessionNameOnSelection = options.sessionName?.trim() || null
     this.setSnapshot({ replayMode: 'selecting' }, true)
     this.views.setReplaySelection({ mode: 'selecting' })
   }
@@ -1004,7 +1009,9 @@ export class ReplayEngine {
     if (this.snapshot.replayMode !== 'selecting' || !Number.isFinite(timestamp)) return
     const selectedTimestamp = Math.max(this.normalizeReplaySelectionTimestamp(timestamp), 0)
     const shouldCreateSession = this.createSessionOnSelection
+    const sessionName = this.sessionNameOnSelection
     this.createSessionOnSelection = false
+    this.sessionNameOnSelection = null
     if (!isEvalActive()) await this.deactivateReplaySession('paused')
     if (shouldCreateSession) this.retainedSessionTrades = []
     await this.seek(selectedTimestamp, 'ceil')
@@ -1017,6 +1024,7 @@ export class ReplayEngine {
         sessionId = await createSession(this.snapshot.symbol.symbol, this.views.active()?.timeframe ?? this.snapshot.timeframe, replayStartTs, {
           kind: 'replay',
           initialBalanceCents: REPLAY_STARTING_EQUITY_CENTS,
+          name: sessionName ?? undefined,
         })
         sessionStatus = 'active'
         this.persistedTrades = null
@@ -1029,7 +1037,7 @@ export class ReplayEngine {
         this.setSnapshot({ error: 'Session could not be created. This replay will remain temporary.' }, true)
       }
     }
-    this.setSnapshot({ replayMode: 'active', replayStartTs, sessionId, sessionStatus }, true)
+    this.setSnapshot({ replayMode: 'active', replayStartTs, sessionId, sessionName: sessionId ? (sessionName ?? `#${shortReplaySessionHash(sessionId)}`) : null, sessionStatus }, true)
     this.views.setReplaySelection({ mode: 'active', timestamp: replayStartTs })
     this.resetAllChartViews()
   }
@@ -1037,6 +1045,7 @@ export class ReplayEngine {
   cancelReplaySelection(): void {
     if (this.snapshot.replayMode !== 'selecting') return
     this.createSessionOnSelection = false
+    this.sessionNameOnSelection = null
     const replayStartTs = this.snapshot.replayStartTs
     if (replayStartTs === null) {
       this.setSnapshot({ replayMode: 'inactive' }, true)
@@ -1045,6 +1054,27 @@ export class ReplayEngine {
     }
     this.setSnapshot({ replayMode: 'active' }, true)
     this.views.setReplaySelection({ mode: 'active', timestamp: replayStartTs })
+  }
+
+  async startReplaySessionAt(timestamp: number, name: string): Promise<void> {
+    if (!Number.isFinite(timestamp)) return
+    this.beginReplaySelection({ createSession: true, sessionName: name })
+    await this.selectReplayBar(timestamp)
+  }
+
+  async saveTemporaryReplayAsSession(name: string): Promise<void> {
+    const { symbol, replayMode, replayStartTs, cursorTs, fill, sessionId, sessionStatus } = this.snapshot
+    if (!symbol || replayMode !== 'active' || replayStartTs === null || sessionId || sessionStatus || isEvalActive()) return
+    const savedName = name.trim()
+    if (!savedName) return
+    const id = await createSession(symbol.symbol, this.views.active()?.timeframe ?? this.snapshot.timeframe, replayStartTs, {
+      kind: 'replay', initialBalanceCents: REPLAY_STARTING_EQUITY_CENTS, name: savedName,
+    })
+    if (fill) {
+      await this.persistJournal(id, fill)
+      await patchSession(id, { cursorTs, equityCents: fill.equityCents, status: 'active', config: serializeReplayRuntime(fill, this.snapshot.indicators) })
+    }
+    this.setSnapshot({ sessionId: id, sessionName: savedName, sessionStatus: 'active' }, true)
   }
 
   exitReplay(): void {
@@ -1074,7 +1104,8 @@ export class ReplayEngine {
     if (evaluation.phase === 'running') evaluation.prepareFillRebase()
     const minimum = evaluation.phase === 'running' ? (evaluation.startTs ?? 0) : 0
     const targetTimestamp = Math.max(timestamp, minimum, evaluation.phase === 'running' ? this.snapshot.cursorTs : 0)
-    this.setSnapshot({ status: 'loading' }, true)
+    // Seek keeps the on-screen picture until the rebuild lands: a 'loading' wall here would only flash the overlay.
+    this.setSnapshot({ status: 'seeking' }, true)
     try {
       if (!this.source || targetTimestamp < this.source.firstTs || targetTimestamp > this.source.lastTs) {
         this.source = new BarSource(await fetchBarsAt(symbol.symbol, replayBaseTimeframe(symbol), targetTimestamp, 3000, 10000))
@@ -1097,7 +1128,10 @@ export class ReplayEngine {
       const activeView = this.views.active()
       if (activeView) this.activateChartView(activeView.id)
       await this.reconcileDrawings()
-      await this.refreshIndicators()
+      // Indicator output follows the cursor; refreshing in the background
+      // (debounced, and preemptive on the next user action) keeps a seek from
+      // blocking on script execution.
+      this.scheduleIndicatorRefresh(0)
       this.scheduleSecondsPaneRefresh(true)
     } catch (error) {
       this.setSnapshot({ status: 'error', error: error instanceof Error ? error.message : 'Seek failed' }, true)
@@ -1355,7 +1389,7 @@ export class ReplayEngine {
     }
     await this.seek(resolution.timestamp)
     if (this.snapshot.status !== 'ready' || !this.snapshot.fill) return
-    this.setSnapshot({ sessionId: session.id, sessionStatus: 'active', replayMode: 'active', replayStartTs: session.startTs }, true)
+    this.setSnapshot({ sessionId: session.id, sessionName: session.name, sessionStatus: 'active', replayMode: 'active', replayStartTs: session.startTs }, true)
     if (recoveryPoint) {
       this.prepareWorkspaceRestore(recoveryPoint)
       this.restoreWorkspaceRuntime(recoveryPoint)
@@ -1438,7 +1472,7 @@ export class ReplayEngine {
         evaluation.attachSession(sessionId)
       }
       this.persistedTrades = null
-      this.setSnapshot({ sessionId, sessionStatus: 'active' }, true)
+      this.setSnapshot({ sessionId, sessionName: evaluation.name, sessionStatus: 'active' }, true)
       const fill = this.snapshot.fill
       if (fill) {
         await patchSession(sessionId, {
@@ -1472,7 +1506,7 @@ export class ReplayEngine {
     this.abortPeerPrefetches()
     this.abortViewportLoads()
     this.views.setReplaySelection({ mode: 'inactive' })
-    this.setSnapshot({ status: 'loading', error: null, eagerState: 'idle', sessionId: null, sessionStatus: null, replayMode: 'inactive', replayStartTs: null }, true)
+    this.setSnapshot({ status: 'loading', error: null, eagerState: 'idle', sessionId: null, sessionName: null, sessionStatus: null, replayMode: 'inactive', replayStartTs: null }, true)
     try {
       const baseTimeframe = replayBaseTimeframe(symbol)
       const range = symbol.ranges[baseTimeframe]
@@ -1523,7 +1557,7 @@ export class ReplayEngine {
       const evaluationActive = evaluation.phase === 'running'
       const replayMode: ReplayMode = evaluationActive ? 'active' : 'inactive'
       const replayStartTs = evaluationActive ? evaluation.startTs : null
-      this.setSnapshot({ status: 'ready', cursorTs, sessionId: null, sessionStatus: null, timeframe: this.views.active()?.timeframe ?? this.snapshot.timeframe, replayMode, replayStartTs }, true)
+      this.setSnapshot({ status: 'ready', cursorTs, sessionId: null, sessionName: null, sessionStatus: null, timeframe: this.views.active()?.timeframe ?? this.snapshot.timeframe, replayMode, replayStartTs }, true)
       this.views.setReplaySelection(replayMode === 'active' && replayStartTs !== null ? { mode: 'active', timestamp: replayStartTs } : { mode: 'inactive' })
       await this.reconcileDrawings()
       await this.refreshIndicators()
@@ -2574,7 +2608,7 @@ export class ReplayEngine {
     this.syncChartTradingState(true)
     this.views.setReplaySelection({ mode: 'inactive' })
     if (this.snapshot.sessionId === detachedSessionId && this.snapshot.sessionStatus === status) {
-      this.setSnapshot({ sessionId: null, sessionStatus: null, persistencePending: false }, true)
+      this.setSnapshot({ sessionId: null, sessionName: null, sessionStatus: null, persistencePending: false }, true)
     }
     if (options.returnToLatest) await this.resetChartToLatest()
   }

@@ -70,17 +70,17 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('SessionsPanel', () => {
-  it('shows a compact hash, lifecycle, core stats, and trade history', async () => {
+  it('keeps the list row compact and shows core stats only in session details', async () => {
     const user = userEvent.setup()
     render(<SessionsPanel />)
 
     const hash = shortReplaySessionHash(saved.id)
     expect((await screen.findAllByText(new RegExp(`#${hash}`))).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/paused/i).length).toBeGreaterThan(0)
-    expect((await screen.findAllByText('$250.00')).length).toBeGreaterThan(0)
-    expect(screen.getByText('100%')).toBeVisible()
     await user.click(screen.getByRole('button', { name: `Inspect replay session #${hash}` }))
     expect(screen.getByRole('dialog', { name: `#${hash}` })).toBeVisible()
+    expect(screen.getByText('Realized P&L')).toBeVisible()
+    expect(screen.getByText('100%')).toBeVisible()
     expect(screen.getByRole('table', { name: 'Trade history' })).toBeVisible()
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual(['STT', 'Trade', 'Time', 'MFE/MAE', 'P&L / R'])
     expect(screen.getByText('LONG')).toBeVisible()
@@ -104,12 +104,12 @@ describe('SessionsPanel', () => {
     expect(mocks.fetchTrades).toHaveBeenCalledWith(saved.id)
   })
 
-  it('links each replay session directly to its reports', async () => {
+  it('links each replay session directly to its analytics', async () => {
     const user = userEvent.setup()
     render(<SessionsPanel />)
 
     await user.click(await screen.findByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` }))
-    expect(screen.getByRole('link', { name: `Open replay session #${shortReplaySessionHash(saved.id)} reports` })).toHaveAttribute('href', `/analytics?analytics=${saved.id}&sourceType=session`)
+    expect(screen.getByRole('link', { name: `Open replay session #${shortReplaySessionHash(saved.id)} analytics` })).toHaveAttribute('href', `/analytics?analytics=${saved.id}&sourceType=session`)
   })
 
   it('keeps an empty session compact without a closed-trades empty state', async () => {
@@ -134,20 +134,16 @@ describe('SessionsPanel', () => {
     expect(mocks.resumeSession).toHaveBeenCalledWith(saved)
   })
 
-  it('offers Review only for the active replay session', async () => {
-    const user = userEvent.setup()
+  it('keeps the active session marked without duplicating a header Review action', async () => {
     sessionSnapshot.sessionId = saved.id
     sessionSnapshot.sessionStatus = 'active'
     render(<SessionsPanel />)
 
-    const review = await screen.findByRole('button', { name: 'Review active session' })
-    const activeRow = screen.getByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` })
+    const activeRow = await screen.findByRole('button', { name: `Inspect replay session #${shortReplaySessionHash(saved.id)}` })
     expect(activeRow).toHaveAttribute('aria-current', 'true')
     expect(activeRow).toHaveClass('bg-active/10')
-    await user.click(review)
-
-    expect(useUiStore.getState().sidebarTab).toBe('review')
-    expect(useUiStore.getState().reviewSource).toMatchObject({ id: saved.id, type: 'session' })
+    expect(screen.queryByRole('button', { name: 'Review active session' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New session' })).toBeVisible()
   })
 
   it('opens deletion from the session row context menu and requires confirmation', async () => {
@@ -180,7 +176,7 @@ describe('SessionsPanel', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('marks only the Journal action as an explicit session creation', async () => {
+  it('opens the named replay-session form from New', async () => {
     const user = userEvent.setup()
     render(<SessionsPanel />)
     const newSession = screen.getByRole('button', { name: 'New session' })
@@ -188,7 +184,9 @@ describe('SessionsPanel', () => {
     expect(newSession.querySelector('svg')).toBeInTheDocument()
     expect(newSession).toHaveTextContent(/^New$/)
     await user.click(newSession)
-    expect(mocks.beginReplaySelection).toHaveBeenCalledWith({ createSession: true })
+    expect(screen.getByRole('dialog', { name: 'New replay session' })).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Session name' })).toBeVisible()
+    expect(screen.getByLabelText('Replay start')).toBeVisible()
   })
 
   it('renames a replay session and refreshes its persisted display name', async () => {

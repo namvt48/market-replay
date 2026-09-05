@@ -1,5 +1,5 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TradeHistoryTable, type TradeHistoryTableRecord } from './TradeHistoryTable'
 
 const trades: TradeHistoryTableRecord[] = [
@@ -36,7 +36,7 @@ describe('TradeHistoryTable', () => {
     render(<TradeHistoryTable headingId="trade-history-heading" trades={trades} timezone={{ kind: 'preset', id: 'UTC' }} />)
 
     const table = screen.getByRole('table', { name: 'Trade history' })
-    expect(table).toHaveClass('min-w-[30rem]')
+    expect(table).toHaveClass('table-fixed')
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'STT',
       'Trade',
@@ -55,6 +55,16 @@ describe('TradeHistoryTable', () => {
     expect(within(rows[2]).getByText('+$1,000.00')).toBeVisible()
     expect(within(rows[2]).getByText('R 2.00')).toBeVisible()
     expect(within(rows[2]).getByText('Jan 15, 2024')).toBeVisible()
+  })
+
+  it('opens the selected trade without forcing horizontal scrolling', () => {
+    const onTradeClick = vi.fn()
+    render(<TradeHistoryTable headingId="clickable-trade-history" trades={trades} onTradeClick={onTradeClick} />)
+
+    const table = screen.getByRole('table', { name: 'Trade history' })
+    expect(table).not.toHaveClass('min-w-[30rem]')
+    fireEvent.click(screen.getByRole('button', { name: 'Open review for ES trade 1' }))
+    expect(onTradeClick).toHaveBeenCalledWith(expect.objectContaining({ id: 'trade-2' }))
   })
 
   it('formats entry and exit times in the selected workspace timezone', () => {

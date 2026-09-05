@@ -9,6 +9,7 @@ interface DetailDialogProps {
   children: ReactNode
   onClose: () => void
   returnFocusRef?: RefObject<HTMLElement | null>
+  contentClassName?: string
 }
 
 function trapFocus(event: KeyboardEvent<HTMLDivElement>): void {
@@ -28,7 +29,7 @@ function trapFocus(event: KeyboardEvent<HTMLDivElement>): void {
 
 /** Shared shell for source details. It deliberately owns only dialog
  * mechanics; Session and Eval retain their distinct information hierarchy. */
-export function DetailDialog({ titleId, title, status, children, onClose, returnFocusRef }: DetailDialogProps) {
+export function DetailDialog({ titleId, title, status, children, onClose, returnFocusRef, contentClassName }: DetailDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -38,7 +39,7 @@ export function DetailDialog({ titleId, title, status, children, onClose, return
 
   return createPortal(
     <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/72 p-4 backdrop-blur-[2px] max-sm:p-0" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); return }; trapFocus(event) }} className="flex max-h-[85dvh] w-[min(720px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[24px] border border-line-strong bg-[#101114] shadow-overlay outline-none max-sm:h-full max-sm:max-h-none max-sm:w-full max-sm:rounded-none">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); return }; trapFocus(event) }} className={`flex max-h-[85dvh] w-[min(720px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[24px] border border-line-strong bg-[#101114] shadow-overlay outline-none max-sm:h-full max-sm:max-h-none max-sm:w-full max-sm:rounded-none ${contentClassName ?? ''}`}>
         <header className="flex min-h-16 shrink-0 items-center gap-3 border-b border-line bg-surface-0/55 px-4 sm:px-5">
           <div className="min-w-0 flex-1">{title}</div>
           <div className="flex shrink-0 items-center gap-2">{status}<button type="button" onClick={onClose} className="tool-button" aria-label="Close details"><X size={17} /></button></div>

@@ -90,7 +90,7 @@ export function TagsSettings(): ReactElement {
   return (
     <section aria-labelledby="tags-settings-title" className="mx-auto w-full max-w-6xl p-4 sm:p-6 lg:p-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div><p className="text-ui-meta font-semibold uppercase tracking-[0.08em] text-active-bright">Trade review</p><h2 id="tags-settings-title" className="mt-1 text-xl font-semibold tracking-tight text-ink">Tag groups</h2><p className="mt-2 max-w-2xl text-ui-body text-muted">Organize the labels used in every journal review. A trade can use one tag from each group.</p></div>
+        <div><p className="text-ui-meta font-semibold uppercase tracking-[0.08em] text-active-bright">Trade review</p><h2 id="tags-settings-title" className="mt-1 text-xl font-semibold tracking-tight text-ink">Tag groups</h2><p className="mt-2 max-w-2xl text-ui-body text-muted">Organize the labels used in every journal review. A trade can use several tags from each group.</p></div>
         <button type="button" onClick={() => addGroup('New tag group')} className="primary-button shrink-0"><Plus size={15} />New group</button>
       </div>
       <label className="relative mt-5 block max-w-sm"><Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-dim" /><span className="sr-only">Search tag groups</span><input value={query} onChange={(event) => setQuery(event.target.value)} className="field-input h-10 w-full pl-9" placeholder="Search groups or tags" /></label>

@@ -1,13 +1,18 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { ChartWorkspace } from './components/chart/ChartWorkspace'
 import { KeyboardCommandDialogs } from './components/KeyboardCommandDialogs'
 import { EvalProgressPanel } from './components/eval/EvalProgressPanel'
+import { SessionProgressPanel } from './components/sessions/SessionProgressPanel'
+import { ReviewPanel } from './components/review/ReviewPanel'
 import { Sidebar } from './components/panels/Sidebar'
 import { TopBar } from './components/TopBar'
 import { useHotkeys } from './hooks/use-hotkeys'
 import { ChartWorkspaceProvider } from './chart-workspace/ChartWorkspaceContext'
 import { useEvalTicker } from './replay/use-eval-session'
 import { EconomicCalendarChartSync } from './components/calendar/EconomicCalendarChartSync'
+import { useReplaySelector } from './replay/use-replay'
+import { useEvalStore } from './store/eval-store'
+import { useUiStore } from './store/ui-store'
 
 const AnalyticsScreen = lazy(() => import('./components/analytics/AnalyticsScreen').then((module) => ({ default: module.AnalyticsScreen })))
 // The /start setup screen and the chart workspace are never both on screen,
@@ -38,7 +43,13 @@ function Workspace() {
 
 function WorkspaceShell() {
   const hotkeys = useHotkeys()
+  const sessionActive = useReplaySelector((snapshot) => snapshot.sessionId !== null && snapshot.sessionStatus === 'active')
+  const evaluationActive = useEvalStore((state) => state.phase === 'running')
+  const setSidebarOpen = useUiStore((state) => state.setSidebarOpen)
   useEvalTicker()
+  useEffect(() => {
+    if (sessionActive || evaluationActive) setSidebarOpen(false)
+  }, [evaluationActive, sessionActive, setSidebarOpen])
   return (
     <div className="workspace-shell flex h-full min-h-0 flex-col overflow-hidden bg-surface-0 text-ink">
       <EconomicCalendarChartSync />
@@ -49,7 +60,9 @@ function WorkspaceShell() {
         </div>
         <Sidebar />
       </main>
+      <SessionProgressPanel />
       <EvalProgressPanel />
+      <ReviewPanel />
       <KeyboardCommandDialogs state={hotkeys.dialog} onClose={hotkeys.closeDialog} />
       <span className="sr-only" role="status" aria-live="polite">{hotkeys.statusMessage}</span>
     </div>
@@ -66,7 +79,7 @@ function App() {
     return <Suspense fallback={<div className="grid h-full place-items-center bg-surface-0 text-ui-body text-muted" role="status">Loading setup…</div>}><EvalSetupScreen /></Suspense>
   }
   if (path.startsWith('/live')) {
-    return <Suspense fallback={<div className="grid h-full place-items-center bg-surface-0 text-ui-body text-muted" role="status">Loading live accounts…</div>}><LiveAccountsScreen /></Suspense>
+    return <Suspense fallback={<div className="grid h-full place-items-center bg-surface-0 text-ui-body text-muted" role="status">Loading live accounts…</div>}><LiveAccountsScreen /><ReviewPanel /></Suspense>
   }
   return <Workspace />
 }

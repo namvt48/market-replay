@@ -36,17 +36,19 @@ export function TagAnalyticsTab({ sourceType, sourceId }: { sourceType: Analytic
     }
     for (const document of Object.values(documents)) {
       if (document.trade.sourceType !== sourceType || document.trade.sourceId !== sourceId) continue
-      for (const [groupId, tagId] of Object.entries(document.tagAssignments)) {
-        const group = groups.find((item) => item.id === groupId)
-        const tag = group?.tags.find((item) => item.id === tagId)
-        if (!group || !tag) continue
-        const key = `${groupId}:${tagId}`
-        const row = byTag.get(key) ?? { groupId, groupName: group.name, tagId, tagName: tag.name, color: tag.color, trades: 0, wins: 0, pnlCents: 0, rValues: [] }
-        row.trades += 1
-        row.wins += document.trade.realizedCents > 0 ? 1 : 0
-        row.pnlCents += document.trade.realizedCents
-        if (document.trade.rMultiple !== null) row.rValues.push(document.trade.rMultiple)
-        byTag.set(key, row)
+      for (const [groupId, assignment] of Object.entries(document.tagAssignments)) {
+        for (const tagId of Array.isArray(assignment) ? assignment : [assignment]) {
+          const group = groups.find((item) => item.id === groupId)
+          const tag = group?.tags.find((item) => item.id === tagId)
+          if (!group || !tag) continue
+          const key = `${groupId}:${tagId}`
+          const row = byTag.get(key) ?? { groupId, groupName: group.name, tagId, tagName: tag.name, color: tag.color, trades: 0, wins: 0, pnlCents: 0, rValues: [] }
+          row.trades += 1
+          row.wins += document.trade.realizedCents > 0 ? 1 : 0
+          row.pnlCents += document.trade.realizedCents
+          if (document.trade.rMultiple !== null) row.rValues.push(document.trade.rMultiple)
+          byTag.set(key, row)
+        }
       }
     }
     return [...byTag.values()].toSorted((a, b) => b.trades - a.trades || b.pnlCents - a.pnlCents)

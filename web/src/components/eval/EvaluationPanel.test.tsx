@@ -70,9 +70,7 @@ describe('EvaluationPanel', () => {
 
     const accountId = getEvalState().accountId
     if (!accountId) throw new Error('Expected an active evaluation account id')
-    expect(screen.getAllByText('FTMO 100K (static)')).toHaveLength(1)
     expect(screen.queryByText(/Updated /)).not.toBeInTheDocument()
-    expect(screen.getAllByText(`#${shortEvalAccountHash(accountId)}`)).toHaveLength(1)
     expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0)
     const liveAccount = screen.getByRole('button', { name: /#.*FTMO 100K/ })
     expect(liveAccount).toHaveAttribute('aria-current', 'true')
@@ -299,7 +297,7 @@ describe('EvaluationPanel', () => {
     render(<EvaluationPanel />)
 
     await user.click(screen.getByRole('button', { name: /Inspect evaluation account/ }))
-    expect(screen.getByRole('link', { name: `Open evaluation account #${shortEvalAccountHash(accountId)} reports` })).toHaveAttribute('href', '/analytics?analytics=eval-session-1&sourceType=evaluation')
+    expect(screen.getByRole('link', { name: `Open evaluation account #${shortEvalAccountHash(accountId)} analytics` })).toHaveAttribute('href', '/analytics?analytics=eval-session-1&sourceType=evaluation')
     await user.click(screen.getByRole('button', { name: 'Rename evaluation account' }))
     await user.type(screen.getByLabelText('Display name'), 'New York challenge')
     await user.click(screen.getByRole('button', { name: 'Save' }))

@@ -1,6 +1,6 @@
 import type { ProtectionAdjustment, TradeExitReason } from '../fill-engine/types'
 
-export type ReviewSourceType = 'session' | 'evaluation'
+export type ReviewSourceType = 'session' | 'evaluation' | 'live'
 
 export interface ReviewTrade {
   id: string

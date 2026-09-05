@@ -98,6 +98,7 @@ function TooltipSurface({ children, className, inspectAtRatio }: TooltipSurfaceP
 interface LineChartProps {
   values: number[]
   compact?: boolean
+  reportSized?: boolean
   ariaLabel: string
   valueLabel?: string
   valueFormatter?: (value: number) => string
@@ -127,12 +128,16 @@ function linePoints(values: number[], width: number, height: number, plot: Chart
   }))
 }
 
-export function LineChart({ values, compact = false, ariaLabel, valueLabel = 'Value', valueFormatter = number, referenceLines = [], includeZero = false, showPoints = false, fillArea = false, xLabels = [] }: LineChartProps) {
+export function LineChart({ values, compact = false, reportSized = false, ariaLabel, valueLabel = 'Value', valueFormatter = number, referenceLines = [], includeZero = false, showPoints = false, fillArea = false, xLabels = [] }: LineChartProps) {
   const [keyboardIndex, setKeyboardIndex] = useState<number | null>(null)
   const areaId = useId().replaceAll(':', '')
-  const width = compact ? 1000 : 640
-  const height = compact ? 92 : 260
-  const plot = compact ? { left: 108, right: 10, top: 8, bottom: 8 } : { left: 116, right: 16, top: 18, bottom: xLabels.length > 0 ? 38 : 22 }
+  // Keep the report chart on the same fixed drawing scale as Drawdown.  A
+  // fluid SVG with `preserveAspectRatio="none"` stretches its type and axes on
+  // wide reports, which makes the Performance tab much harder to scan.
+  const useReportScale = reportSized && !compact
+  const width = compact ? 1000 : useReportScale ? 1120 : 640
+  const height = compact ? 92 : useReportScale ? 310 : 260
+  const plot = compact ? { left: 108, right: 10, top: 8, bottom: 8 } : useReportScale ? { left: 106, right: 18, top: 26, bottom: xLabels.length > 0 ? 68 : 32 } : { left: 116, right: 16, top: 18, bottom: xLabels.length > 0 ? 38 : 22 }
   const plottedValues = values.length > 0 ? values : [0]
   const domainValues = [...(includeZero ? [0] : []), ...plottedValues, ...referenceLines.map((line) => line.value)]
   const axis = domainAxisTicks(Math.min(...domainValues), Math.max(...domainValues))
@@ -154,8 +159,8 @@ export function LineChart({ values, compact = false, ariaLabel, valueLabel = 'Va
     ? Array.from(new Set([0, Math.round((points.length - 1) / 3), Math.round((points.length - 1) * 2 / 3), points.length - 1]))
     : []
   return (
-    <TooltipSurface className={`w-full ${compact ? 'h-20' : 'h-64 min-w-[35rem]'}`} inspectAtRatio={inspect}>
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={`${ariaLabel}. Move the pointer across the chart to inspect each trade.`} tabIndex={0} onKeyDown={onKeyDown} onFocus={() => setKeyboardIndex(0)} onBlur={() => setKeyboardIndex(null)} className="h-full w-full outline-none focus-visible:ring-2 focus-visible:ring-active">
+    <TooltipSurface className={`w-full ${compact ? 'h-20' : useReportScale ? 'mx-auto h-[330px] min-w-[820px] max-w-[1120px]' : 'h-64 min-w-[35rem]'}`} inspectAtRatio={inspect}>
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio={useReportScale ? undefined : 'none'} role="img" aria-label={`${ariaLabel}. Move the pointer across the chart to inspect each trade.`} tabIndex={0} onKeyDown={onKeyDown} onFocus={() => setKeyboardIndex(0)} onBlur={() => setKeyboardIndex(null)} className="h-full w-full outline-none focus-visible:ring-2 focus-visible:ring-active">
         {fillArea ? <defs><linearGradient id={areaId} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor={colors.blue} stopOpacity="0.26" /><stop offset="100%" stopColor={colors.blue} stopOpacity="0.02" /></linearGradient></defs> : null}
         {compact ? null : axis.values.map((value) => { const y = yForValue(value); const zero = Math.abs(value) < Number.EPSILON; return <g key={value}><line x1={plot.left} x2={width - plot.right} y1={y} y2={y} stroke={zero ? colors.axis : colors.grid} strokeOpacity={zero ? "0.8" : undefined} strokeDasharray="7 7" vectorEffect="non-scaling-stroke" /><text x={plot.left - 9} y={Math.max(13, y - 4)} textAnchor="end" fill={colors.text} fontSize="13" fontFamily="JetBrains Mono Variable">{valueFormatter(value)}</text></g> })}
         {referenceLines.map((line) => {
@@ -278,7 +283,7 @@ export function VerticalBars({ data, ariaLabel, tone = 'blue', valueSuffix = '' 
   const max = Math.max(1, ...data.map((datum) => datum.value))
   const axis = axisTicks(max)
   const step = 746 / data.length
-  return <TooltipSurface className="h-64 w-full min-w-0"><svg viewBox="0 0 820 250" preserveAspectRatio="none" className="h-full w-full" role="img" aria-label={ariaLabel}>
+  return <TooltipSurface className="mx-auto h-[342px] w-full min-w-[820px] max-w-[1120px]"><svg viewBox="0 0 820 250" className="h-full w-full" role="img" aria-label={ariaLabel}>
     {axis.values.map((value) => { const y = 226 - value / axis.maximum * 198; return <g key={value}><line x1="64" y1={y} x2="810" y2={y} stroke={colors.grid} strokeDasharray="7 7" vectorEffect="non-scaling-stroke" /><text x="58" y={y - 3} textAnchor="end" fill={colors.text} fontSize="8.5" fontFamily="JetBrains Mono Variable">{number(value)}{valueSuffix}</text></g> })}
     {data.map((datum, index) => { const height = datum.value / axis.maximum * 198; const x = 68 + index * step; return <g key={datum.label}><rect tabIndex={0} aria-label={`${datum.label}, ${number(datum.value)}${valueSuffix}`} data-chart-tip={encodeTip({ title: datum.label, rows: [{ label: ariaLabel.split(' by ')[0] ?? 'Value', value: `${number(datum.value)}${valueSuffix}`, tone: tone === 'green' ? 'profit' : 'blue' }] })} x={x} y={226 - height} width={Math.max(5, step * 0.62)} height={height} rx="3" fill={tone === 'green' ? colors.green : colors.blue} fillOpacity="0.8" stroke={tone === 'green' ? colors.greenBright : colors.blueBright} strokeWidth="0.7" vectorEffect="non-scaling-stroke" className="cursor-help outline-none" /><text x={x + step * 0.31} y="246" textAnchor="middle" fill={colors.text} fontSize="10">{datum.label}</text></g> })}
   </svg></TooltipSurface>
@@ -291,7 +296,7 @@ export function SplitBars({ data, ariaLabel, valueFormatter = signedMoney }: Spl
   const axis = axisTicks(max, 2)
   const ticks = [...axis.values.slice(1).map((value) => -value).reverse(), ...axis.values]
   const step = 746 / data.length
-  return <TooltipSurface className="h-64 w-full min-w-0"><svg viewBox="0 0 820 250" preserveAspectRatio="none" className="h-full w-full" role="img" aria-label={ariaLabel}>
+  return <TooltipSurface className="mx-auto h-[342px] w-full min-w-[820px] max-w-[1120px]"><svg viewBox="0 0 820 250" className="h-full w-full" role="img" aria-label={ariaLabel}>
     {ticks.map((value) => { const y = 132 - value / axis.maximum * 98; return <g key={value}><line x1="64" y1={y} x2="810" y2={y} stroke={colors.grid} strokeDasharray="7 7" vectorEffect="non-scaling-stroke" /><text x="58" y={y - 3} textAnchor="end" fill={colors.text} fontSize="8.5" fontFamily="JetBrains Mono Variable">{valueFormatter(value)}</text></g> })}<line x1="64" y1="132" x2="810" y2="132" stroke={colors.axis} vectorEffect="non-scaling-stroke" />
     {data.map((datum, index) => { const profitHeight = Math.abs(datum.profit) / axis.maximum * 98; const lossHeight = Math.abs(datum.loss) / axis.maximum * 98; const x = 68 + index * step; const width = Math.max(5, step * 0.65); const tip = encodeTip({ title: datum.label, rows: [{ label: 'Profit', value: valueFormatter(datum.profit), tone: 'profit' }, { label: 'Loss', value: valueFormatter(datum.loss), tone: 'loss' }, { label: 'Net', value: valueFormatter(datum.profit + datum.loss), tone: datum.profit + datum.loss >= 0 ? 'profit' : 'loss' }] }); return <g key={datum.label}><rect tabIndex={0} aria-label={`${datum.label}, profit ${valueFormatter(datum.profit)}`} data-chart-tip={tip} x={x} y={132 - profitHeight} width={width} height={profitHeight} rx="3" fill={colors.green} fillOpacity="0.68" stroke={colors.greenBright} strokeWidth="0.7" vectorEffect="non-scaling-stroke" className="cursor-help outline-none" /><rect tabIndex={0} aria-label={`${datum.label}, loss ${valueFormatter(datum.loss)}`} data-chart-tip={tip} x={x} y="132" width={width} height={lossHeight} rx="3" fill={colors.red} fillOpacity="0.72" stroke={colors.redBright} strokeWidth="0.7" vectorEffect="non-scaling-stroke" className="cursor-help outline-none" /><text x={x + width / 2} y="246" textAnchor="middle" fill={colors.text} fontSize="10">{datum.label}</text></g> })}
   </svg></TooltipSurface>
@@ -302,7 +307,7 @@ interface HorizontalDayBarsProps { data: DayData[] }
 
 export function HorizontalDayBars({ data }: HorizontalDayBarsProps) {
   const max = Math.max(...data.flatMap((datum) => [Math.abs(datum.profit), Math.abs(datum.loss)]), 1)
-  return <TooltipSurface className="h-64 min-w-[720px] w-full"><svg viewBox="0 0 920 260" className="h-full w-full" role="img" aria-label="Profit, loss and win rate by weekday">
+  return <TooltipSurface className="mx-auto h-[280px] w-full min-w-[720px] max-w-[920px]"><svg viewBox="0 0 920 260" className="h-full w-full" role="img" aria-label="Profit, loss and win rate by weekday">
     <text x="900" y="18" textAnchor="end" fill={colors.text} fontSize="12" fontWeight="600">Win rate</text><line x1="440" y1="26" x2="440" y2="250" stroke={colors.axis} />
     {data.map((datum, index) => { const y = 40 + index * 31; const lossWidth = Math.abs(datum.loss) / max * 350; const profitWidth = datum.profit / max * 350; const winRate = datum.winRate === null ? '—' : `${datum.winRate.toFixed(2)}%`; const tip = encodeTip({ title: datum.label, rows: [{ label: 'Profit', value: signedMoney(datum.profit), tone: 'profit' }, { label: 'Loss', value: signedMoney(datum.loss), tone: 'loss' }, { label: 'Win rate', value: winRate, tone: 'profit' }] }); return <g key={datum.label}><line x1="55" y1={y + 11} x2="810" y2={y + 11} stroke={colors.grid} strokeDasharray="7 7" /><text x="10" y={y + 9} fill={colors.text} fontSize="12">{datum.label}</text><rect tabIndex={0} aria-label={`${datum.label}, loss ${signedMoney(datum.loss)}`} data-chart-tip={tip} x={440 - lossWidth} y={y - 3} width={lossWidth} height="18" rx="3" fill={colors.red} className="cursor-help outline-none" /><rect tabIndex={0} aria-label={`${datum.label}, profit ${signedMoney(datum.profit)}`} data-chart-tip={tip} x="440" y={y - 3} width={profitWidth} height="18" rx="3" fill={colors.green} className="cursor-help outline-none" /><rect tabIndex={0} aria-label={`${datum.label}, win rate ${datum.winRate ?? 0} percent`} data-chart-tip={tip} x="834" y={y - 4} width="66" height="20" rx="4" fill={colors.green} className="cursor-help outline-none" /><text x="867" y={y + 10} textAnchor="middle" fill="#fff" fontSize="11" fontWeight="600">{winRate}</text></g> })}
   </svg></TooltipSurface>
@@ -314,7 +319,7 @@ export function FrequencyChart({ labels, values, ariaLabel }: FrequencyChartProp
   const max = Math.max(...values, 1)
   const axis = axisTicks(max)
   const step = 202 / values.length
-  return <TooltipSurface className="h-44 w-full"><svg viewBox="0 0 260 170" className="h-full w-full" role="img" aria-label={ariaLabel}>
+  return <TooltipSurface className="mx-auto h-44 w-full max-w-[320px]"><svg viewBox="0 0 260 170" className="h-full w-full" role="img" aria-label={ariaLabel}>
     {axis.values.map((value) => { const y = 140 - value / axis.maximum * 125; return <g key={value}><line x1="45" x2="250" y1={y} y2={y} stroke={colors.grid} strokeDasharray="6 6" /><text x="40" y={Math.max(10, y - 3)} textAnchor="end" fill={colors.text} fontSize="8.5" fontFamily="JetBrains Mono Variable">{number(value)}</text></g> })}
     {values.map((value, index) => { const height = value / axis.maximum * 125; const x = 50 + index * step; return <g key={`${labels[index]}-${value}`}><rect tabIndex={0} aria-label={`${labels[index]}, ${number(value)} trades`} data-chart-tip={encodeTip({ title: labels[index] ?? `Period ${index + 1}`, rows: [{ label: 'Trades', value: number(value), tone: 'blue' }] })} x={x} y={140 - height} width="9" height={height} rx="3" fill={colors.blue} className="cursor-help outline-none" /><text x={x + 4.5} y="161" textAnchor="middle" fill={colors.text} fontSize="10">{labels[index]}</text></g> })}
   </svg></TooltipSurface>

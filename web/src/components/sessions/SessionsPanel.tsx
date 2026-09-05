@@ -1,4 +1,4 @@
-import { BarChart3, ClipboardCheck, Clock3, Download, Pause, Play, Plus, Square, Trash2 } from 'lucide-react'
+import { BarChart3, ClipboardCheck, Clock3, Download, Pause, Play, Plus, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { deleteEmptySessions, deleteSession, fetchSessions, fetchTrades, patchSession } from '../../api/client'
@@ -13,11 +13,12 @@ import { useUiStore } from '../../store/ui-store'
 import { TradeHistoryTable } from '../trades/TradeHistoryTable'
 import { tradeHistoryCsv } from './trade-history-csv'
 import { useChartWorkspace } from '../../chart-workspace/use-chart-workspace'
-import { formatChartTime, type ChartTimezone } from '../../replay/chart-timezone'
+import { formatChartDate, formatChartTime, type ChartTimezone } from '../../replay/chart-timezone'
 import { replaySessionDisplayName } from '../../sources/source-name'
 import { SourceNameEditor } from '../sources/SourceNameEditor'
 import { DetailDialog } from '../ui/DetailDialog'
 import { LineChart } from '../analytics/InteractiveAnalyticsCharts'
+import { ReplaySessionDialog } from './ReplaySessionDialog'
 
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 })
 function durationLabel(seconds: number): string {
@@ -44,7 +45,6 @@ function maxDrawdownPercent(session: ReplaySession, trades: EngineTrade[]): { va
 
 function statusTone(status: ReplaySession['status']): string {
   if (status === 'active') return 'bg-profit/12 text-profit-bright'
-  if (status === 'stopped') return 'bg-loss/12 text-loss-bright'
   return 'bg-surface-3 text-muted'
 }
 
@@ -69,25 +69,26 @@ interface SessionDetailsProps {
   onRename: (name: string) => Promise<void>
   onDelete: () => Promise<void>
   onReview: () => void
+  onReviewTrade: (tradeId: string) => void
   onClose: () => void
   returnFocusRef: RefObject<HTMLElement | null>
   timezone: ChartTimezone
 }
 
-function SessionDetails({ session, trades, loading, current, deleting, onRefresh, onRename, onDelete, onReview, onClose, returnFocusRef, timezone }: SessionDetailsProps) {
+function SessionDetails({ session, trades, loading, current, deleting, onRefresh, onRename, onDelete, onReview, onReviewTrade, onClose, returnFocusRef, timezone }: SessionDetailsProps) {
   const stats = calculateTradeStats(trades)
   const equityCurve = useMemo(() => {
     const netCents = trades.reduce((total, trade) => total + trade.realizedCents, 0)
     const values = [(session.equityCents - netCents) / 100]
-    const labels = [new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }).format(new Date(session.startTs * 1000))]
+    const labels = [formatChartDate(session.startTs, timezone)]
     let equity = session.equityCents - netCents
     for (const trade of trades.toSorted((left, right) => left.exitTs - right.exitTs)) {
       equity += trade.realizedCents
       values.push(equity / 100)
-      labels.push(new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }).format(new Date(trade.exitTs * 1000)))
+      labels.push(formatChartDate(trade.exitTs, timezone))
     }
     return { values, labels }
-  }, [session.equityCents, trades])
+  }, [session.equityCents, session.startTs, timezone, trades])
   const maxDrawdown = maxDrawdownPercent(session, trades)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -111,7 +112,7 @@ function SessionDetails({ session, trades, loading, current, deleting, onRefresh
       onClose={onClose}
       returnFocusRef={returnFocusRef}
       title={<div className="flex min-w-0 items-center gap-1.5"><h2 id={`session-details-${session.id}`} className="truncate text-ui-title font-semibold text-ink">{replaySessionDisplayName(session)}</h2><SourceNameEditor currentName={session.name} defaultName={`#${shortReplaySessionHash(session.id)}`} sourceLabel="replay session" onSave={onRename} /></div>}
-      status={<span className={`rounded-control px-2 py-1 font-mono text-ui-meta font-semibold uppercase ${statusTone(current ? 'active' : session.status)}`}>{current ? 'active' : session.status}</span>}
+      status={<span className={`rounded-control px-2 py-1 font-mono text-ui-meta font-semibold uppercase ${statusTone(current ? 'active' : session.status === 'stopped' ? 'paused' : session.status)}`}>{current ? 'active' : session.status === 'stopped' ? 'paused' : session.status}</span>}
     >
       <div className="p-4 sm:p-5">
       <dl className="grid gap-2 sm:grid-cols-2">
@@ -130,20 +131,14 @@ function SessionDetails({ session, trades, loading, current, deleting, onRefresh
           <LineChart values={equityCurve.values} xLabels={equityCurve.labels} fillArea showPoints valueLabel="Equity" valueFormatter={(value) => money.format(value)} ariaLabel="Equity curve for this session" />
         </div>
       </section>
-      <div className="mt-4 grid w-full grid-cols-2 gap-2 sm:grid-cols-6">
+      <div className="mt-4 grid w-full grid-cols-2 gap-2 sm:grid-cols-5">
         {!current ? (
           <button type="button" disabled={busy} onClick={() => void run(() => replayEngine.resumeSession(session))} className="primary-button w-full justify-center"><Play size={14} fill="currentColor" /> Resume</button>
         ) : (
           <button type="button" disabled={busy} onClick={() => void run(() => replayEngine.pauseReplaySession())} className="secondary-button w-full justify-center"><Pause size={14} fill="currentColor" /> Pause</button>
         )}
-        {session.status !== 'stopped' || current ? (
-          <button type="button" disabled={busy} onClick={() => void run(async () => {
-            if (current) await replayEngine.stopReplaySession()
-            else await patchSession(session.id, { status: 'stopped' })
-          })} className="secondary-button w-full justify-center"><Square size={13} fill="currentColor" /> Stop</button>
-        ) : null}
         <button type="button" disabled={loading || trades.length === 0} onClick={() => downloadTradeHistory(session, trades)} className="secondary-button w-full justify-center" aria-label="Download session trade history as CSV"><Download size={14} />CSV</button>
-        <a href={`/analytics?analytics=${encodeURIComponent(session.id)}&sourceType=session`} className="secondary-button w-full justify-center" aria-label={`Open replay session ${replaySessionDisplayName(session)} reports`}><BarChart3 size={14} />Reports</a>
+        <a href={`/analytics?analytics=${encodeURIComponent(session.id)}&sourceType=session`} className="secondary-button w-full justify-center" aria-label={`Open replay session ${replaySessionDisplayName(session)} analytics`}><BarChart3 size={14} />Analytics</a>
         <button type="button" onClick={onReview} className="secondary-button w-full justify-center"><ClipboardCheck size={14} />Review</button>
         <button
           type="button"
@@ -179,6 +174,7 @@ function SessionDetails({ session, trades, loading, current, deleting, onRefresh
           maeTicks: trade.maeTicks,
           rMultiple: trade.rMultiple,
         }))}
+        onTradeClick={(trade) => onReviewTrade(trade.id)}
       />
     </DetailDialog>
   )
@@ -208,6 +204,7 @@ export function SessionsPanel() {
   const [confirmCleanup, setConfirmCleanup] = useState(false)
   const [visibleCount, setVisibleCount] = useState(30)
   const [contextMenu, setContextMenu] = useState<SessionContextMenu | null>(null)
+  const [newSessionOpen, setNewSessionOpen] = useState(false)
   const refreshVersion = useRef(0)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const detailTriggerRef = useRef<HTMLButtonElement>(null)
@@ -246,7 +243,7 @@ export function SessionsPanel() {
       setLoadingTradeIds(new Set())
       setError('Sessions are unavailable while persistence is offline.')
     }
-  }, [replay.sessionId])
+  }, [])
 
   useEffect(() => { void refresh() }, [refresh, replay.sessionStatus])
   const tradesFor = useCallback((sessionId: string): EngineTrade[] => {
@@ -295,25 +292,10 @@ export function SessionsPanel() {
   const emptyLegacyCount = sessions.filter((session) => session.status !== 'active' && session.cursorTs === session.startTs && session.equityCents === 0 && Object.keys(session.config ?? {}).length === 0).length
   const contextSession = contextMenu ? sessions.find((session) => session.id === contextMenu.sessionId) ?? null : null
   const contextSessionCurrent = contextSession?.id === replay.sessionId && replay.sessionStatus === 'active'
-  const activeSession = replay.sessionStatus === 'active'
-    ? sessions.find((session) => session.id === replay.sessionId) ?? null
-    : null
   const detailSession = detailSessionId ? sessions.find((session) => session.id === detailSessionId) ?? null : null
 
   return (
     <div className="min-h-0 overflow-y-auto">
-      <div className="flex min-h-12 items-center justify-between border-b border-line px-3">
-        <div>
-          <h2 className="text-ui-body font-semibold text-ink">Replay sessions</h2>
-          <p className={`max-w-44 truncate text-ui-meta ${replay.sessionId ? 'text-profit-bright' : 'text-dim'}`}>{activeSession ? `Active · ${replaySessionDisplayName(activeSession)}` : 'No active session · replay is temporary'}</p>
-        </div>
-        <div className="flex items-center gap-1.5">
-          {activeSession ? (
-            <button type="button" onClick={() => openReview({ id: activeSession.id, type: 'session', title: replaySessionDisplayName(activeSession) })} className="secondary-button h-7 min-h-7 px-2.5" aria-label="Review active session"><ClipboardCheck size={13} />Review</button>
-          ) : null}
-          <button type="button" onClick={() => replayEngine.beginReplaySelection({ createSession: true })} className="primary-button h-7 px-2.5" aria-label="New session"><Plus size={13} />New</button>
-        </div>
-      </div>
       {emptyLegacyCount > 0 ? (
         <div className="flex items-center justify-between border-b border-line px-3 py-2 text-ui-meta">
           <span className="text-dim">{emptyLegacyCount} empty legacy session{emptyLegacyCount === 1 ? '' : 's'}</span>
@@ -327,15 +309,16 @@ export function SessionsPanel() {
         </div>
       ) : null}
       {error ? <p role="status" className="border-b border-loss/20 bg-loss/8 p-3 text-ui-body text-loss-bright">{error}</p> : null}
+      <div className="flex h-10 items-center justify-between border-b border-line px-3">
+        <span className="text-ui-meta font-medium text-muted">Saved sessions</span>
+        <button type="button" onClick={() => setNewSessionOpen(true)} className="primary-button h-7 px-2.5" aria-label="New session"><Plus size={13} />New</button>
+      </div>
       <ul className="divide-y divide-line" aria-label="Saved replay sessions">
         {sessions.slice(0, visibleCount).map((session) => {
           const current = session.id === replay.sessionId && replay.sessionStatus === 'active'
-          const trades = tradesFor(session.id)
-          const stats = calculateTradeStats(trades)
-          const loading = loadingTradeIds.has(session.id)
-          const status = current ? 'active' : session.status
+          const status = current ? 'active' : session.status === 'stopped' ? 'paused' : session.status
           const displayName = replaySessionDisplayName(session)
-          const defaultName = `#${shortReplaySessionHash(session.id)}`
+          const metadata = `${session.symbol} · ${session.tf} · ${formatChartTime(session.cursorTs || session.startTs, chartWorkspace.timezone)}`
           return (
             <li key={session.id} onContextMenu={(event) => handleRowContextMenu(event, session)}>
               <button
@@ -344,26 +327,10 @@ export function SessionsPanel() {
                 onKeyDown={(event) => handleRowKeyDown(event, session)}
                 aria-current={current ? 'true' : undefined}
                 aria-label={`Inspect replay session ${displayName}`}
-                className={`w-full text-left transition-colors ${current ? 'bg-active/10 ring-1 ring-inset ring-active/35 hover:bg-active/15' : 'hover:bg-surface-2'}`}
+                className={`min-h-[4.5rem] w-full px-3 py-2.5 text-left transition-colors ${current ? 'bg-active/10 ring-1 ring-inset ring-active/35 hover:bg-active/15' : 'hover:bg-surface-2'}`}
               >
-                <span className="flex items-start gap-2.5 px-3 py-2.5">
-                  <span className={`mt-0.5 grid size-7 shrink-0 place-items-center rounded-control ${current ? 'bg-active/15 text-active-bright' : 'bg-surface-3 text-muted'}`}><Clock3 size={13} /></span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center justify-between gap-2">
-                      <strong className={`min-w-0 truncate text-ui-body ${current ? 'text-active-bright' : 'text-ink'}`}>{displayName}</strong>
-                      <span className="flex shrink-0 items-center gap-1.5">
-                        <span className={`rounded-control px-1.5 py-0.5 text-ui-meta font-semibold uppercase ${statusTone(status)}`}>{status}</span>
-                      </span>
-                    </span>
-                    <span className="mt-0.5 block truncate text-ui-meta text-dim">{session.symbol} · {session.tf}{displayName !== defaultName ? ` · ${defaultName}` : ''} · <span className="font-mono">{formatChartTime(session.cursorTs || session.startTs, chartWorkspace.timezone)}</span></span>
-                  </span>
-                </span>
-                <dl className="grid grid-cols-4 border-t border-line text-center text-ui-meta">
-                  <div className="min-w-0 px-1 py-1.5"><dt className="text-dim">Trades</dt><dd className="truncate font-mono font-medium text-ink">{loading ? '…' : stats.trades}</dd></div>
-                  <div className="min-w-0 border-l border-line px-1 py-1.5"><dt className="text-dim">Win rate</dt><dd className="truncate font-mono font-medium text-ink">{loading ? '…' : `${(stats.winRate * 100).toFixed(0)}%`}</dd></div>
-                  <div className="min-w-0 border-l border-line px-1 py-1.5"><dt className="text-dim">P&amp;L</dt><dd className={`truncate font-mono font-medium ${loading || stats.netCents === 0 ? 'text-ink' : stats.netCents > 0 ? 'text-profit-bright' : 'text-loss-bright'}`}>{loading ? '…' : money.format(stats.netCents / 100)}</dd></div>
-                  <div className="min-w-0 border-l border-line px-1 py-1.5"><dt className="text-dim">Avg R</dt><dd className="truncate font-mono font-medium text-ink">{loading ? '…' : stats.averageR === null ? '—' : stats.averageR.toFixed(2)}</dd></div>
-                </dl>
+                <span className="flex min-w-0 items-center justify-between gap-3"><strong className={`min-w-0 truncate text-ui-body font-semibold ${current ? 'text-active-bright' : 'text-ink'}`}>{displayName}</strong><span className={`shrink-0 font-mono text-[10px] font-semibold uppercase tracking-[0.06em] ${statusTone(status)}`}>{status}</span></span>
+                <span title={metadata} className="mt-1 block truncate font-mono text-ui-meta text-dim">{metadata}</span>
               </button>
             </li>
           )
@@ -391,7 +358,8 @@ export function SessionsPanel() {
         </div>,
         document.body,
       ) : null}
-      {detailSession ? <SessionDetails key={detailSession.id} session={detailSession} trades={tradesFor(detailSession.id)} loading={loadingTradeIds.has(detailSession.id)} current={detailSession.id === replay.sessionId && replay.sessionStatus === 'active'} deleting={deletingId === detailSession.id} onRefresh={refresh} onRename={(name) => rename(detailSession, name)} onDelete={() => remove(detailSession)} onReview={() => { openReview({ id: detailSession.id, type: 'session', title: replaySessionDisplayName(detailSession) }); setDetailSessionId(null) }} onClose={() => setDetailSessionId(null)} returnFocusRef={detailTriggerRef} timezone={chartWorkspace.timezone} /> : null}
+      {detailSession ? <SessionDetails key={detailSession.id} session={detailSession} trades={tradesFor(detailSession.id)} loading={loadingTradeIds.has(detailSession.id)} current={detailSession.id === replay.sessionId && replay.sessionStatus === 'active'} deleting={deletingId === detailSession.id} onRefresh={refresh} onRename={(name) => rename(detailSession, name)} onDelete={() => remove(detailSession)} onReview={() => { openReview({ id: detailSession.id, type: 'session', title: replaySessionDisplayName(detailSession) }); setDetailSessionId(null) }} onReviewTrade={(tradeId) => { openReview({ id: detailSession.id, type: 'session', title: replaySessionDisplayName(detailSession) }, tradeId); setDetailSessionId(null) }} onClose={() => setDetailSessionId(null)} returnFocusRef={detailTriggerRef} timezone={chartWorkspace.timezone} /> : null}
+      {newSessionOpen ? <ReplaySessionDialog mode="new" timezone={chartWorkspace.timezone} onClose={() => setNewSessionOpen(false)} onSubmit={(name, timestamp) => replayEngine.startReplaySessionAt(timestamp ?? 0, name)} /> : null}
     </div>
   )
 }
