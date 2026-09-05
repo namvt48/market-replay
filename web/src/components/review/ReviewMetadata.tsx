@@ -2,7 +2,7 @@ import {
   CalendarDays, ChevronDown, ChevronsUp, CircleDollarSign, Database, GripVertical, Info, Plus,
   Search, Tag, Trash2, TrendingUp, X,
 } from 'lucide-react'
-import { useMemo, useState, type ReactElement } from 'react'
+import { useMemo, useState, type DragEvent, type ReactElement } from 'react'
 import type { SymbolMeta } from '../../api/types'
 import type { ReviewTrade } from '../../review/types'
 import { reviewDocumentKey, reviewTradeSnapshot } from '../../review/types'
@@ -35,7 +35,15 @@ function TagEditor({ group, tag, onClose }: { group: ReviewTagGroup; tag: Review
   )
 }
 
-function TagGroupRow({ group, trade }: { group: ReviewTagGroup; trade: ReviewTrade }): ReactElement {
+function TagGroupRow({ group, trade, dragging, onDragStart, onDragOver, onDrop, onDragEnd }: {
+  group: ReviewTagGroup
+  trade: ReviewTrade
+  dragging: boolean
+  onDragStart: () => void
+  onDragOver: (event: DragEvent<HTMLElement>) => void
+  onDrop: () => void
+  onDragEnd: () => void
+}): ReactElement {
   const key = reviewDocumentKey(trade.sourceType, trade.sourceId, trade.id)
   const assignment = useReviewStore((state) => state.documents[key]?.tagAssignments[group.id] ?? null)
   const assignTag = useReviewStore((state) => state.assignTag)
@@ -45,7 +53,8 @@ function TagGroupRow({ group, trade }: { group: ReviewTagGroup; trade: ReviewTra
   const [pickerOpen, setPickerOpen] = useState(false)
   const [manageOpen, setManageOpen] = useState(false)
   const [editingTag, setEditingTag] = useState<string | null>(null)
-  const selected = group.tags.find((tag) => tag.id === assignment) ?? null
+  const selectedIds = Array.isArray(assignment) ? assignment : assignment ? [assignment] : []
+  const selected = group.tags.filter((tag) => selectedIds.includes(tag.id))
   const editing = group.tags.find((tag) => tag.id === editingTag) ?? null
   const filtered = group.tags.filter((tag) => tag.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const assign = (tagId: string | null): void => assignTag(key, reviewTradeSnapshot(trade), group.id, tagId)
@@ -55,16 +64,16 @@ function TagGroupRow({ group, trade }: { group: ReviewTagGroup; trade: ReviewTra
     const tagId = addTag(group.id, name)
     assign(tagId)
     setQuery('')
-    setPickerOpen(false)
+    setPickerOpen(true)
   }
   return (
-    <section className="relative" aria-labelledby={`review-tag-group-${group.id}`}>
+    <section className={`relative transition-opacity ${dragging ? 'opacity-45' : ''}`} aria-labelledby={`review-tag-group-${group.id}`} draggable onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd}>
       <div className="group flex h-8 items-center gap-2 px-3 text-ui-body">
-        <GripVertical size={13} className="shrink-0 text-dim opacity-60" aria-hidden="true" />
+        <GripVertical size={13} className="shrink-0 cursor-grab text-dim opacity-60 active:cursor-grabbing" aria-label="Drag to reorder tag group" />
         <Tag size={14} className="shrink-0 text-[#8fc5df]" aria-hidden="true" />
         <button type="button" onClick={() => setManageOpen((open) => !open)} id={`review-tag-group-${group.id}`} className="min-w-0 flex-1 truncate text-left text-muted hover:text-ink" aria-expanded={manageOpen}>{group.name}</button>
-        {selected ? (
-          <button type="button" onClick={() => setPickerOpen((open) => !open)} className={`max-w-[45%] truncate rounded-control px-2 py-0.5 text-ui-meta font-semibold ${reviewTagBadge(selected.color)}`} aria-label={`Change ${group.name} tag: ${selected.name}`}>{selected.name}</button>
+        {selected.length ? (
+          <button type="button" onClick={() => setPickerOpen((open) => !open)} className="flex max-w-[56%] items-center gap-1 overflow-hidden" aria-label={`Change ${group.name} tag: ${selected.map((tag) => tag.name).join(', ')}`} aria-expanded={pickerOpen}>{selected.map((tag) => <span key={tag.id} className={`truncate rounded-control px-2 py-0.5 text-ui-meta font-semibold ${reviewTagBadge(tag.color)}`}>{tag.name}</span>)}</button>
         ) : (
           <button type="button" onClick={() => setPickerOpen((open) => !open)} className="shrink-0 px-1 text-ui-body italic text-[#8fc5df] hover:text-active-bright" aria-expanded={pickerOpen}>Add tag</button>
         )}
@@ -84,8 +93,8 @@ function TagGroupRow({ group, trade }: { group: ReviewTagGroup; trade: ReviewTra
             <button type="button" onClick={() => setPickerOpen(false)} className="absolute right-1 top-1 grid size-7 place-items-center rounded-control text-dim hover:bg-surface-3 hover:text-ink" aria-label="Close tag picker"><X size={13} /></button>
           </div>
           <div className="mt-1 max-h-40 overflow-y-auto">
-            {selected ? <button type="button" onClick={() => { assign(null); setPickerOpen(false) }} className="flex min-h-8 w-full items-center gap-2 rounded-control px-2 text-left text-ui-body text-muted hover:bg-surface-3"><X size={13} />Clear selection</button> : null}
-            {filtered.map((tag) => <div key={tag.id} className="group/tag flex items-center rounded-control hover:bg-surface-3"><button type="button" onClick={() => { assign(tag.id); setQuery(''); setPickerOpen(false) }} className="flex min-h-8 min-w-0 flex-1 items-center gap-2 px-2 text-left"><span className={`size-2.5 shrink-0 rounded-[3px] ${reviewTagColors.find((color) => color.id === tag.color)?.className}`} /><span className="min-w-0 flex-1 truncate text-ui-body text-ink">{tag.name}</span>{tag.id === assignment ? <span className="text-active-bright">✓</span> : null}</button><button type="button" onClick={() => setEditingTag(tag.id)} className="mr-1 hidden min-h-7 rounded-control px-2 text-ui-meta text-muted hover:text-ink group-hover/tag:block focus:block" aria-label={`Edit ${tag.name} tag`}>Edit</button></div>)}
+            {selected.length ? <button type="button" onClick={() => assign(null)} className="flex min-h-8 w-full items-center gap-2 rounded-control px-2 text-left text-ui-body text-muted hover:bg-surface-3"><X size={13} />Clear all tags</button> : null}
+            {filtered.map((tag) => <div key={tag.id} className="group/tag flex items-center rounded-control hover:bg-surface-3"><button type="button" onClick={() => { assign(tag.id); setQuery('') }} aria-pressed={selectedIds.includes(tag.id)} className="flex min-h-8 min-w-0 flex-1 items-center gap-2 px-2 text-left"><span className={`size-2.5 shrink-0 rounded-[3px] ${reviewTagColors.find((color) => color.id === tag.color)?.className}`} /><span className="min-w-0 flex-1 truncate text-ui-body text-ink">{tag.name}</span>{selectedIds.includes(tag.id) ? <span className="text-active-bright">✓</span> : null}</button><button type="button" onClick={() => setEditingTag(tag.id)} className="mr-1 hidden min-h-7 rounded-control px-2 text-ui-meta text-muted hover:text-ink group-hover/tag:block focus:block" aria-label={`Edit ${tag.name} tag`}>Edit</button></div>)}
             {query.trim() && !group.tags.some((tag) => tag.name.toLocaleLowerCase() === query.trim().toLocaleLowerCase()) ? <button type="button" onClick={create} className="flex min-h-8 w-full items-center gap-2 rounded-control px-2 text-left text-ui-body text-active-bright hover:bg-active/10"><Plus size={13} />Create “{query.trim()}”</button> : null}
           </div>
         </div>
@@ -97,10 +106,12 @@ function TagGroupRow({ group, trade }: { group: ReviewTagGroup; trade: ReviewTra
 function TagGroups({ trade }: { trade: ReviewTrade }): ReactElement {
   const groups = useReviewStore((state) => state.tagGroups)
   const addTagGroup = useReviewStore((state) => state.addTagGroup)
+  const moveTagGroup = useReviewStore((state) => state.moveTagGroup)
   const [adding, setAdding] = useState(false)
   const [searching, setSearching] = useState(false)
   const [name, setName] = useState('')
   const [groupQuery, setGroupQuery] = useState('')
+  const [draggedGroupId, setDraggedGroupId] = useState<string | null>(null)
   const save = (): void => {
     addTagGroup(name)
     setName('')
@@ -122,7 +133,7 @@ function TagGroups({ trade }: { trade: ReviewTrade }): ReactElement {
           </div>
         ) : null}
       </div>
-      {groups.length === 0 ? <p className="px-3 py-3 text-ui-meta leading-5 text-dim">No tag groups yet. Add one to classify this trade.</p> : visibleGroups.length === 0 ? <p className="px-3 py-3 text-ui-meta text-dim">No matching tag groups.</p> : visibleGroups.map((group) => <TagGroupRow key={group.id} group={group} trade={trade} />)}
+      {groups.length === 0 ? <p className="px-3 py-3 text-ui-meta leading-5 text-dim">No tag groups yet. Add one to classify this trade.</p> : visibleGroups.length === 0 ? <p className="px-3 py-3 text-ui-meta text-dim">No matching tag groups.</p> : visibleGroups.map((group) => <TagGroupRow key={group.id} group={group} trade={trade} dragging={draggedGroupId === group.id} onDragStart={() => setDraggedGroupId(group.id)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedGroupId) moveTagGroup(draggedGroupId, group.id); setDraggedGroupId(null) }} onDragEnd={() => setDraggedGroupId(null)} />)}
     </div>
   )
 }
@@ -139,7 +150,7 @@ function priceLabel(ticks: number | null, symbol: SymbolMeta | undefined): strin
 function Details({ trade, symbol, timezone }: { trade: ReviewTrade; symbol: SymbolMeta | undefined; timezone: ChartTimezone }): ReactElement {
   const grossCents = trade.realizedCents + trade.feesCents
   const rows = useMemo(() => [
-    { section: 'context', icon: <Database size={14} />, label: 'Source', value: trade.sourceType === 'session' ? 'Replay session' : 'Evaluation account' },
+    { section: 'context', icon: <Database size={14} />, label: 'Source', value: trade.sourceType === 'session' ? 'Replay session' : trade.sourceType === 'evaluation' ? 'Evaluation account' : 'Live account' },
     { section: 'context', icon: <TrendingUp size={14} />, label: 'Asset', value: trade.symbol },
     { section: 'context', icon: <ChevronsUp size={14} />, label: 'Side', value: trade.side === 'long' ? 'Long' : 'Short' },
     { section: 'execution', icon: <Info size={14} />, label: 'Exit reason', value: trade.exitReason ? trade.exitReason.replace(/([A-Z])/g, ' $1') : '—' },
@@ -159,19 +170,28 @@ function Details({ trade, symbol, timezone }: { trade: ReviewTrade; symbol: Symb
 
 export function ReviewMetadata({ trade, symbols, timezone }: { trade: ReviewTrade; symbols: SymbolMeta[]; timezone: ChartTimezone }): ReactElement {
   const [tab, setTab] = useState<'tags' | 'details'>('tags')
+  const [expanded, setExpanded] = useState(true)
   const symbol = symbols.find((item) => item.symbol === trade.symbol)
   return (
-    <section className="shrink-0 border-t border-line bg-surface-0/45" aria-label="Trade metadata">
-      <header className="flex h-12 items-center justify-between px-3">
+    <section className="mt-3 shrink-0 bg-surface-0/45 px-3 pb-3" aria-label="Trade metadata">
+      <header className="flex h-10 items-center justify-between">
         <div className="flex rounded-panel border border-line-strong bg-surface-0 p-0.5" role="tablist" aria-label="Trade metadata views">
           <button type="button" role="tab" aria-selected={tab === 'tags'} onClick={() => setTab('tags')} className="min-h-8 rounded-control px-4 text-ui-body font-medium text-muted aria-selected:bg-surface-3 aria-selected:text-ink">Tag groups</button>
           <button type="button" role="tab" aria-selected={tab === 'details'} onClick={() => setTab('details')} className="min-h-8 rounded-control px-4 text-ui-body font-medium text-muted aria-selected:bg-surface-3 aria-selected:text-ink">Details</button>
         </div>
-        <ChevronDown size={16} className="text-active-bright" aria-hidden="true" />
+        <button
+          type="button"
+          onClick={() => setExpanded((open) => !open)}
+          aria-label={expanded ? 'Hide trade metadata' : 'Show trade metadata'}
+          aria-expanded={expanded}
+          className="tool-button size-8"
+        >
+          <ChevronDown size={16} className={`text-active-bright transition-transform ${expanded ? '' : '-rotate-90'}`} aria-hidden="true" />
+        </button>
       </header>
-      <div role="tabpanel" className="max-h-[48vh] overflow-y-auto border-t border-line">
+      {expanded ? <div role="tabpanel" className="max-h-[48vh] overflow-y-auto rounded-control border border-line">
         {tab === 'tags' ? <TagGroups trade={trade} /> : <Details trade={trade} symbol={symbol} timezone={timezone} />}
-      </div>
+      </div> : null}
     </section>
   )
 }

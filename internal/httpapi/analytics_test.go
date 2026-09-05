@@ -193,3 +193,112 @@ func TestHandleAnalyticsPerformance_SingleListTradesCallPerRequest(t *testing.T)
 		t.Fatalf("ListTrades called %d times, want exactly 1", counting.listTradesCalls)
 	}
 }
+
+// normalizeLiveTrades only rewrites timestamps for live sessions (which
+// store Unix milliseconds, Date.now()), and leaves replay/eval trades —
+// already seconds — untouched without allocating.
+func TestNormalizeLiveTrades_OnlyLiveSessionsRewriteTimestamps(t *testing.T) {
+	ms := []model.Trade{{ID: "a", EntryTs: 1777896000000, ExitTs: 1777903200000}}
+
+	replay := normalizeLiveTrades(model.Session{Kind: model.SessionKindReplay}, ms)
+	eval := normalizeLiveTrades(model.Session{Kind: model.SessionKindEval}, ms)
+	if &replay[0] != &ms[0] || &eval[0] != &ms[0] {
+		t.Fatal("replay/eval sessions must return the input slice untouched")
+	}
+	if replay[0].EntryTs != 1777896000000 || eval[0].ExitTs != 1777903200000 {
+		t.Fatal("non-live sessions must not have timestamps divided")
+	}
+
+	live := normalizeLiveTrades(model.Session{Kind: model.SessionKindLive}, ms)
+	if live[0].EntryTs != 1777896000 || live[0].ExitTs != 1777903200 {
+		t.Fatalf("live ms timestamps not normalized to seconds: %d, %d", live[0].EntryTs, live[0].ExitTs)
+	}
+	if live[0].ID != "a" {
+		t.Fatalf("normalization must preserve trade fields, got %+v", live[0])
+	}
+	if &live[0] == &ms[0] {
+		t.Fatal("live normalization must not mutate the caller's slice")
+	}
+}
+
+// TestHandleAnalyticsPerformance_LiveMsTimestamps: live journal trades
+// store milliseconds; the performance calendar must bucket them under the
+// real 2026 date instead of a year-58309 artifact.
+func TestHandleAnalyticsPerformance_LiveMsTimestamps(t *testing.T) {
+	s := newTestServer(t)
+	id := createTestSessionWithKind(t, s, "live", 10_000_000)
+	putTestTrades(t, s, id,
+		`[{"id":"trade-1","symbol":"NQ","side":"long","qty":1,"entryTs":1777896000000,"entryPriceTicks":80000,"exitTs":1777903200000,"exitPriceTicks":80100,"realizedCents":5000,"feesCents":0,"mfeTicks":150,"maeTicks":20,"rMultiple":2.0,"createdAt":1777903200000}]`)
+
+	rec := serve(t, s, http.MethodGet, "/api/v1/analytics/performance?sourceType=live&sourceId="+id+"&timezone=UTC", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Overview struct {
+			TotalTrades int `json:"totalTrades"`
+		} `json:"overview"`
+		Calendar []struct {
+			Date   string  `json:"date"`
+			Trades int     `json:"trades"`
+			Pnl    float64 `json:"pnl"`
+		} `json:"calendar"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if resp.Overview.TotalTrades != 1 {
+		t.Fatalf("totalTrades = %d, want 1", resp.Overview.TotalTrades)
+	}
+	if len(resp.Calendar) != 1 || resp.Calendar[0].Date != "2026-05-04" {
+		t.Fatalf("calendar = %+v, want single 2026-05-04 day", resp.Calendar)
+	}
+	if resp.Calendar[0].Pnl != 50.0 {
+		t.Fatalf("day pnl = %v, want 50 ($50 from 5000 cents)", resp.Calendar[0].Pnl)
+	}
+}
+
+// TestHandleAnalyticsSources_LiveMsTimestamps covers the other
+// loadSourceTrades bypass: /analytics/sources derives StartedAt/EndedAt
+// from the same ms timestamps and must not render year-58309 dates.
+func TestHandleAnalyticsSources_LiveMsTimestamps(t *testing.T) {
+	s := newTestServer(t)
+	id := createTestSessionWithKind(t, s, "live", 10_000_000)
+	putTestTrades(t, s, id,
+		`[{"id":"trade-1","symbol":"NQ","side":"long","qty":1,"entryTs":1777896000000,"entryPriceTicks":80000,"exitTs":1777903200000,"exitPriceTicks":80100,"realizedCents":5000,"feesCents":0,"mfeTicks":150,"maeTicks":20,"createdAt":1777903200000}]`)
+
+	rec := serve(t, s, http.MethodGet, "/api/v1/analytics/sources", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []struct {
+			ID         string  `json:"id"`
+			Type       string  `json:"type"`
+			TradeCount int     `json:"tradeCount"`
+			StartedAt  *string `json:"startedAt"`
+			EndedAt    *string `json:"endedAt"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	for _, item := range resp.Items {
+		if item.ID != id {
+			continue
+		}
+		if item.Type != "live" || item.TradeCount != 1 {
+			t.Fatalf("live source item = %+v, want type=live tradeCount=1", item)
+		}
+		wantStart := "2026-05-04T12:00:00Z"
+		wantEnd := "2026-05-04T14:00:00Z"
+		if item.StartedAt == nil || *item.StartedAt != wantStart {
+			t.Fatalf("startedAt = %v, want %s", item.StartedAt, wantStart)
+		}
+		if item.EndedAt == nil || *item.EndedAt != wantEnd {
+			t.Fatalf("endedAt = %v, want %s", item.EndedAt, wantEnd)
+		}
+		return
+	}
+	t.Fatalf("no source item with id %s found in %+v", id, resp.Items)
+}

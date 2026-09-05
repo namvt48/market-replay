@@ -26,7 +26,8 @@ export interface ReviewScreenshot {
 export interface ReviewDocument {
   note: string
   screenshots: ReviewScreenshot[]
-  tagAssignments: Record<string, string>
+  /** Groups can carry several tags. A string is accepted for persisted v1 documents. */
+  tagAssignments: Record<string, string | string[]>
   trade: ReviewTradeSnapshot
   updatedAt: number
 }
@@ -40,6 +41,7 @@ interface ReviewState {
   addTagGroup: (name: string) => string
   renameTagGroup: (groupId: string, name: string) => void
   deleteTagGroup: (groupId: string) => void
+  moveTagGroup: (groupId: string, targetGroupId: string) => void
   addTag: (groupId: string, name: string, color?: ReviewTagColor) => string
   updateTag: (groupId: string, tagId: string, patch: Partial<Pick<ReviewTag, 'name' | 'color'>>) => void
   deleteTag: (groupId: string, tagId: string) => void
@@ -52,6 +54,10 @@ function identifier(prefix: string): string {
 
 function nextDocument(existing: ReviewDocument | undefined, trade: ReviewTradeSnapshot): ReviewDocument {
   return existing ?? { note: '', screenshots: [], tagAssignments: {}, trade, updatedAt: Date.now() }
+}
+
+function assignedTagIds(value: string | string[] | undefined): string[] {
+  return Array.isArray(value) ? value : value ? [value] : []
 }
 
 export const useReviewStore = create<ReviewState>()(persist((set) => ({
@@ -83,6 +89,15 @@ export const useReviewStore = create<ReviewState>()(persist((set) => ({
       return [key, { ...document, tagAssignments }]
     })),
   })),
+  moveTagGroup: (groupId, targetGroupId) => set((state) => {
+    const from = state.tagGroups.findIndex((group) => group.id === groupId)
+    const to = state.tagGroups.findIndex((group) => group.id === targetGroupId)
+    if (from < 0 || to < 0 || from === to) return state
+    const tagGroups = [...state.tagGroups]
+    const [group] = tagGroups.splice(from, 1)
+    tagGroups.splice(to, 0, group)
+    return { tagGroups }
+  }),
   addTag: (groupId, name, color = 'green') => {
     const id = identifier('tag')
     set((state) => ({ tagGroups: state.tagGroups.map((group) => group.id === groupId ? { ...group, tags: [...group.tags, { id, name: name.trim(), color }] } : group) }))
@@ -91,13 +106,24 @@ export const useReviewStore = create<ReviewState>()(persist((set) => ({
   updateTag: (groupId, tagId, patch) => set((state) => ({ tagGroups: state.tagGroups.map((group) => group.id === groupId ? { ...group, tags: group.tags.map((tag) => tag.id === tagId ? { ...tag, ...patch, name: patch.name?.trim() || tag.name } : tag) } : group) })),
   deleteTag: (groupId, tagId) => set((state) => ({
     tagGroups: state.tagGroups.map((group) => group.id === groupId ? { ...group, tags: group.tags.filter((tag) => tag.id !== tagId) } : group),
-    documents: Object.fromEntries(Object.entries(state.documents).map(([key, document]) => [key, document.tagAssignments[groupId] === tagId ? { ...document, tagAssignments: Object.fromEntries(Object.entries(document.tagAssignments).filter(([id]) => id !== groupId)) } : document])),
+    documents: Object.fromEntries(Object.entries(state.documents).map(([key, document]) => {
+      const assigned = assignedTagIds(document.tagAssignments[groupId]).filter((id) => id !== tagId)
+      if (assigned.length === assignedTagIds(document.tagAssignments[groupId]).length) return [key, document]
+      const tagAssignments = { ...document.tagAssignments }
+      if (assigned.length) tagAssignments[groupId] = assigned
+      else delete tagAssignments[groupId]
+      return [key, { ...document, tagAssignments }]
+    })),
   })),
   assignTag: (key, trade, groupId, tagId) => set((state) => {
     const current = nextDocument(state.documents[key], trade)
     const tagAssignments = { ...current.tagAssignments }
-    if (tagId) tagAssignments[groupId] = tagId
-    else delete tagAssignments[groupId]
+    if (tagId) {
+      const selected = assignedTagIds(tagAssignments[groupId])
+      const next = selected.includes(tagId) ? selected.filter((id) => id !== tagId) : [...selected, tagId]
+      if (next.length) tagAssignments[groupId] = next
+      else delete tagAssignments[groupId]
+    } else delete tagAssignments[groupId]
     return { documents: { ...state.documents, [key]: { ...current, tagAssignments, trade, updatedAt: Date.now() } } }
   }),
 }), {

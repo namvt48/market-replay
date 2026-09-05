@@ -81,7 +81,7 @@ describe('EconomicCalendarPanel', () => {
     expect(await screen.findByText('ISM Manufacturing PMI')).toBeVisible()
     expect(screen.getByText('51.0')).toBeVisible()
     expect(screen.getByText('JOLTS Job Openings')).toBeVisible()
-    expect(screen.getByLabelText('Next event in 1h')).toHaveTextContent('NEXT · 1h')
+    expect(screen.getByLabelText('Next event in 1h')).toHaveTextContent('NEXT 1h')
     expect(screen.getByLabelText('Actual not released')).toHaveTextContent('—')
     expect(apiMocks.fetchEconWeek).toHaveBeenCalledWith(expect.objectContaining({
       at: week.cursorTs,

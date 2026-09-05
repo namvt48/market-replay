@@ -11,7 +11,7 @@ export type CalendarImportanceFilter = '' | 'medium' | 'high'
 
 export interface ReviewSource {
   id: string
-  type: 'session' | 'evaluation'
+  type: 'session' | 'evaluation' | 'live'
   title: string
 }
 
@@ -21,9 +21,11 @@ interface UiState {
   activePaneId: string
   activeTool: string | null
   maximizedPaneId: string | null
-  sidebarTab: 'sessions' | 'calendar' | 'evaluation' | 'review' | 'analytics'
+  sidebarTab: 'sessions' | 'calendar' | 'evaluation' | 'review' | 'analytics' | 'live'
   sidebarOpen: boolean
   reviewSource: ReviewSource | null
+  reviewOpen: boolean
+  reviewTradeId: string | null
   calendarImportance: CalendarImportanceFilter
   calendarCountry: string
   setActiveSymbol: (symbol: string) => void
@@ -34,7 +36,8 @@ interface UiState {
   clearMaximizedPane: () => void
   setSidebarTab: (tab: UiState['sidebarTab']) => void
   setSidebarOpen: (open: boolean) => void
-  openReview: (source: ReviewSource) => void
+  openReview: (source: ReviewSource, tradeId?: string) => void
+  closeReview: () => void
   setCalendarImportance: (importance: CalendarImportanceFilter) => void
   setCalendarCountry: (country: string) => void
 }
@@ -48,6 +51,8 @@ export const useUiStore = create<UiState>((set) => ({
   sidebarTab: 'sessions',
   sidebarOpen: true,
   reviewSource: null,
+  reviewOpen: false,
+  reviewTradeId: null,
   calendarImportance: 'high',
   calendarCountry: 'US',
   setActiveSymbol: (symbol) => set({ activeSymbol: symbol }),
@@ -58,7 +63,8 @@ export const useUiStore = create<UiState>((set) => ({
   clearMaximizedPane: () => set({ maximizedPaneId: null }),
   setSidebarTab: (sidebarTab) => set({ sidebarTab }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
-  openReview: (reviewSource) => set({ reviewSource, sidebarTab: 'review', sidebarOpen: true }),
+  openReview: (reviewSource, reviewTradeId: string | null = null) => set({ reviewSource, reviewTradeId, reviewOpen: true, sidebarOpen: false }),
+  closeReview: () => set({ reviewOpen: false, reviewTradeId: null }),
   setCalendarImportance: (calendarImportance) => set({ calendarImportance }),
   setCalendarCountry: (calendarCountry) => set({ calendarCountry }),
 }))

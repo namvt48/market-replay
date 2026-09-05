@@ -26,6 +26,9 @@ const snapshot = {
   eagerState: 'ready',
   viewportCachedBars: 0,
   replayMode: 'inactive',
+  sessionId: null as string | null,
+  sessionName: null as string | null,
+  sessionStatus: null as 'active' | 'paused' | 'stopped' | null,
 }
 vi.mock('../replay/use-replay', () => ({
   useReplaySnapshot: () => snapshot,
@@ -50,6 +53,9 @@ describe('TopBar timeframe visibility', () => {
     workspaceMocks.state.activePaneId = 'pane-1'
     useUiStore.setState({ activeTf: '1w' })
     useEvalStore.setState({ phase: 'idle' })
+    snapshot.sessionId = null
+    snapshot.sessionName = null
+    snapshot.sessionStatus = null
   })
   afterEach(cleanup)
 
@@ -69,6 +75,43 @@ describe('TopBar timeframe visibility', () => {
     expect(screen.getByRole('button', { name: '1w', pressed: true })).toHaveClass('text-ui-control')
     expect(screen.getByRole('button', { name: 'Start bar replay' })).toHaveClass('text-ui-control')
     expect(screen.queryByText(/bars · bounded/i)).not.toBeInTheDocument()
+  })
+
+  it('provides Analytics as a top-bar destination outside the sidebar', () => {
+    render(<TopBar />)
+
+    expect(screen.getByRole('link', { name: 'Open analytics' })).toHaveAttribute('href', '/analytics')
+  })
+
+  it('provides Live as a top-bar destination outside the sidebar', () => {
+    render(<TopBar />)
+
+    const live = screen.getByRole('link', { name: 'Open live accounts' })
+    expect(live).toHaveAttribute('href', '/live')
+    expect(live).toHaveTextContent('Live')
+  })
+
+  it('orders workspace tools, live execution, analytics, then utilities', () => {
+    render(<TopBar />)
+
+    const controls = screen.getByLabelText('Workspace controls')
+    const live = screen.getByRole('link', { name: 'Open live accounts' })
+    const analytics = screen.getByRole('link', { name: 'Open analytics' })
+    const settings = screen.getByRole('button', { name: 'Workspace settings' })
+    expect(live.compareDocumentPosition(analytics) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(analytics.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(controls).toContainElement(live)
+  })
+
+  it('shows the active replay session name in the top bar', () => {
+    snapshot.sessionId = 'session-1'
+    snapshot.sessionName = 'New York open'
+    snapshot.sessionStatus = 'active'
+
+    render(<TopBar />)
+
+    expect(screen.getByLabelText('Active replay session')).toHaveTextContent('New York open')
+    expect(screen.getByText('Session')).toBeVisible()
   })
 
   it('enters bar-selection mode from the Replay command', async () => {

@@ -18,6 +18,10 @@ interface ReviewTradesState {
 }
 
 function fromEngineTrade(source: ReviewSource, trade: EngineTrade | ClosedTrade): ReviewTrade {
+  // Live journal records are persisted as milliseconds, while replay/eval
+  // review data uses chart seconds.
+  const entryTs = source.type === 'live' ? Math.floor(trade.entryTs / 1000) : trade.entryTs
+  const exitTs = source.type === 'live' ? Math.floor(trade.exitTs / 1000) : trade.exitTs
   return {
     id: trade.id,
     sourceId: source.id,
@@ -25,8 +29,8 @@ function fromEngineTrade(source: ReviewSource, trade: EngineTrade | ClosedTrade)
     symbol: trade.symbol,
     side: trade.side,
     qty: trade.qty,
-    entryTs: trade.entryTs,
-    exitTs: trade.exitTs,
+    entryTs,
+    exitTs,
     entryPriceTicks: trade.entryPriceTicks,
     exitPriceTicks: trade.exitPriceTicks,
     realizedCents: trade.realizedCents,

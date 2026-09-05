@@ -15,6 +15,7 @@ function installAnalyticsApi(performance: AnalyticsPerformance = performanceFixt
     if (url.includes('/sources')) return jsonResponse({ items: [
       { id: 'source-1', type: 'session', title: 'Opening range', subtitle: '64 trades', status: 'paused', tradeCount: 64, startedAt: null, endedAt: null },
       { id: 'eval-2', type: 'evaluation', title: '#EVAL02', subtitle: '60 trades', status: 'stopped', tradeCount: 60, startedAt: null, endedAt: null },
+      { id: 'live-3', type: 'live', title: 'Live desk', subtitle: '18 trades', status: 'active', tradeCount: 18, startedAt: null, endedAt: null },
     ] })
     if (url.includes('/performance')) return jsonResponse(performance)
     if (url.includes('/drawdown')) return jsonResponse(drawdownFixture)
@@ -34,6 +35,25 @@ describe('AnalyticsScreen', () => {
   it('keeps the analytics scroll gutter stable while switching tabs', () => {
     render(<AnalyticsScreen />)
     expect(document.querySelector('.scrollbar-gutter-stable')).not.toBeNull()
+  })
+
+  it('lists available accounts and sessions when opened at the analytics root', async () => {
+    window.history.replaceState({}, '', '/analytics')
+    render(<AnalyticsScreen />)
+
+    expect(await screen.findByRole('heading', { name: 'Reports' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Back to chart' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: /Opening range/ })).toHaveAttribute('href', '/analytics?analytics=source-1&sourceType=session')
+    expect(screen.getByRole('link', { name: /#EVAL02/ })).toHaveAttribute('href', '/analytics?analytics=eval-2&sourceType=evaluation')
+    expect(screen.getByRole('link', { name: /Live desk/ })).toHaveAttribute('href', '/analytics?analytics=live-3&sourceType=live')
+    expect(screen.queryByRole('combobox', { name: 'Analytics source' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tablist', { name: 'Analytics views' })).not.toBeInTheDocument()
+  })
+
+  it('returns a selected report to the reports list', async () => {
+    render(<AnalyticsScreen />)
+
+    expect(await screen.findByRole('link', { name: 'Back to reports' })).toHaveAttribute('href', '/analytics')
   })
 
   it('renders performance data returned by the analytics API', async () => {
@@ -72,8 +92,10 @@ describe('AnalyticsScreen', () => {
     expect(source).toHaveValue('session:source-1')
     expect(screen.getByRole('group', { name: 'Eval accounts' })).toBeVisible()
     expect(screen.getByRole('group', { name: 'Replay sessions' })).toBeVisible()
+    expect(screen.getByRole('group', { name: 'Live accounts' })).toBeVisible()
     expect(screen.getByRole('option', { name: '#EVAL02' })).toBeVisible()
     expect(screen.getByRole('option', { name: 'Opening range' })).toBeVisible()
+    expect(screen.getByRole('option', { name: 'Live desk' })).toBeVisible()
   })
 
   it('renders exact account objectives for an evaluation analytics source', async () => {
@@ -109,6 +131,7 @@ describe('AnalyticsScreen', () => {
     render(<AnalyticsScreen />)
 
     expect(await screen.findByRole('heading', { name: 'Profit and loss' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Back to reports' })).toHaveAttribute('href', '/analytics')
     const objectivesHeading = screen.getByRole('heading', { name: 'Challenge objectives' })
     expect(objectivesHeading).toBeVisible()
     const objectives = objectivesHeading.closest('section')
@@ -130,7 +153,9 @@ describe('AnalyticsScreen', () => {
     expect(screen.getByRole('heading', { name: 'Average trade frequency' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
     await user.click(screen.getByRole('button', { name: 'Day' }))
-    expect(screen.getByRole('img', { name: /Evaluation profit and loss curve for Day period/ })).toBeVisible()
+    const chart = screen.getByRole('img', { name: /Evaluation profit and loss curve for Day period/ })
+    expect(chart).toBeVisible()
+    expect(chart).toHaveAttribute('viewBox', '0 0 1120 310')
   })
 
   it('loads drawdown only when its tab is selected', async () => {

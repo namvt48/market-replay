@@ -56,6 +56,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/sessions/{id}/trades", s.handleReplaceTrades)
 	mux.HandleFunc("GET /api/v1/sessions/{id}/trades", s.handleListTrades)
 
+	mux.HandleFunc("POST /api/v1/sessions/{id}/images", s.handleUploadJournalImage)
+	mux.HandleFunc("GET /api/v1/sessions/{id}/images", s.handleListJournalImages)
+	mux.HandleFunc("GET /api/v1/images/{id}", s.handleGetJournalImage)
+	mux.HandleFunc("DELETE /api/v1/images/{id}", s.handleDeleteJournalImage)
+
 	mux.HandleFunc("GET /api/v1/watchlist", s.handleGetWatchlist)
 	mux.HandleFunc("PUT /api/v1/watchlist", s.handlePutWatchlist)
 
@@ -99,6 +104,10 @@ func (s *Server) Handler() http.Handler {
 		// /start/, and both beat the "/" wildcard regardless of order.
 		mux.HandleFunc("GET /start/eval", s.handleSPA)
 		mux.HandleFunc("GET /start/", s.handleSPA)
+		mux.HandleFunc("GET /analytics", s.handleSPA)
+		mux.HandleFunc("GET /analytics/", s.handleSPA)
+		mux.HandleFunc("GET /live", s.handleSPA)
+		mux.HandleFunc("GET /live/", s.handleSPA)
 	}
 
 	return withCompression(withLogging(mux))

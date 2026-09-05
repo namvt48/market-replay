@@ -8,6 +8,7 @@ type CalendarView = 'month' | 'year'
 interface PerformanceCalendarProps {
   entries: CalendarDatum[]
   initialDate: string
+  onSelectDate?: (date: string) => void
 }
 
 interface CalendarCursor {
@@ -92,9 +93,10 @@ interface MonthGridProps {
   month: number
   entries: Map<string, CalendarDatum>
   metric: CalendarMetric
+  onSelectDate?: (date: string) => void
 }
 
-function MonthGrid({ year, month, entries, metric }: MonthGridProps): ReactElement {
+function MonthGrid({ year, month, entries, metric, onSelectDate }: MonthGridProps): ReactElement {
   const cells = useMemo(() => buildMonthCells(year, month, entries), [entries, month, year])
   return (
     <div className="min-w-0 sm:min-w-[760px]" role="group" aria-label={`${monthNames[month]} ${year} performance calendar`}>
@@ -109,18 +111,20 @@ function MonthGrid({ year, month, entries, metric }: MonthGridProps): ReactEleme
             ? `${cell.date}, ${tradeLabel(cell.entry.trades)}, ${metric === 'dollar' ? 'profit' : metric === 'percent' ? 'profit percent' : 'risk reward'} ${value}`
             : cell.date
           return (
-            <div
+            <button
               key={cell.date}
-              role="group"
-              aria-label={label}
-              className={`flex min-h-20 min-w-0 flex-col justify-between rounded-control border p-1 transition-colors hover:brightness-110 sm:min-h-24 sm:p-2.5 ${cellTone(cell.entry, cell.outside)}`}
+              type="button"
+              disabled={!showData || !onSelectDate}
+              onClick={() => onSelectDate?.(cell.date)}
+              aria-label={showData ? `Open ${label}` : label}
+              className={`flex min-h-20 min-w-0 flex-col justify-between rounded-control border p-1 text-left transition-colors hover:brightness-110 disabled:cursor-default disabled:hover:brightness-100 sm:min-h-24 sm:p-2.5 ${cellTone(cell.entry, cell.outside)}`}
             >
               <div className="flex items-start justify-between gap-1 text-[10px] sm:gap-2 sm:text-ui-body">
                 <span className={showData ? 'min-w-0 truncate text-muted' : 'text-transparent'}>{showData && cell.entry ? <><span className="sm:hidden">{cell.entry.trades}t</span><span className="hidden sm:inline">{tradeLabel(cell.entry.trades)}</span></> : '—'}</span>
                 <strong className={`shrink-0 font-mono tabular-nums ${cell.outside ? 'text-dim' : 'text-ink'}`}>{cell.day}</strong>
               </div>
               {showData && cell.entry ? <strong className="min-w-0 truncate font-mono text-[10px] font-semibold tabular-nums sm:text-ui-title"><span className="sm:hidden">{compactMetricValue(cell.entry, metric)}</span><span className="hidden sm:inline">{value}</span></strong> : null}
-            </div>
+            </button>
           )
         })}
       </div>
@@ -132,9 +136,10 @@ interface YearGridProps {
   year: number
   entries: Map<string, CalendarDatum>
   onOpenMonth: (month: number) => void
+  onSelectDate?: (date: string) => void
 }
 
-function YearGrid({ year, entries, onOpenMonth }: YearGridProps): ReactElement {
+function YearGrid({ year, entries, onOpenMonth, onSelectDate }: YearGridProps): ReactElement {
   return (
     <div className="grid gap-x-7 gap-y-6 md:grid-cols-2 xl:grid-cols-4" aria-label={`${year} yearly performance calendar`}>
       {monthNames.map((monthName, month) => {
@@ -152,7 +157,7 @@ function YearGrid({ year, entries, onOpenMonth }: YearGridProps): ReactElement {
                     key={cell.date}
                     type="button"
                     aria-label={`Open ${monthName} ${cell.day}, ${year}; ${tradeLabel(cell.entry?.trades ?? 0)}`}
-                    onClick={() => onOpenMonth(month)}
+                    onClick={() => onSelectDate ? onSelectDate(cell.date) : onOpenMonth(month)}
                     className={`${sharedClass} transition-colors hover:brightness-125`}
                   >
                     {cell.day}
@@ -167,7 +172,7 @@ function YearGrid({ year, entries, onOpenMonth }: YearGridProps): ReactElement {
   )
 }
 
-export function PerformanceCalendar({ entries, initialDate }: PerformanceCalendarProps): ReactElement {
+export function PerformanceCalendar({ entries, initialDate, onSelectDate }: PerformanceCalendarProps): ReactElement {
   const initialCursor = useMemo(() => parseDateKey(initialDate), [initialDate])
   const [cursor, setCursor] = useState<CalendarCursor>(initialCursor)
   const [metric, setMetric] = useState<CalendarMetric>('dollar')
@@ -227,8 +232,8 @@ export function PerformanceCalendar({ entries, initialDate }: PerformanceCalenda
 
         <div className="mt-5 overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-active" tabIndex={view === 'month' ? 0 : undefined} role={view === 'month' ? 'region' : undefined} aria-label={view === 'month' ? 'Scrollable monthly performance calendar' : undefined}>
           {view === 'month'
-            ? <MonthGrid year={cursor.year} month={cursor.month} entries={entryMap} metric={metric} />
-            : <YearGrid year={cursor.year} entries={entryMap} onOpenMonth={openMonth} />}
+            ? <MonthGrid year={cursor.year} month={cursor.month} entries={entryMap} metric={metric} onSelectDate={onSelectDate} />
+            : <YearGrid year={cursor.year} entries={entryMap} onOpenMonth={openMonth} onSelectDate={onSelectDate} />}
         </div>
       </div>
     </section>

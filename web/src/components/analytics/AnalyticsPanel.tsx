@@ -46,7 +46,7 @@ function SourceGroup({ label, countLabel, sources, evalAccounts }: SourceGroupPr
           const account = source.type === 'evaluation' ? evalAccounts.get(source.id) ?? null : null
           const name = account ? evaluationDisplayName(account) : source.title
           const status = source.type === 'evaluation' ? (account ? evalStatus(account) : source.status.toUpperCase()) : source.status.toUpperCase()
-          const type = source.type === 'evaluation' ? 'Evaluation' : 'Replay session'
+          const type = source.type === 'evaluation' ? 'Evaluation' : source.type === 'live' ? 'Live account' : 'Replay session'
           const context = sourceContext(source)
           return (
             <li key={`${source.type}-${source.id}`}>
@@ -77,8 +77,9 @@ export function AnalyticsPanel() {
     ? {
         evaluations: sources.data.filter((source) => source.type === 'evaluation'),
         sessions: sources.data.filter((source) => source.type === 'session'),
+        live: sources.data.filter((source) => source.type === 'live'),
       }
-    : { evaluations: [], sessions: [] }
+    : { evaluations: [], sessions: [], live: [] }
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex min-h-11 shrink-0 items-center border-b border-line px-3">
@@ -91,6 +92,7 @@ export function AnalyticsPanel() {
         {sources.status === 'success' ? <>
           <SourceGroup label="Eval accounts" countLabel="account" sources={grouped.evaluations} evalAccounts={evalAccounts} />
           <SourceGroup label="Replay sessions" countLabel="session" sources={grouped.sessions} evalAccounts={evalAccounts} />
+          <SourceGroup label="Live accounts" countLabel="account" sources={grouped.live} evalAccounts={evalAccounts} />
         </> : null}
       </div>
     </div>

@@ -15,7 +15,7 @@ const sessionSchema = z.object({
   id: z.string(), name: z.string().default(''), symbol: z.string(), tf: timeframeSchema,
   startTs: z.number(), cursorTs: z.number(), equityCents: z.number(),
   status: z.enum(['active', 'paused', 'stopped']),
-  kind: z.enum(['replay', 'eval']),
+  kind: z.enum(['replay', 'eval', 'live']),
   config: z.record(z.string(), z.unknown()).nullable(), createdAt: z.number(), updatedAt: z.number(),
   deletedAt: z.number().optional(),
 })
@@ -297,7 +297,7 @@ export async function putWatchlist(symbols: string[]): Promise<string[]> {
 
 export async function createSession(
   symbol: string, tf: Timeframe, startTs: number,
-  opts?: { kind?: 'replay' | 'eval'; initialBalanceCents?: number; name?: string },
+  opts?: { kind?: 'replay' | 'eval' | 'live'; initialBalanceCents?: number; name?: string },
 ): Promise<string> {
   const response = await checkedFetch('/api/v1/sessions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -358,6 +358,43 @@ export async function putTrades(sessionId: string, trades: ClosedTrade[]): Promi
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(trades),
   })
   return z.array(tradeSchema).parse(await response.json()) as ClosedTrade[]
+}
+
+const journalImageMetaSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  mime: z.string(),
+  size: z.number(),
+  caption: z.string(),
+  createdAt: z.string(),
+})
+
+export interface JournalImageMeta {
+  id: string
+  sessionId: string
+  mime: string
+  size: number
+  caption: string
+  createdAt: string
+}
+
+export async function uploadJournalImage(sessionId: string, file: File): Promise<string> {
+  const form = new FormData()
+  form.append('image', file, file.name)
+  const response = await checkedFetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/images`, {
+    method: 'POST',
+    body: form,
+  })
+  return z.object({ id: z.string() }).parse(await response.json()).id
+}
+
+export async function listJournalImages(sessionId: string): Promise<JournalImageMeta[]> {
+  const response = await checkedFetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/images`)
+  return z.array(journalImageMetaSchema).parse(await response.json()) as JournalImageMeta[]
+}
+
+export async function deleteJournalImage(id: string): Promise<void> {
+  await checkedFetch(`/api/v1/images/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export async function fetchDrawings(bucket: string, symbol: string, timeframes: Timeframe[], cursorTs?: number): Promise<PersistedDrawing[]> {
