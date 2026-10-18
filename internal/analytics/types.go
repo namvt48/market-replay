@@ -198,24 +198,24 @@ type DayStat struct {
 // MonthStat is one calendar-month row (rule 15) — sparse, only months with
 // at least one trade.
 type MonthStat struct {
-	Month              string  `json:"month"` // "YYYY-MM"
-	MonthlyPnl         float64 `json:"monthlyPnl"`
-	MonthlyGainPercent float64 `json:"monthlyGainPercent"`
-	EndingBalance      float64 `json:"endingBalance"`
-	TotalTrades        int     `json:"totalTrades"`
+	Month              string   `json:"month"` // "YYYY-MM"
+	MonthlyPnl         float64  `json:"monthlyPnl"`
+	MonthlyGainPercent *float64 `json:"monthlyGainPercent"`
+	EndingBalance      float64  `json:"endingBalance"`
+	TotalTrades        int      `json:"totalTrades"`
 }
 
 // CalendarDay is one calendar-day row (rule 16) — sparse, only days with at
 // least one trade.
 type CalendarDay struct {
-	Date          string  `json:"date"` // "YYYY-MM-DD"
-	Trades        int     `json:"trades"`
-	Wins          int     `json:"wins"`
-	Losses        int     `json:"losses"`
-	Breakeven     int     `json:"breakeven"`
-	Pnl           float64 `json:"pnl"`
-	PnlPercent    float64 `json:"pnlPercent"`
-	EndingBalance float64 `json:"endingBalance"`
+	Date          string   `json:"date"` // "YYYY-MM-DD"
+	Trades        int      `json:"trades"`
+	Wins          int      `json:"wins"`
+	Losses        int      `json:"losses"`
+	Breakeven     int      `json:"breakeven"`
+	Pnl           float64  `json:"pnl"`
+	PnlPercent    *float64 `json:"pnlPercent"`
+	EndingBalance float64  `json:"endingBalance"`
 }
 
 // Frequency holds rule 17.

@@ -42,7 +42,7 @@ func TestWalkForward_ChronologicalSplitAndWindows(t *testing.T) {
 	if result.OutOfSample.Trades != 1 || result.OutOfSample.ExpectancyR != 2 {
 		t.Errorf("outOfSample = %+v, want {trades:1 expectancyR:2}", result.OutOfSample)
 	}
-	if result.RetentionRatio != 2 {
+	if result.RetentionRatio == nil || *result.RetentionRatio != 2 {
 		t.Errorf("retentionRatio = %v, want 2", result.RetentionRatio)
 	}
 	// No trades/MarketData supplied -> nothing to re-walk.
@@ -74,20 +74,20 @@ func TestWalkForward_EmptyInputIsEmptyOutOfSample(t *testing.T) {
 	if result.InSample.Trades != 0 {
 		t.Errorf("inSample.trades = %d, want 0", result.InSample.Trades)
 	}
-	if result.RetentionRatio != 0 {
-		t.Errorf("retentionRatio = %v, want 0 (no data at all)", result.RetentionRatio)
+	if result.RetentionRatio != nil {
+		t.Errorf("retentionRatio = %v, want nil when in-sample expectancy is zero", *result.RetentionRatio)
 	}
 }
 
-func TestWalkForward_RetentionRatioZeroWhenInSampleNearZero(t *testing.T) {
+func TestWalkForward_RetentionRatioUndefinedWhenInSampleNearZero(t *testing.T) {
 	result, _, err := AnalyzeWalkForward(context.Background(), WalkForwardRequest{
 		R: []float64{0, 0, 0, 0, 1}, ExitTs: []int64{1, 2, 3, 4, 5},
 	})
 	if err != nil {
 		t.Fatalf("AnalyzeWalkForward: %v", err)
 	}
-	if result.RetentionRatio != 0 {
-		t.Errorf("retentionRatio = %v, want 0 (inSample expectancy ~0)", result.RetentionRatio)
+	if result.RetentionRatio != nil {
+		t.Errorf("retentionRatio = %v, want nil (inSample expectancy ~0)", *result.RetentionRatio)
 	}
 }
 
@@ -277,7 +277,7 @@ func TestWalkForward_NoNaNOrInf(t *testing.T) {
 			t.Fatalf("AnalyzeWalkForward: %v", err)
 		}
 		if isNaNOrInf(result.InSample.ExpectancyR) || isNaNOrInf(result.OutOfSample.ExpectancyR) ||
-			isNaNOrInf(result.ExpectancyDeltaR) || isNaNOrInf(result.RetentionRatio) {
+			isNaNOrInf(result.ExpectancyDeltaR) || (result.RetentionRatio != nil && isNaNOrInf(*result.RetentionRatio)) {
 			t.Errorf("len(r)=%d produced NaN/Inf: %+v", len(r), result)
 		}
 		for _, w := range result.Windows {

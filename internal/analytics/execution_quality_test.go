@@ -1,6 +1,7 @@
 package analytics
 
 import (
+	"math"
 	"testing"
 
 	"market-replay/internal/model"
@@ -185,5 +186,32 @@ func TestExecutionQuality_NilMarketDataExcludesAllAndAudits(t *testing.T) {
 	}
 	if isNaNOrInf(result.AverageCostR) {
 		t.Errorf("averageCostR is NaN/Inf with nil MarketData: %v", result.AverageCostR)
+	}
+}
+
+func TestExecutionQuality_RestoresRecordedFeesAndUsesPerTradeStressWinBoundary(t *testing.T) {
+	trades := []model.Trade{
+		newTrade("fee-long", "long", 0, 1000, 1000, 0,
+			withInitialStop(980), withRMultiple(0.8), withFeesCents(200)),
+		newTrade("short-no-fee", "short", 0, 1000, 1000, 0,
+			withInitialStop(1020), withRMultiple(0.05)),
+		newTrade("higher-risk-no-fee", "long", 0, 1000, 1000, 0,
+			withInitialStop(900), withRMultiple(0.2)),
+	}
+	result, _ := AnalyzeExecutionQuality(trades, &fakeMarketData{tickValue: map[string]float64{"NQ": 500}}, ExecutionCostModel{})
+	if result.GrossExpectancyR != (0.82+0.05+0.2)/3 {
+		t.Errorf("grossExpectancyR = %v, want %v", result.GrossExpectancyR, (0.82+0.05+0.2)/3)
+	}
+	if result.AverageCostR != 0.02/3 {
+		t.Errorf("averageCostR = %v, want %v", result.AverageCostR, 0.02/3)
+	}
+	if math.Abs(result.NetExpectancyR-(0.8+0.05+0.2)/3) > 1e-12 {
+		t.Errorf("netExpectancyR = %v, want persisted mean", result.NetExpectancyR)
+	}
+	if result.NetWinRate != 100 {
+		t.Errorf("netWinRate = %v, want 100%% (zero extra stress)", result.NetWinRate)
+	}
+	if result.GrossExpectancyR-result.AverageCostR != result.NetExpectancyR {
+		t.Errorf("gross minus cost = %v, net = %v", result.GrossExpectancyR-result.AverageCostR, result.NetExpectancyR)
 	}
 }

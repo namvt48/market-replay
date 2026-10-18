@@ -11,7 +11,7 @@ import (
 // version behind both the Edge and Execution & Discipline reports — a
 // stable string a test or the FE can pin against, per the doc's
 // requirement that responses "identify their own data/formula version".
-const DecisionIntelligenceCalculationVersion = "decision-intelligence-v1"
+const DecisionIntelligenceCalculationVersion = "decision-intelligence-v2"
 
 // DecisionSourceSummary is the "source" envelope shared by the Edge and
 // Execution & Discipline reports — id/type/title/tradeCount, distinct

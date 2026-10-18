@@ -20,7 +20,8 @@ export interface ExecutionQuality {
   averageCaptureRatio: number
   grossExpectancyR: number
   netExpectancyR: number
-  breakevenNet: number
+  /** Fraction in [0, 1], calculated as the mean indicator(stressNetR > 0). */
+  netWinRate: number
   edgeAfterCosts: boolean
   averageCostR: number
   exitReasonBreakdown: Record<TradeExitReason, number>
@@ -39,8 +40,15 @@ function initialRiskTicks(trade: EngineTrade): number | null {
 export function analyzeExecutionQuality(trades: EngineTrade[], costModel: ExecutionCostModel): ExecutionQuality {
   const candidates = trades.flatMap((trade) => {
     const risk = initialRiskTicks(trade)
-    if (risk === null || trade.rMultiple === null) return []
-    return [{ trade, realizedR: trade.rMultiple, mfeR: Math.max(0, trade.mfeTicks / risk), risk }]
+    if (risk === null || trade.rMultiple === null || !Number.isFinite(trade.rMultiple) ||
+      !Number.isFinite(costModel.tickValueCents) || costModel.tickValueCents <= 0 || trade.qty <= 0) return []
+    const riskCents = risk * costModel.tickValueCents * trade.qty
+    if (!Number.isFinite(riskCents) || riskCents <= 0) return []
+    const actualFeesR = Math.max(0, trade.feesCents) / riskCents
+    return [{
+      trade, realizedR: trade.rMultiple, grossR: trade.rMultiple + actualFeesR,
+      mfeR: Math.max(0, trade.mfeTicks / risk), risk, actualFeesR,
+    }]
   })
   const mfeDistribution = candidates.map((item) => item.mfeR).toSorted((a, b) => a - b)
   const tradeQuality = candidates.map((item) => {
@@ -53,15 +61,15 @@ export function analyzeExecutionQuality(trades: EngineTrade[], costModel: Execut
       captureRatio: item.mfeR === 0 ? 0 : item.realizedR / item.mfeR,
     }
   })
-  const grossExpectancyR = average(candidates.map((item) => item.realizedR))
+  const grossExpectancyR = average(candidates.map((item) => item.grossR))
   const costRValues = candidates.map((item) => {
-    const marketCostCents = (Math.max(0, costModel.spreadTicks) + Math.max(0, costModel.slippageTicks)) * Math.max(0, costModel.tickValueCents) * item.trade.qty
-    const riskCents = item.risk * Math.max(0, costModel.tickValueCents) * item.trade.qty
-    return riskCents === 0 ? 0 : (Math.max(0, item.trade.feesCents) + marketCostCents) / riskCents
+    const extraCostR = (Math.max(0, costModel.spreadTicks) + Math.max(0, costModel.slippageTicks)) / item.risk
+    return item.actualFeesR + extraCostR
   })
+  const netRs = candidates.map((item, index) => item.grossR - (costRValues[index] ?? 0))
   const averageCostR = average(costRValues)
-  const netExpectancyR = grossExpectancyR - averageCostR
-  const wins = candidates.filter((item) => item.realizedR - averageCostR > 0).length
+  const netExpectancyR = average(netRs)
+  const wins = netRs.filter((netR) => netR > 0).length
   const exitReasonBreakdown: Record<TradeExitReason, number> = { manual: 0, stopLoss: 0, takeProfit: 0 }
   trades.forEach((trade) => { exitReasonBreakdown[trade.exitReason] += 1 })
   return {
@@ -70,7 +78,7 @@ export function analyzeExecutionQuality(trades: EngineTrade[], costModel: Execut
     averageCaptureRatio: average(tradeQuality.map((item) => item.captureRatio)),
     grossExpectancyR,
     netExpectancyR,
-    breakevenNet: candidates.length === 0 ? 0 : wins / candidates.length,
+    netWinRate: candidates.length === 0 ? 0 : wins / candidates.length,
     edgeAfterCosts: netExpectancyR > 0,
     averageCostR,
     exitReasonBreakdown,

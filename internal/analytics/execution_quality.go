@@ -102,9 +102,18 @@ type ExecutionAuditCounts struct {
 type executionCandidate struct {
 	trade          model.Trade
 	realizedR      float64
+	grossR         float64
 	mfeR           float64
 	riskTicks      int64
 	tickValueCents float64
+}
+
+func isFinite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func isFinitePositive(value float64) bool {
+	return value > 0 && isFinite(value)
 }
 
 func newMfeHistogram() []MfeHistogramBin {
@@ -140,15 +149,15 @@ func addToMfeHistogram(bins []MfeHistogramBin, mfeR float64) {
 
 // AnalyzeExecutionQuality measures how much of each trade's available MFE
 // was captured (tie policy for the exit percentile: a trade's realized R
-// counts every MFE-distribution member <= it, inclusive), then models fees
-// + spread + slippage to report expectancy net of costs. Only trades with
-// a valid initial risk (the trade's own InitialStopTicks — policy: never a
-// market-data-derived risk) and a persisted RMultiple are included; a
-// trade whose own symbol has no resolvable tick value is excluded and
-// audited rather than silently costed at 0. The returned result's
-// CostModel carries only TickValueBySymbol (every symbol this call actually
-// resolved); the caller (BuildExecutionReport) fills in the remaining
-// display fields (TickValueCents/SpreadTicks/SlippageTicks/FeesIncluded).
+// counts every MFE-distribution member <= it, inclusive). Persisted R is net
+// of recorded commission; gross expectancy restores that commission before
+// costs are applied. Spread/slippage are hypothetical additional round-trip
+// stress costs on top of recorded fills (which already include historical
+// execution slippage). Only trades with a valid initial risk (the trade's own
+// InitialStopTicks) and persisted RMultiple are included; trades with an
+// invalid tick value or no resolvable symbol cost config are excluded.
+// CostModel carries the tick values actually used; BuildExecutionReport adds
+// display fields.
 func AnalyzeExecutionQuality(trades []model.Trade, md MarketData, costModel ExecutionCostModel) (ExecutionQuality, ExecutionAuditCounts) {
 	var candidates []executionCandidate
 	var audit ExecutionAuditCounts
@@ -163,16 +172,23 @@ func AnalyzeExecutionQuality(trades []model.Trade, md MarketData, costModel Exec
 		if md != nil {
 			tickValueCents, resolved = md.TickValueCents(t.Symbol)
 		}
-		if !resolved {
+		if !resolved || !isFinitePositive(tickValueCents) || t.Qty <= 0 {
 			audit.ExcludedNoCostConfig++
 			continue
 		}
+		riskCents := float64(risk) * tickValueCents * float64(t.Qty)
+		if !isFinitePositive(riskCents) || !isFinite(*t.RMultiple) {
+			audit.ExcludedNoInitialRisk++
+			continue
+		}
+		actualFeesR := math.Max(0, float64(t.FeesCents)) / riskCents
 		mfeR := float64(t.MfeTicks) / float64(risk)
 		if mfeR < 0 {
 			mfeR = 0
 		}
 		candidates = append(candidates, executionCandidate{
-			trade: t, realizedR: *t.RMultiple, mfeR: mfeR, riskTicks: risk, tickValueCents: tickValueCents,
+			trade: t, realizedR: *t.RMultiple, grossR: *t.RMultiple + actualFeesR,
+			mfeR: mfeR, riskTicks: risk, tickValueCents: tickValueCents,
 		})
 	}
 
@@ -209,26 +225,26 @@ func AnalyzeExecutionQuality(trades []model.Trade, md MarketData, costModel Exec
 		addToMfeHistogram(histogram, c.mfeR)
 	}
 
-	grossExpectancyR := average(realizedRs)
-
+	grossRs := make([]float64, len(candidates))
 	costRValues := make([]float64, len(candidates))
-	for i, c := range candidates {
-		marketCostCents := (math.Max(0, costModel.SpreadTicks) + math.Max(0, costModel.SlippageTicks)) * math.Max(0, c.tickValueCents) * float64(c.trade.Qty)
-		riskCents := float64(c.riskTicks) * math.Max(0, c.tickValueCents) * float64(c.trade.Qty)
-		if riskCents == 0 {
-			continue
-		}
-		costRValues[i] = (math.Max(0, float64(c.trade.FeesCents)) + marketCostCents) / riskCents
-	}
-	averageCostR := average(costRValues)
-	netExpectancyR := grossExpectancyR - averageCostR
-
+	netRs := make([]float64, len(candidates))
 	var wins int
-	for _, c := range candidates {
-		if c.realizedR-averageCostR > 0 {
+	for i, c := range candidates {
+		marketCostCents := (math.Max(0, costModel.SpreadTicks) + math.Max(0, costModel.SlippageTicks)) * c.tickValueCents * float64(c.trade.Qty)
+		riskCents := float64(c.riskTicks) * c.tickValueCents * float64(c.trade.Qty)
+		actualFeesR := math.Max(0, float64(c.trade.FeesCents)) / riskCents
+		extraCostR := marketCostCents / riskCents
+		grossRs[i] = c.grossR
+		costRValues[i] = actualFeesR + extraCostR
+		netRs[i] = c.grossR - costRValues[i]
+		if netRs[i] > 0 {
 			wins++
 		}
 	}
+	grossExpectancyR := average(grossRs)
+	averageCostR := average(costRValues)
+	netExpectancyR := average(netRs)
+
 	var netWinRate float64
 	if len(candidates) > 0 {
 		netWinRate = float64(wins) / float64(len(candidates)) * 100

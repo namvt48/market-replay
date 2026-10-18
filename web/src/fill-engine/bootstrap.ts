@@ -7,7 +7,7 @@ export interface ConfidenceInterval {
 export interface BootstrapResult {
   expectancy: ConfidenceInterval
   maxDrawdown: ConfidenceInterval
-  sharpe: ConfidenceInterval
+  tradeRSharpe: ConfidenceInterval | null
   iterations: number
   confidence: number
   seed: number
@@ -43,12 +43,12 @@ function maxDrawdown(values: number[]): number {
   return maximum
 }
 
-function sharpe(values: number[]): number {
-  if (values.length < 2) return 0
+function sharpe(values: number[]): number | null {
+  if (values.length < 2) return null
   const mean = average(values)
   const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1)
   const deviation = Math.sqrt(Math.max(0, variance))
-  return deviation === 0 ? 0 : mean / deviation * Math.sqrt(values.length)
+  return deviation === 0 ? null : mean / deviation
 }
 
 function quantile(sorted: number[], percentile: number): number {
@@ -73,7 +73,7 @@ export function bootstrapAnalytics(values: number[], options: BootstrapOptions =
   const seed = options.seed ?? 20_250_816
   if (r.length === 0) {
     const empty = { median: 0, lower: 0, upper: 0 }
-    return { expectancy: empty, maxDrawdown: empty, sharpe: empty, iterations, confidence, seed }
+    return { expectancy: empty, maxDrawdown: empty, tradeRSharpe: null, iterations, confidence, seed }
   }
   const random = seededRandom(seed)
   const expectancy: number[] = []
@@ -84,12 +84,13 @@ export function bootstrapAnalytics(values: number[], options: BootstrapOptions =
     for (let index = 0; index < r.length; index += 1) sample[index] = r[Math.floor(random() * r.length)] ?? 0
     expectancy.push(average(sample))
     drawdown.push(maxDrawdown(sample))
-    sharpeValues.push(sharpe(sample))
+    const estimate = sharpe(sample)
+    if (estimate !== null) sharpeValues.push(estimate)
   }
   return {
     expectancy: interval(expectancy, confidence),
     maxDrawdown: interval(drawdown, confidence),
-    sharpe: interval(sharpeValues, confidence),
+    tradeRSharpe: sharpeValues.length === 0 ? null : interval(sharpeValues, confidence),
     iterations,
     confidence,
     seed,

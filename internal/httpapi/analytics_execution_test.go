@@ -59,7 +59,7 @@ func TestHandleAnalyticsExecution_Success(t *testing.T) {
 	if resp.Source.ID != id || resp.Source.Type != "session" || resp.Source.TradeCount != 2 {
 		t.Errorf("source = %+v", resp.Source)
 	}
-	if resp.CalculationVersion != "decision-intelligence-v1" {
+	if resp.CalculationVersion != "decision-intelligence-v2" {
 		t.Errorf("calculationVersion = %q", resp.CalculationVersion)
 	}
 	if resp.Audit.TotalTrades != 2 {

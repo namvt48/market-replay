@@ -92,10 +92,10 @@ export function ExecutionDisciplineTab({ report }: ExecutionDisciplineTabProps) 
             <div>
               <SignalBadge label={model.execution.edgeAfterCosts ? 'Edge survives modeled costs' : 'Costs consume the edge'} tone={model.execution.edgeAfterCosts ? 'positive' : 'negative'} />
               <h3 className="mt-4 text-[25px] font-semibold leading-8 tracking-[-0.025em] text-white">Outcome, process, and behavior—reviewed separately.</h3>
-              <p className="mt-3 max-w-[68ch] text-[13px] leading-6 text-[#aeb5bf]">Fees, spread, and slippage are modeled server-side, then plan changes and post-loss behavior are audited across all {report.source.tradeCount} trades.</p>
+              <p className="mt-3 max-w-[68ch] text-[13px] leading-6 text-[#aeb5bf]">Recorded commissions are included once. Additional spread and slippage are hypothetical round-trip stress costs on top of actual fills; historical fills already include execution slippage. Plan changes and post-loss behavior are audited across all {report.source.tradeCount} trades.</p>
             </div>
             <dl className="grid grid-cols-2 gap-x-6 gap-y-5 border-t border-[#343940] pt-6 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0">
-              <DecisionMetric label="Net expectancy" value={`${model.execution.netExpectancyR.toFixed(3)}R`} tone={model.execution.edgeAfterCosts ? 'positive' : 'negative'} />
+              <DecisionMetric label="Stress net expectancy" value={`${model.execution.netExpectancyR.toFixed(3)}R`} tone={model.execution.edgeAfterCosts ? 'positive' : 'negative'} />
               <DecisionMetric label="Plan adherence" value={percent(model.decision.planAdherenceScore)} tone={model.decision.planAdherenceScore >= 80 ? 'positive' : 'warning'} />
               <DecisionMetric label="Tilt pressure" value={percent(model.tilt.tiltScore)} tone={model.tilt.tiltScore <= 25 ? 'positive' : 'warning'} />
               <DecisionMetric label="Behavior profile" value={profile.title} note="Derived from loss-response telemetry" />
@@ -117,9 +117,9 @@ export function ExecutionDisciplineTab({ report }: ExecutionDisciplineTabProps) 
             <DecisionPanel className="grid content-start gap-6 p-5 sm:p-6">
               <DecisionMetric label="Average exit percentile" value={percent(model.execution.averageMfePercentile)} note="Exit position inside strategy MFE distribution" tone="blue" />
               <DecisionMetric label="Average capture ratio" value={percent(model.execution.averageCaptureRatio * 100)} note="Realized R divided by available MFE" tone={model.execution.averageCaptureRatio >= 0.55 ? 'positive' : 'warning'} />
-              <DecisionMetric label="Gross expectancy" value={`${model.execution.grossExpectancyR.toFixed(3)}R`} />
-              <DecisionMetric label="Modeled cost" value={`−${model.execution.averageCostR.toFixed(3)}R`} note="Fees + spread + slippage per trade" tone="negative" />
-              <DecisionMetric label="Net win rate" value={percent(model.execution.netWinRate)} />
+              <DecisionMetric label="Historical gross expectancy" value={`${model.execution.grossExpectancyR.toFixed(3)}R`} note="Before recorded commission; actual fills still include historical slippage" />
+              <DecisionMetric label="Modeled costs" value={`−${model.execution.averageCostR.toFixed(3)}R`} note="Recorded commission + hypothetical additional spread/slippage stress" tone="negative" />
+              <DecisionMetric label="Stress net win rate" value={percent(model.execution.netWinRate)} note="Trades remaining profitable after additional modeled execution stress" />
             </DecisionPanel>
           </div>
         </section>

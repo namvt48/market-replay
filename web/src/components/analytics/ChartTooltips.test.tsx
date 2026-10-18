@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DrawdownChart } from './AdvancedAnalyticsCharts'
+import { DrawdownChart, HistogramChart } from './AdvancedAnalyticsCharts'
 import { FrequencyChart, LineChart, SplitBars, VerticalBars } from './InteractiveAnalyticsCharts'
 
 afterEach(cleanup)
@@ -60,5 +60,22 @@ describe('analytics chart tooltips', () => {
     const chart = screen.getByRole('img', { name: 'Trades per day' })
     const labels = [...chart.querySelectorAll('text')].map((item) => item.textContent)
     expect(labels.slice(0, 5)).toEqual(['0', '1', '2', '3', '4'])
+  })
+
+  it('keeps singleton drawdown and MAE samples from filling the chart and uses distinct integer count ticks', () => {
+    const { rerender } = render(<DrawdownChart points={[
+      { date: 'Trade 1', equity: 98_000, peak: 100_000, dollars: -2_000, percent: -2 },
+    ]} mode="dollar" />)
+    const drawdown = screen.getByRole('img', { name: /Drawdown on equity/ })
+    const drawdownBar = drawdown.querySelector('rect')
+    expect(Number(drawdownBar?.getAttribute('x'))).toBeGreaterThanOrEqual(106)
+    expect(Number(drawdownBar?.getAttribute('width'))).toBeLessThanOrEqual(28)
+
+    rerender(<HistogramChart bins={[{ label: '0–0.5', value: 1 }]} />)
+    const histogram = screen.getByRole('img', { name: /Maximum adverse excursion/ })
+    const histogramBar = histogram.querySelector('rect')
+    expect(Number(histogramBar?.getAttribute('width'))).toBeLessThanOrEqual(80)
+    const countTicks = [...histogram.querySelectorAll('text')].slice(0, 2).map((item) => item.textContent)
+    expect(countTicks).toEqual(['1', '0'])
   })
 })

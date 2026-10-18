@@ -15,4 +15,11 @@ describe('calculateKellySizing', () => {
     expect(sizing?.suggestedRiskPerTrade).toBeLessThanOrEqual(0.02)
     expect(sizing?.fraction).toBe(0.25)
   })
+
+  it('uses average win and loss magnitudes for binary payoff Kelly', () => {
+    const edge = calculateEdgeStats([...Array.from({ length: 70 }, () => 4), ...Array.from({ length: 30 }, () => -2)])
+    const sizing = calculateKellySizing(edge)
+    expect(sizing?.fStar).toBeCloseTo(0.275)
+    expect(sizing?.method).toBe('binary-payoff-kelly-approximation')
+  })
 })

@@ -13,7 +13,7 @@ export interface CalendarDatum {
   losses: number
   breakeven: number
   pnl: number
-  pnlPercent: number
+  pnlPercent: number | null
   riskReward: number | null
 }
 
@@ -129,7 +129,7 @@ function monthValues(report: AnalyticsPerformance): string[] {
   report.byMonth.forEach((item) => {
     if (Number(item.month.slice(0, 4)) !== year) return
     const index = Number(item.month.slice(5, 7)) - 1
-    if (index >= 0 && index < 12) values[index] = percent(item.monthlyGainPercent, true)
+    if (index >= 0 && index < 12) values[index] = item.monthlyGainPercent === null ? '—' : percent(item.monthlyGainPercent, true)
   })
   return [...values, percent(report.overview.pnlPercent, true)]
 }

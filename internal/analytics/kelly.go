@@ -1,8 +1,7 @@
 package analytics
 
-// kellyMethod is the fixed "sizing.method" value — v1 supports exactly one
-// sizing method, so this is a constant rather than a field callers choose.
-const kellyMethod = "fractional-kelly"
+// kellyMethod identifies the supported binary average-payoff approximation.
+const kellyMethod = "binary-payoff-kelly-approximation"
 
 // KellySizing is CalculateKellySizing's result. FullKelly/FractionalKelly/
 // SuggestedRiskPerTrade/MaxRiskCap are ratios (0..1), not percent —
@@ -30,20 +29,15 @@ const (
 	kellyMaxRiskCap  = 0.05
 )
 
-// CalculateKellySizing converts EdgeStats' measured hit rate and payoff
-// ratio into a fractional-Kelly risk-per-trade recommendation. Returns nil
-// unless edge.Verdict is "edge" (every guardrail passed) AND edge.AvgRR is
-// defined and positive (a sample with no losses has no payoff ratio to
-// size against) — sizing is withheld, not merely zeroed, until the
-// evidence supports it. Callers that also require a non-negative
-// out-of-sample expectancy (the doc's additional sizing guardrail) apply
-// that check themselves — see BuildEdgeReport.
+// CalculateKellySizing returns a fractional binary-payoff Kelly approximation,
+// requiring an observed positive win and loss plus every edge and OOS gate.
+// It is not exact Kelly for arbitrary return distributions.
 func CalculateKellySizing(edge EdgeStats, opts KellyOptions) *KellySizing {
-	if edge.Verdict != EdgeVerdictEdge || edge.AvgRR == nil || *edge.AvgRR <= 0 {
+	if edge.Verdict != EdgeVerdictEdge || edge.AvgRR == nil || *edge.AvgRR <= 0 || edge.AvgWinR <= 0 || edge.AvgLossR <= 0 || edge.WinRate <= 0 || edge.LossRate <= 0 {
 		return nil
 	}
-	avgRR := *edge.AvgRR
-	winRate := edge.WinRate / 100 // EdgeStats.WinRate is percent; Kelly's formula needs a ratio.
+	avgWinR, avgLossR := edge.AvgWinR, edge.AvgLossR
+	winRate := edge.WinRate / (edge.WinRate + edge.LossRate)
 
 	fraction := kellyMinFraction
 	if opts.Fraction != nil {
@@ -57,7 +51,7 @@ func CalculateKellySizing(edge EdgeStats, opts KellyOptions) *KellySizing {
 	}
 
 	q := 1 - winRate
-	fullKelly := (winRate*avgRR - q) / avgRR
+	fullKelly := winRate/avgLossR - q/avgWinR
 	if fullKelly < 0 {
 		fullKelly = 0
 	}

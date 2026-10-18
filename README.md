@@ -156,6 +156,16 @@ The server exposes a JSON REST API under `/api/v1` using Go 1.22+ method-and-pat
 | Indicators | `GET` | `/api/v1/indicators` | List registered indicator scripts. |
 | Indicators | `POST` | `/api/v1/indicators/run` | Run an indicator script against bar data. |
 
+
+## Analytics Formula Conventions
+
+- Trade expectancy uses net realized P&L (or net realized R) over **all** eligible trades; break-even trades contribute zero and remain in the denominator. Profit factor is gross winning P&L divided by the absolute gross losing P&L. It is undefined when there are no losses; all-zero P&L is reported separately.
+- Win/loss rates use all eligible trades. The breakeven hurdle is the decisive-trade share divided by `1 + averageWinR / averageLossR`, so it is expressed against the same all-trade denominator as win rate.
+- Trade-R Sharpe uses `mean(R) / sampleStdDev(R)` with a zero benchmark. It is **per trade, not annualized**: trades do not represent equal calendar intervals, and the report has no risk-free-rate series. It is undefined with fewer than two observations or zero variance; bootstrap samples with undefined Sharpe are excluded, and the interval is null if none remain.
+- Drawdown is the peak-to-trough decline in the cumulative equity curve. Calendar-day and monthly simple returns are period P&L divided by opening period equity; they are null when opening equity is non-positive.
+- Monte Carlo reports a pooled profit factor over all simulated trades, not the arithmetic mean of per-path profit factors. The simulation assumes each win and loss has the user-supplied fixed average gain/loss; it does not model variable position sizes, volatility, or changing win probability.
+- Kelly sizing is a binary-payoff approximation using decisive win/loss probabilities and conditional average R magnitudes: `p / averageLossR - q / averageWinR`. The configured fraction and per-trade cap reduce that estimate; it is not a guarantee of optimal sizing for non-binary payoff distributions.
+
 ## Project Structure
 
 ```text

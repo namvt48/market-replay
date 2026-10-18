@@ -27,15 +27,15 @@ function dayKey(timestamp: string): string | null {
 
 /**
  * Merges per-account performance reports into a single portfolio calendar.
- * Calendar rows are summed by date (trades/wins/losses/breakeven/pnl), the
- * risk-reward series is summed by close date, and pnlPercent is recomputed
- * against the combined starting balance across accounts.
+ * Daily returns use each date's opening portfolio equity, advancing by the
+ * aggregated P&L after each date; non-positive opening equity has no defined
+ * simple return.
  */
 export function mergeLiveCalendars(reports: LiveCalendarReport[]): { entries: CalendarDatum[]; initialDate: string } {
   const byDate = new Map<string, CalendarDatum>()
   let totalInitialBalance = 0
   for (const report of reports) {
-    totalInitialBalance += Math.max(0, report.overview.accountBalance - report.overview.totalPnl)
+    totalInitialBalance += report.overview.accountBalance - report.overview.totalPnl
     const rrByDate = new Map<string, number>()
     report.riskReward.series.actual.forEach((point) => {
       if (!point.closedAt) return
@@ -52,17 +52,19 @@ export function mergeLiveCalendars(reports: LiveCalendarReport[]): { entries: Ca
         losses: (previous?.losses ?? 0) + item.losses,
         breakeven: (previous?.breakeven ?? 0) + item.breakeven,
         pnl: round2((previous?.pnl ?? 0) + item.pnl),
-        pnlPercent: 0,
+        pnlPercent: null,
         riskReward: rrByDate.has(item.date) ? round2((previous?.riskReward ?? 0) + (rrByDate.get(item.date) ?? 0)) : null,
       })
     })
   }
+  let openingBalance = totalInitialBalance
   const entries = [...byDate.values()]
     .sort((a, b) => a.date.localeCompare(b.date))
-    .map((entry) => ({
-      ...entry,
-      pnlPercent: totalInitialBalance > 0 ? round2((entry.pnl / totalInitialBalance) * 100) : 0,
-    }))
+    .map((entry) => {
+      const pnlPercent = openingBalance > 0 ? round2((entry.pnl / openingBalance) * 100) : null
+      openingBalance += entry.pnl
+      return { ...entry, pnlPercent }
+    })
   const today = new Date().toISOString().slice(0, 10)
   return { entries, initialDate: entries.at(-1)?.date ?? today }
 }

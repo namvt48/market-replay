@@ -33,14 +33,14 @@ function sensitivityTone(value: number, minimum: number, maximum: number): strin
   return 'border-loss/40 bg-loss/15 text-loss-bright'
 }
 
-function formatPValue(value: number): string {
-  return value < 0.001 ? '<0.001' : value.toFixed(3)
+function formatPValue(value: number | null): string {
+  return value === null ? '—' : value < 0.001 ? '<0.001' : value.toFixed(3)
 }
 
 function KellyEligibilityStrip({ report }: { report: AnalyticsEdge }): ReactElement {
   const checks = [
     { label: 'Sample size', value: `${report.edge.sampleSize}/50`, passed: report.edge.sampleSize >= 50 },
-    { label: 'Statistical evidence', value: `p ${formatPValue(report.edge.pValue)}`, passed: report.edge.pValue < 0.05 },
+    { label: 'Statistical evidence', value: `p ${formatPValue(report.edge.pValue)}`, passed: report.edge.pValue !== null && report.edge.pValue < 0.05 },
     { label: 'Breakeven', value: `${report.edge.winRate.toFixed(1)}% > ${report.edge.breakevenRate?.toFixed(1) ?? '—'}%`, passed: report.edge.breakevenRate !== null && report.edge.winRate > report.edge.breakevenRate },
     { label: 'OOS expectancy', value: `${report.walkForward.outOfSample.expectancyR.toFixed(2)}R`, passed: report.walkForward.outOfSample.expectancyR >= 0 },
     { label: 'Payoff ratio', value: `${report.edge.averageRR?.toFixed(2) ?? '—'}R`, passed: report.edge.averageRR !== null && report.edge.averageRR > 0 },
@@ -70,7 +70,7 @@ export function EdgeTab({ report }: EdgeTabProps) {
             </div>
             <dl className="grid grid-cols-2 gap-x-6 gap-y-5 border-t border-[#343940] pt-6 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0">
               <DecisionMetric label="Eligible sample" value={`${model.edge.sampleSize} trades`} note={model.edge.sampleSize >= 50 ? 'Sample guardrail cleared' : 'Minimum 50 required'} tone={model.edge.sampleSize >= 50 ? 'positive' : 'warning'} />
-              <DecisionMetric label="p-value" value={model.edge.pValue < 0.001 ? '<0.001' : model.edge.pValue.toFixed(3)} note="Two-sided Student t-test" tone={model.edge.pValue < 0.05 ? 'positive' : 'warning'} />
+              <DecisionMetric label="p-value" value={formatPValue(model.edge.pValue)} note="Two-sided Student t-test" tone={model.edge.pValue !== null && model.edge.pValue < 0.05 ? 'positive' : 'warning'} />
               <DecisionMetric label="t-statistic" value={model.edge.tStatistic?.toFixed(2) ?? '—'} note="Mean R scaled by uncertainty" />
               <DecisionMetric label="Win rate / BE" value={`${model.edge.winRate.toFixed(1)}% / ${model.edge.breakevenRate?.toFixed(1) ?? '—'}%`} tone={model.edge.breakevenRate !== null && model.edge.winRate > model.edge.breakevenRate ? 'positive' : 'negative'} />
             </dl>
@@ -119,10 +119,10 @@ export function EdgeTab({ report }: EdgeTabProps) {
               <dl className="grid grid-cols-2 gap-5">
                 <DecisionMetric label="In-sample E[R]" value={`${model.robustness.inSample.expectancyR.toFixed(3)}R`} note={`${model.robustness.inSample.trades} trades`} tone={model.robustness.inSample.expectancyR > 0 ? 'positive' : 'negative'} />
                 <DecisionMetric label="Out-of-sample E[R]" value={`${model.robustness.outOfSample.expectancyR.toFixed(3)}R`} note={`${model.robustness.outOfSample.trades} latest trades`} tone={model.robustness.outOfSample.expectancyR > 0 ? 'positive' : 'negative'} />
-                <DecisionMetric label="OOS retention" value={percentage(model.robustness.retentionRatio)} tone={model.robustness.retentionRatio >= 0.65 ? 'positive' : 'warning'} />
+                <DecisionMetric label="OOS retention" value={model.robustness.retentionRatio === null ? '—' : percentage(model.robustness.retentionRatio)} tone={model.robustness.retentionRatio === null ? 'warning' : model.robustness.retentionRatio >= 0.65 ? 'positive' : 'warning'} />
                 <DecisionMetric label="Sensitivity" value={sensitivity ? (sensitivity.shape === 'plateau' ? 'Broad plateau' : 'Knife-edge peak') : 'Unavailable'} tone={sensitivity?.shape === 'plateau' ? 'positive' : 'warning'} />
               </dl>
-              <p className="mt-5 text-xs leading-5 text-[#858d98]">Parameter sensitivity is an explicitly labelled phase-one proxy until OHLC trade re-walk is connected.</p>
+              <p className="mt-5 text-xs leading-5 text-[#858d98]">Parameter sensitivity replays trades over OHLC price bars under the configured intrabar policy.</p>
             </div>
             <div className="overflow-x-auto border-t border-[#343940] pt-4 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0"><StabilityChart windows={model.robustness.windows} /></div>
           </div>
@@ -131,10 +131,10 @@ export function EdgeTab({ report }: EdgeTabProps) {
       </section>
 
       <section>
-        <DecisionSectionTitle info="Kelly sizing is hidden unless the edge verdict passes every guardrail. The recommendation uses one-quarter Kelly and is capped at 2% account risk per trade.">Position sizing</DecisionSectionTitle>
+        <DecisionSectionTitle info="Sizing uses a binary approximation based on conditional win/loss rates and average payoff magnitudes; it is not exact Kelly for an arbitrary return distribution. Sizing is hidden unless the edge verdict passes every guardrail.">Position sizing</DecisionSectionTitle>
         <DecisionPanel className="p-5 sm:p-7">
           <KellyEligibilityStrip report={report} />
-          {model.sizing ? <div className="grid gap-7 lg:grid-cols-[1.2fr_1fr] lg:items-center"><div><div className="flex items-center gap-3"><ShieldCheck size={22} className="text-profit-bright" /><h3 className="text-[20px] font-semibold text-ink">Sizing unlocked by evidence</h3></div><p className="mt-3 max-w-[68ch] text-ui-body leading-6 text-muted">Fractional Kelly translates the measured edge into a conservative risk budget. The product cap remains the final guardrail.</p></div><dl className="grid grid-cols-2 gap-5"><DecisionMetric label="Full Kelly" value={percentage(model.sizing.fullKelly)} /><DecisionMetric label="Fractional Kelly" value={percentage(model.sizing.fractionalKelly)} /><DecisionMetric label="Suggested risk / trade" value={percentage(model.sizing.suggestedRiskPerTrade)} tone="positive" /><DecisionMetric label="Risk cap" value={percentage(model.sizing.maxRiskCap)} note={model.sizing.capped ? 'Recommendation capped' : 'Cap not binding'} /></dl></div> : <div className="flex items-start gap-4"><ShieldCheck size={22} className="mt-0.5 text-caution-bright" /><div><h3 className="text-[18px] font-semibold text-ink">Sizing remains locked</h3><p className="mt-2 text-ui-body leading-6 text-muted">Kelly output is withheld until the checks above pass.</p></div></div>}
+          {model.sizing ? <div className="grid gap-7 lg:grid-cols-[1.2fr_1fr] lg:items-center"><div><div className="flex items-center gap-3"><ShieldCheck size={22} className="text-profit-bright" /><h3 className="text-[20px] font-semibold text-ink">Sizing unlocked by evidence</h3></div><p className="mt-3 max-w-[68ch] text-ui-body leading-6 text-muted">Binary average-payoff Kelly approximation; it is not exact Kelly for arbitrary return distributions. The product cap remains the final guardrail.</p></div><dl className="grid grid-cols-2 gap-5"><DecisionMetric label="Full Kelly approximation" value={percentage(model.sizing.fullKelly)} /><DecisionMetric label="Fractional Kelly" value={percentage(model.sizing.fractionalKelly)} /><DecisionMetric label="Suggested risk / trade" value={percentage(model.sizing.suggestedRiskPerTrade)} tone="positive" /><DecisionMetric label="Risk cap" value={percentage(model.sizing.maxRiskCap)} note={model.sizing.capped ? 'Recommendation capped' : 'Cap not binding'} /></dl></div> : <div className="flex items-start gap-4"><ShieldCheck size={22} className="mt-0.5 text-caution-bright" /><div><h3 className="text-[18px] font-semibold text-ink">Sizing remains locked</h3><p className="mt-2 text-ui-body leading-6 text-muted">Kelly output is withheld until the checks above pass.</p></div></div>}
         </DecisionPanel>
       </section>
     </div>

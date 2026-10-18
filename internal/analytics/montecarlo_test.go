@@ -86,11 +86,11 @@ func TestMonteCarlo_WinRateHundredPercent(t *testing.T) {
 		t.Errorf("totalWins = %d, want %d", result.Summary.TotalWins, wantWins)
 	}
 	// Zero simulated losses -> profit factor must be nil+note, never +Inf.
-	if result.Summary.AverageProfitFactor != nil {
-		t.Errorf("averageProfitFactor = %v, want nil", *result.Summary.AverageProfitFactor)
+	if result.Summary.PooledProfitFactor != nil {
+		t.Errorf("pooledProfitFactor = %v, want nil", *result.Summary.PooledProfitFactor)
 	}
-	if result.Summary.AverageProfitFactorNote != "no_losses" {
-		t.Errorf("averageProfitFactorNote = %q, want %q", result.Summary.AverageProfitFactorNote, "no_losses")
+	if result.Summary.PooledProfitFactorNote != "no_losses" {
+		t.Errorf("pooledProfitFactorNote = %q, want %q", result.Summary.PooledProfitFactorNote, "no_losses")
 	}
 	wantEnding := req.StartBalanceCents + int64(req.TradesPerSimulation)*req.AverageGainCents
 	if result.Summary.MaxEndingBalance != centsToDollars(wantEnding) {
@@ -144,7 +144,26 @@ func TestMonteCarlo_BalancesShapeAndNoNaNOrInf(t *testing.T) {
 	if got := result.Summary.TotalWins + result.Summary.TotalLosses; got != req.SimulationCount*req.TradesPerSimulation {
 		t.Errorf("totalWins+totalLosses = %d, want %d", got, req.SimulationCount*req.TradesPerSimulation)
 	}
+	wantPF := float64(result.Summary.TotalWins) * float64(req.AverageGainCents) / (float64(result.Summary.TotalLosses) * float64(req.AverageLossCents))
+	if result.Summary.PooledProfitFactor == nil || *result.Summary.PooledProfitFactor != wantPF {
+		t.Errorf("pooledProfitFactor = %v, want pooled gross gains/losses %v", result.Summary.PooledProfitFactor, wantPF)
+	}
 	if isNaNOrInf(result.Summary.AverageEndingBalance) || isNaNOrInf(result.Summary.MaxEndingBalance) || isNaNOrInf(result.Summary.MinEndingBalance) {
 		t.Errorf("summary has NaN/Inf: %+v", result.Summary)
+	}
+}
+func TestMonteCarlo_ProfitFactorUndefinedWhenAllPnLIsZero(t *testing.T) {
+	req := baseMonteCarloRequest()
+	req.AverageGainCents = 0
+	req.AverageLossCents = 0
+	result, err := RunMonteCarlo(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RunMonteCarlo: %v", err)
+	}
+	if result.Summary.PooledProfitFactor != nil {
+		t.Errorf("pooledProfitFactor = %v, want nil", *result.Summary.PooledProfitFactor)
+	}
+	if result.Summary.PooledProfitFactorNote != "no_profits_or_losses" {
+		t.Errorf("pooledProfitFactorNote = %q, want no_profits_or_losses", result.Summary.PooledProfitFactorNote)
 	}
 }

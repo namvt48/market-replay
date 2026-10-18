@@ -64,10 +64,9 @@ type DecisionMatrix struct {
 // RuleFollowingDividendCoverageNote explains why in that case ("insufficient");
 // CoveredBadLossTrades/TotalBadLossTrades are always populated so a caller
 // can tell "no badLoss trades at all" apart from "badLoss trades exist but
-// too few are covered" apart from "well past the floor". When computed, the
-// dividend fields average over ALL trades (not just badLoss ones),
-// reporting the per-trade cost of undisciplined behavior across the whole
-// account, diluted the same way the rest of the account's trades dilute it.
+// dividend fields average counterfactual changes over the covered badLoss
+// trades that contribute to the calculation; unrelated or uncovered trades
+// do not dilute the mean.
 //
 // Breakeven policy: a trade with RealizedCents == 0 counts as a non-win
 // (same bucket as a loss) for the matrix's win/non-win split — but is
@@ -226,8 +225,8 @@ func AnalyzeDecisionQuality(ctx context.Context, trades []model.Trade, timeframe
 		ruleFollowingDividendR = &zero
 		ruleFollowingDividendCents = &zeroCents
 	case coveredCount >= decisionDividendMinCoveredBadLoss:
-		r := dividendRSum / float64(len(trades))
-		c := int64(math.Round(dividendCentsSum / float64(len(trades))))
+		r := dividendRSum / float64(coveredCount)
+		c := int64(math.Round(dividendCentsSum / float64(coveredCount)))
 		ruleFollowingDividendR = &r
 		ruleFollowingDividendCents = &c
 	default:

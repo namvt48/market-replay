@@ -179,6 +179,7 @@ describe('AnalyticsScreen', () => {
     expect(screen.getByLabelText('Win rate')).toHaveValue(50)
     await user.click(screen.getByRole('button', { name: /Start simulation/ }))
     expect(await screen.findByText('Simulation results')).toBeVisible()
+    expect(screen.getByText('Pooled PF (all simulated trades)').parentElement).toHaveTextContent('2.00')
   })
 
   it('does not show an alert for a small number of excluded simulation trades', async () => {

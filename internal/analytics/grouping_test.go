@@ -159,3 +159,47 @@ func TestBySession_ClassificationIgnoresRequestTimezone(t *testing.T) {
 		}
 	}
 }
+func TestPeriodReturnsUseEachPeriodsOpeningBalance(t *testing.T) {
+	const january = tsUTCMondayLateNight
+	const february = january + 31*86400
+	trades := []model.Trade{
+		newTrade("january", "long", january-60, january, 100, 10_000),
+		newTrade("february", "long", february-60, february, 100, -11_000),
+	}
+	stats := computeTradeStats(trades, Request{})
+
+	months := buildByMonth(stats, 100_000, time.UTC)
+	if len(months) != 2 {
+		t.Fatalf("months = %d, want 2", len(months))
+	}
+	if months[0].MonthlyGainPercent == nil || *months[0].MonthlyGainPercent != 10 {
+		t.Errorf("January return = %v, want 10%%", months[0].MonthlyGainPercent)
+	}
+	if months[1].MonthlyGainPercent == nil || *months[1].MonthlyGainPercent != -10 {
+		t.Errorf("February return = %v, want -10%% of the $1,100 opening balance", months[1].MonthlyGainPercent)
+	}
+
+	days := buildCalendar(stats, 100_000, time.UTC)
+	if len(days) != 2 {
+		t.Fatalf("calendar days = %d, want 2", len(days))
+	}
+	if days[0].PnlPercent == nil || *days[0].PnlPercent != 10 {
+		t.Errorf("January-day return = %v, want 10%%", days[0].PnlPercent)
+	}
+	if days[1].PnlPercent == nil || *days[1].PnlPercent != -10 {
+		t.Errorf("February-day return = %v, want -10%% of the $1,100 opening balance", days[1].PnlPercent)
+	}
+}
+
+func TestPeriodReturnsAreUndefinedWithoutPositiveOpeningBalance(t *testing.T) {
+	const exitTs = tsUTCMondayLateNight
+	trades := []model.Trade{newTrade("trade", "long", exitTs-60, exitTs, 100, 100)}
+	stats := computeTradeStats(trades, Request{})
+
+	if got := buildByMonth(stats, 0, time.UTC)[0].MonthlyGainPercent; got != nil {
+		t.Errorf("monthly return = %v, want nil when opening balance is zero", *got)
+	}
+	if got := buildCalendar(stats, -100, time.UTC)[0].PnlPercent; got != nil {
+		t.Errorf("daily return = %v, want nil when opening balance is negative", *got)
+	}
+}

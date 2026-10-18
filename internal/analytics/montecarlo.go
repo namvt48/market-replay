@@ -27,19 +27,20 @@ type MonteCarloPath struct {
 	Balances        []float64 `json:"balances"`
 }
 
-// MonteCarloSummary aggregates every path. AverageProfitFactor is nil (with
-// a reason in AverageProfitFactorNote) instead of +Inf when there are no
-// simulated losses, same convention as Expectancy.ProfitFactor.
+// MonteCarloSummary reports ending-balance distribution and one pooled
+// profit factor over all simulated trades, not the arithmetic mean of
+// per-path profit factors. PooledProfitFactor is nil with a note when it is
+// undefined.
 type MonteCarloSummary struct {
-	AverageEndingBalance    float64  `json:"averageEndingBalance"`
-	MaxEndingBalance        float64  `json:"maxEndingBalance"`
-	MinEndingBalance        float64  `json:"minEndingBalance"`
-	AverageProfitFactor     *float64 `json:"averageProfitFactor"`
-	AverageProfitFactorNote string   `json:"averageProfitFactorNote,omitempty"`
-	MaxConsecutiveWins      int      `json:"maxConsecutiveWins"`
-	MaxConsecutiveLosses    int      `json:"maxConsecutiveLosses"`
-	TotalWins               int      `json:"totalWins"`
-	TotalLosses             int      `json:"totalLosses"`
+	AverageEndingBalance   float64  `json:"averageEndingBalance"`
+	MaxEndingBalance       float64  `json:"maxEndingBalance"`
+	MinEndingBalance       float64  `json:"minEndingBalance"`
+	PooledProfitFactor     *float64 `json:"pooledProfitFactor"`
+	PooledProfitFactorNote string   `json:"pooledProfitFactorNote,omitempty"`
+	MaxConsecutiveWins     int      `json:"maxConsecutiveWins"`
+	MaxConsecutiveLosses   int      `json:"maxConsecutiveLosses"`
+	TotalWins              int      `json:"totalWins"`
+	TotalLosses            int      `json:"totalLosses"`
 }
 
 // MonteCarloResult is RunMonteCarlo's return value, minus the "inputs"
@@ -127,6 +128,8 @@ func RunMonteCarlo(ctx context.Context, req MonteCarloRequest) (MonteCarloResult
 	switch {
 	case req.TradesPerSimulation == 0:
 		note = "no_trades"
+	case grossGainCents == 0 && grossLossCents == 0:
+		note = "no_profits_or_losses"
 	case grossLossCents == 0:
 		note = "no_losses"
 	default:
@@ -138,15 +141,15 @@ func RunMonteCarlo(ctx context.Context, req MonteCarloRequest) (MonteCarloResult
 		Seed:  req.Seed,
 		Paths: paths,
 		Summary: MonteCarloSummary{
-			AverageEndingBalance:    averageEndingCents / 100,
-			MaxEndingBalance:        centsToDollars(maxEndingCents),
-			MinEndingBalance:        centsToDollars(minEndingCents),
-			AverageProfitFactor:     profitFactor,
-			AverageProfitFactorNote: note,
-			MaxConsecutiveWins:      maxConsecutiveWins,
-			MaxConsecutiveLosses:    maxConsecutiveLosses,
-			TotalWins:               totalWins,
-			TotalLosses:             totalLosses,
+			AverageEndingBalance:   averageEndingCents / 100,
+			MaxEndingBalance:       centsToDollars(maxEndingCents),
+			MinEndingBalance:       centsToDollars(minEndingCents),
+			PooledProfitFactor:     profitFactor,
+			PooledProfitFactorNote: note,
+			MaxConsecutiveWins:     maxConsecutiveWins,
+			MaxConsecutiveLosses:   maxConsecutiveLosses,
+			TotalWins:              totalWins,
+			TotalLosses:            totalLosses,
 		},
 	}, nil
 }

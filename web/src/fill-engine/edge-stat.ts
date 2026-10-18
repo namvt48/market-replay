@@ -9,11 +9,12 @@ export interface EdgeStatsInput {
 export interface EdgeStats {
   n: number
   expectancyR: number
-  breakevenRate: number
-  avgRR: number
-  tStat: number
-  pValue: number
+  breakevenRate: number | null
+  avgRR: number | null
+  tStat: number | null
+  pValue: number | null
   winRate: number
+  lossRate: number
   avgWinR: number
   avgLossR: number
   verdict: EdgeVerdict
@@ -94,23 +95,23 @@ export function calculateEdgeStats(values: number[], input: EdgeStatsInput = {})
   const wins = r.filter((value) => value > 0)
   const losses = r.filter((value) => value < 0)
   const winRate = input.winRate ?? (n === 0 ? 0 : wins.length / n)
+  const lossRate = n === 0 ? 0 : losses.length / n
   const avgWinR = input.avgWinR ?? (wins.length === 0 ? 0 : wins.reduce((sum, value) => sum + value, 0) / wins.length)
   const avgLossR = Math.abs(input.avgLossR ?? (losses.length === 0 ? 0 : losses.reduce((sum, value) => sum + value, 0) / losses.length))
-  const avgRR = avgLossR <= EPSILON ? 0 : avgWinR / avgLossR
-  const breakevenRate = avgRR <= EPSILON ? 1 : 1 / (1 + avgRR)
+  const avgRR = avgLossR <= EPSILON ? null : avgWinR / avgLossR
+  const decisiveShare = n === 0 ? 0 : (wins.length + losses.length) / n
+  const breakevenRate = avgRR === null ? null : decisiveShare / (1 + avgRR)
   const expectancyR = n === 0 ? 0 : r.reduce((sum, value) => sum + value, 0) / n
   const variance = n < 2 ? 0 : r.reduce((sum, value) => sum + (value - expectancyR) ** 2, 0) / (n - 1)
   const standardDeviation = Math.sqrt(Math.max(0, variance))
-  const tStat = standardDeviation <= EPSILON
-    ? expectancyR > 0 ? Number.POSITIVE_INFINITY : expectancyR < 0 ? Number.NEGATIVE_INFINITY : 0
-    : expectancyR * Math.sqrt(n) / standardDeviation
-  const pValue = standardDeviation <= EPSILON ? (Math.abs(expectancyR) <= EPSILON ? 1 : 0) : twoSidedStudentTPValue(tStat, n - 1)
+  const tStat = standardDeviation <= EPSILON ? null : expectancyR * Math.sqrt(n) / standardDeviation
+  const pValue = tStat === null ? null : twoSidedStudentTPValue(tStat, n - 1)
   const verdict: EdgeVerdict = n < 50
     ? 'insufficient'
-    : pValue >= 0.05
+    : pValue === null || pValue >= 0.05 || expectancyR <= 0
       ? 'no-evidence'
-      : winRate <= breakevenRate
+      : breakevenRate !== null && winRate <= breakevenRate
         ? 'zero-edge'
         : 'edge'
-  return { n, expectancyR, breakevenRate, avgRR, tStat, pValue, winRate, avgWinR, avgLossR, verdict }
+  return { n, expectancyR, breakevenRate, avgRR, tStat, pValue, winRate, lossRate, avgWinR, avgLossR, verdict }
 }

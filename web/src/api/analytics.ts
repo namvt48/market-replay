@@ -49,11 +49,11 @@ const dayStatSchema = z.object({
   wins: z.number().int().nonnegative(), winRate: z.number(),
 })
 const monthStatSchema = z.object({
-  month: z.string(), monthlyPnl: z.number(), monthlyGainPercent: z.number(), endingBalance: z.number(), totalTrades: z.number().int().nonnegative(),
+  month: z.string(), monthlyPnl: z.number(), monthlyGainPercent: z.number().nullable(), endingBalance: z.number(), totalTrades: z.number().int().nonnegative(),
 })
 const calendarDaySchema = z.object({
   date: z.string(), trades: z.number().int().nonnegative(), wins: z.number().int().nonnegative(), losses: z.number().int().nonnegative(),
-  breakeven: z.number().int().nonnegative(), pnl: z.number(), pnlPercent: z.number(), endingBalance: z.number(),
+  breakeven: z.number().int().nonnegative(), pnl: z.number(), pnlPercent: z.number().nullable(), endingBalance: z.number(),
 })
 
 export const analyticsPerformanceSchema = z.object({
@@ -123,11 +123,12 @@ export const analyticsEdgeSchema = z.object({
   }),
   edge: z.object({
     sampleSize: z.number().int().nonnegative(), expectancyR: z.number(), winRate: z.number(), averageWinR: z.number(), averageLossR: z.number(),
-    averageRR: z.number().nullable(), breakevenRate: z.number().nullable(), tStatistic: z.number().nullable(), pValue: z.number(),
+    lossRate: z.number(), averageRR: z.number().nullable(), breakevenRate: z.number().nullable(),
+    tStatistic: z.number().nullable(), pValue: z.number().nullable(),
     verdict: z.enum(['insufficient', 'no-evidence', 'zero-edge', 'edge']),
   }),
   bootstrap: z.object({
-    expectancyR: confidenceIntervalSchema, maxDrawdownR: confidenceIntervalSchema, sharpe: confidenceIntervalSchema,
+    expectancyR: confidenceIntervalSchema, maxDrawdownR: confidenceIntervalSchema, tradeRSharpe: confidenceIntervalSchema.nullable(),
     iterations: z.number().int().positive(), confidence: z.number(), seed: z.number().int(),
   }),
   decomposition: z.object({
@@ -137,7 +138,7 @@ export const analyticsEdgeSchema = z.object({
   }),
   walkForward: z.object({
     split: z.number(), inSample: z.object({ trades: z.number().int().nonnegative(), expectancyR: z.number() }),
-    outOfSample: z.object({ trades: z.number().int().nonnegative(), expectancyR: z.number() }), expectancyDeltaR: z.number(), retentionRatio: z.number(),
+    outOfSample: z.object({ trades: z.number().int().nonnegative(), expectancyR: z.number() }), expectancyDeltaR: z.number(), retentionRatio: z.number().nullable(),
     windows: arrayOrEmpty(z.object({ label: z.string(), startTs: z.number().int().nullable(), endTs: z.number().int().nullable(), trades: z.number().int().nonnegative(), expectancyR: z.number() })),
     parameterSensitivity: sensitivitySchema.nullable(),
   }),
@@ -214,8 +215,8 @@ export interface MonteCarloRequest {
 export const monteCarloSchema = z.object({
   seed: z.number().int().safe(), paths: arrayOrEmpty(z.object({ simulationIndex: z.number().int().nonnegative(), balances: arrayOrEmpty(z.number()) })),
   summary: z.object({
-    averageEndingBalance: z.number(), maxEndingBalance: z.number(), minEndingBalance: z.number(), averageProfitFactor: z.number().nullable(),
-    averageProfitFactorNote: z.string().optional(), maxConsecutiveWins: z.number().int().nonnegative(), maxConsecutiveLosses: z.number().int().nonnegative(),
+    averageEndingBalance: z.number(), maxEndingBalance: z.number(), minEndingBalance: z.number(), pooledProfitFactor: z.number().nullable(),
+    pooledProfitFactorNote: z.string().optional(), maxConsecutiveWins: z.number().int().nonnegative(), maxConsecutiveLosses: z.number().int().nonnegative(),
     totalWins: z.number().int().nonnegative(), totalLosses: z.number().int().nonnegative(),
   }),
   inputs: z.object({ simulationCount: z.number().int(), tradesPerSimulation: z.number().int(), startBalance: z.number(), averageGain: z.number(), averageLoss: z.number(), winRatePercent: z.number() }),

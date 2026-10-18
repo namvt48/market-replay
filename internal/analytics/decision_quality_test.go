@@ -67,11 +67,9 @@ func TestDecisionQuality_SeparatesProcessFromOutcome(t *testing.T) {
 }
 
 // TestDecisionQuality_DividendComputedWhenCoverageMeetsFloor verifies the
-// re-walk math that TestDecisionQuality_SeparatesProcessFromOutcome used to
-// check directly, now at a sample size that clears
-// decisionDividendMinCoveredBadLoss (20): 20 identical badLoss trades, each
-// contributing plannedR(-1.0) - actualR(-7.5) = 6.5, diluted over exactly
-// those 20 trades (no other trades in the sample) = 6.5.
+// re-walk math at a sample size that clears the coverage floor: 20 identical
+// badLoss trades each contribute plannedR(-1.0) - actualR(-7.5) = 6.5.
+// Appending unrelated wins must not dilute the average of those counterfactuals.
 func TestDecisionQuality_DividendComputedWhenCoverageMeetsFloor(t *testing.T) {
 	const n = 20
 	trades := make([]model.Trade, n)
@@ -97,6 +95,22 @@ func TestDecisionQuality_DividendComputedWhenCoverageMeetsFloor(t *testing.T) {
 	}
 	if got := *result.RuleFollowingDividendR; got < 6.49 || got > 6.51 {
 		t.Errorf("ruleFollowingDividendR = %v, want ~6.5", got)
+	}
+
+	unrelated := append(append([]model.Trade(nil), trades...), make([]model.Trade, n)...)
+	for i := n; i < 2*n; i++ {
+		ts := int64(i) * daySeconds
+		unrelated[i] = newTrade(fmt.Sprintf("good-win-%d", i), "long", ts, ts+600, 1000, 2_000)
+	}
+	withUnrelated, _, err := AnalyzeDecisionQuality(context.Background(), unrelated, "1m", md)
+	if err != nil {
+		t.Fatalf("AnalyzeDecisionQuality with unrelated trades: %v", err)
+	}
+	if withUnrelated.RuleFollowingDividendR == nil || *withUnrelated.RuleFollowingDividendR != *result.RuleFollowingDividendR {
+		t.Errorf("dividend R with unrelated trades = %v, want unchanged %v", withUnrelated.RuleFollowingDividendR, *result.RuleFollowingDividendR)
+	}
+	if withUnrelated.RuleFollowingDividendCents == nil || *withUnrelated.RuleFollowingDividendCents != 13_000 {
+		t.Errorf("dividend cents with unrelated trades = %v, want 13000", withUnrelated.RuleFollowingDividendCents)
 	}
 }
 

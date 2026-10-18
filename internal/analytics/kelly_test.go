@@ -22,8 +22,8 @@ func TestKelly_ReturnsFractionalKellyWithinRiskCap(t *testing.T) {
 	if sizing.Fraction != 0.25 {
 		t.Errorf("fraction = %v, want 0.25", sizing.Fraction)
 	}
-	if sizing.Method != "fractional-kelly" {
-		t.Errorf("method = %q, want fractional-kelly", sizing.Method)
+	if sizing.Method != "binary-payoff-kelly-approximation" {
+		t.Errorf("method = %q, want binary-payoff-kelly-approximation", sizing.Method)
 	}
 	if sizing.MaxRiskCap != 0.02 {
 		t.Errorf("maxRiskCap = %v, want 0.02", sizing.MaxRiskCap)
@@ -37,5 +37,16 @@ func TestKelly_NilWhenAvgRRNonPositive(t *testing.T) {
 	edge := CalculateEdgeStats(repeat(-1, 60), EdgeStatsOverrides{WinRate: &winRate, AvgWinR: &avgWinR, AvgLossR: &avgLossR})
 	if sizing := CalculateKellySizing(edge, KellyOptions{}); sizing != nil {
 		t.Errorf("sizing = %+v, want nil (avgRR <= 0)", sizing)
+	}
+}
+
+func TestKelly_BinaryPayoffUsesAverageWinAndLossMagnitudes(t *testing.T) {
+	edge := CalculateEdgeStats(append(repeat(4, 70), repeat(-2, 30)...), EdgeStatsOverrides{})
+	sizing := CalculateKellySizing(edge, KellyOptions{})
+	if sizing == nil {
+		t.Fatal("sizing = nil, want positive-edge sizing")
+	}
+	if sizing.FullKelly < 0.274999999 || sizing.FullKelly > 0.275000001 {
+		t.Errorf("fullKelly = %v, want 0.275", sizing.FullKelly)
 	}
 }

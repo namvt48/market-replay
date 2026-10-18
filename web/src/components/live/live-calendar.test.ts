@@ -49,7 +49,7 @@ describe('mergeLiveCalendars', () => {
     expect(initialDate).toBe('2026-01-05')
   })
 
-  it('recomputes pnlPercent against the combined starting balance', () => {
+  it('recomputes returns against combined opening portfolio equity', () => {
     const first = report('live-1', 25000, -500, [
       { date: '2026-01-05', trades: 1, wins: 0, losses: 1, breakeven: 0, pnl: -50, pnlPercent: -0.2, endingBalance: 24500 },
     ])
@@ -59,9 +59,25 @@ describe('mergeLiveCalendars', () => {
 
     const { entries } = mergeLiveCalendars([first, second])
 
-    // Combined starting balance is $30,000: -50/30000 and 25/30000.
+    // Combined starting equity is $30,000; after day one it is $29,950.
     expect(entries[0]).toMatchObject({ date: '2026-01-05', pnl: -50, pnlPercent: -0.17, riskReward: null })
     expect(entries[1]).toMatchObject({ date: '2026-01-06', pnl: 25, pnlPercent: 0.08, riskReward: 0.5 })
+  })
+  it('compounds daily portfolio returns and leaves non-positive opening equity undefined', () => {
+    const compounded = report('live-1', 1_000, -100, [
+      { date: '2026-01-05', trades: 1, wins: 1, losses: 0, breakeven: 0, pnl: 500, pnlPercent: 50, endingBalance: 1_500 },
+      { date: '2026-01-06', trades: 1, wins: 0, losses: 1, breakeven: 0, pnl: -600, pnlPercent: -60, endingBalance: 900 },
+    ])
+    const compoundedEntries = mergeLiveCalendars([compounded]).entries
+    expect(compoundedEntries.map(({ pnlPercent }) => pnlPercent)).toEqual([50, -40])
+
+    const depleted = report('live-2', 1_000, -900, [
+      { date: '2026-01-05', trades: 1, wins: 0, losses: 1, breakeven: 0, pnl: -1_000, pnlPercent: -100, endingBalance: 0 },
+      { date: '2026-01-06', trades: 1, wins: 1, losses: 0, breakeven: 0, pnl: 100, pnlPercent: 10, endingBalance: 100 },
+    ])
+    const depletedEntries = mergeLiveCalendars([depleted]).entries
+    expect(depletedEntries[0]?.pnlPercent).toBe(-100)
+    expect(depletedEntries[1]?.pnlPercent).toBeNull()
   })
 
   it('sorts distinct dates chronologically and anchors the cursor on the newest', () => {

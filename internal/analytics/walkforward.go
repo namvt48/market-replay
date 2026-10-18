@@ -78,7 +78,7 @@ type WalkForwardResult struct {
 	InSample             WalkForwardSampleStat `json:"inSample"`
 	OutOfSample          WalkForwardSampleStat `json:"outOfSample"`
 	ExpectancyDeltaR     float64               `json:"expectancyDeltaR"`
-	RetentionRatio       float64               `json:"retentionRatio"`
+	RetentionRatio       *float64              `json:"retentionRatio"`
 	Windows              []WalkForwardWindow   `json:"windows"`
 	ParameterSensitivity *ParameterSensitivity `json:"parameterSensitivity"`
 }
@@ -192,9 +192,10 @@ func AnalyzeWalkForward(ctx context.Context, req WalkForwardRequest) (WalkForwar
 		windows = append(windows, w)
 	}
 
-	var retentionRatio float64
+	var retentionRatio *float64
 	if math.Abs(inSampleExpectancy) >= 1e-9 {
-		retentionRatio = outOfSampleExpectancy / inSampleExpectancy
+		ratio := outOfSampleExpectancy / inSampleExpectancy
+		retentionRatio = &ratio
 	}
 
 	sensitivity, audit, err := walkForwardSensitivity(ctx, req.Trades, req.Timeframe, req.MarketData)

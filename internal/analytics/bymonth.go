@@ -6,9 +6,20 @@ import (
 )
 
 type monthAccumulator struct {
-	pnlCents           int64
-	totalTrades        int
-	endingBalanceCents int64
+	pnlCents             int64
+	totalTrades          int
+	startingBalanceCents int64
+	endingBalanceCents   int64
+}
+
+// periodReturnPercent is the simple return for one closed-trade period.
+// A non-positive opening balance has no meaningful return denominator.
+func periodReturnPercent(pnlCents, startingBalanceCents int64) *float64 {
+	if startingBalanceCents <= 0 {
+		return nil
+	}
+	value := float64(pnlCents) / float64(startingBalanceCents) * 100
+	return &value
 }
 
 // buildByMonth computes rule 15: sparse rows, one per "YYYY-MM" that has at
@@ -26,7 +37,7 @@ func buildByMonth(stats []*tradeStat, initialBalanceCents int64, loc *time.Locat
 		key := time.Unix(st.exitTs, 0).In(loc).Format("2006-01")
 		a, ok := accs[key]
 		if !ok {
-			a = &monthAccumulator{}
+			a = &monthAccumulator{startingBalanceCents: running}
 			accs[key] = a
 			order = append(order, key)
 		}
@@ -40,14 +51,10 @@ func buildByMonth(stats []*tradeStat, initialBalanceCents int64, loc *time.Locat
 	out := make([]MonthStat, 0, len(order))
 	for _, key := range order {
 		a := accs[key]
-		var gainPercent float64
-		if initialBalanceCents > 0 {
-			gainPercent = float64(a.pnlCents) / float64(initialBalanceCents) * 100
-		}
 		out = append(out, MonthStat{
 			Month:              key,
 			MonthlyPnl:         centsToDollars(a.pnlCents),
-			MonthlyGainPercent: gainPercent,
+			MonthlyGainPercent: periodReturnPercent(a.pnlCents, a.startingBalanceCents),
 			EndingBalance:      centsToDollars(a.endingBalanceCents),
 			TotalTrades:        a.totalTrades,
 		})

@@ -28,4 +28,20 @@ describe('analytics calendar view model', () => {
       expect.objectContaining({ date: '2025-03-01', riskReward: null }),
     ])
   })
+  it('preserves unavailable period returns instead of displaying fabricated zeroes', () => {
+    const report: AnalyticsPerformance = {
+      ...performanceFixture,
+      byMonth: [
+        { month: '2025-02', monthlyPnl: 100, monthlyGainPercent: null, endingBalance: 0, totalTrades: 1 },
+        { month: '2025-03', monthlyPnl: -100, monthlyGainPercent: -10, endingBalance: 900, totalTrades: 1 },
+      ],
+      calendar: [
+        { date: '2025-02-28', trades: 1, wins: 0, losses: 1, breakeven: 0, pnl: 100, pnlPercent: null, endingBalance: 0 },
+      ],
+    }
+    const view = toAnalyticsReportView(report)
+    expect(view.monthlyValues[1]).toBe('—')
+    expect(view.monthlyValues[2]).toBe('-10.00%')
+    expect(view.calendarEntries[0]?.pnlPercent).toBeNull()
+  })
 })

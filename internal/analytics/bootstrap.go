@@ -2,7 +2,6 @@ package analytics
 
 import (
 	"context"
-	"math"
 )
 
 // bootstrapCancellationCheckInterval is how often (in iterations) a long
@@ -18,16 +17,17 @@ type ConfidenceInterval struct {
 	Upper  float64 `json:"upper"`
 }
 
-// BootstrapResult is BootstrapAnalytics' result. ExpectancyR/MaxDrawdownR
-// are both R-multiple scales (not percent); MaxDrawdownR is peak-to-trough
-// on the cumulative-R curve, so it is <= 0.
+// BootstrapResult contains intervals for expectancy and cumulative-R
+// drawdown. TradeRSharpe is the unannualized mean/sampling-standard-
+// deviation ratio on trade R values, with a zero benchmark; it is nil when
+// every bootstrap sample has undefined variance.
 type BootstrapResult struct {
-	ExpectancyR  ConfidenceInterval `json:"expectancyR"`
-	MaxDrawdownR ConfidenceInterval `json:"maxDrawdownR"`
-	Sharpe       ConfidenceInterval `json:"sharpe"`
-	Iterations   int                `json:"iterations"`
-	Confidence   float64            `json:"confidence"`
-	Seed         int64              `json:"seed"`
+	ExpectancyR  ConfidenceInterval  `json:"expectancyR"`
+	MaxDrawdownR ConfidenceInterval  `json:"maxDrawdownR"`
+	TradeRSharpe *ConfidenceInterval `json:"tradeRSharpe"`
+	Iterations   int                 `json:"iterations"`
+	Confidence   float64             `json:"confidence"`
+	Seed         int64               `json:"seed"`
 }
 
 // BootstrapOptions mirrors bootstrap.ts' BootstrapOptions, except Seed is
@@ -51,15 +51,15 @@ const (
 	bootstrapMaxConfidence     = 0.99
 )
 
-func sharpeOf(values []float64) float64 {
+func sharpeOf(values []float64) (float64, bool) {
 	if len(values) < 2 {
-		return 0
+		return 0, false
 	}
 	deviation := sampleStdDev(values)
 	if deviation == 0 {
-		return 0
+		return 0, false
 	}
-	return average(values) / deviation * math.Sqrt(float64(len(values)))
+	return average(values) / deviation, true
 }
 
 // BootstrapAnalytics resamples values (with replacement) Iterations times,
@@ -96,7 +96,7 @@ func BootstrapAnalytics(ctx context.Context, values []float64, opts BootstrapOpt
 	if len(r) == 0 {
 		empty := ConfidenceInterval{}
 		return BootstrapResult{
-			ExpectancyR: empty, MaxDrawdownR: empty, Sharpe: empty,
+			ExpectancyR: empty, MaxDrawdownR: empty,
 			Iterations: iterations, Confidence: confidence, Seed: opts.Seed,
 		}, nil
 	}
@@ -104,7 +104,7 @@ func BootstrapAnalytics(ctx context.Context, values []float64, opts BootstrapOpt
 	rng := newSeededRandom(opts.Seed)
 	expectancy := make([]float64, iterations)
 	drawdown := make([]float64, iterations)
-	sharpeValues := make([]float64, iterations)
+	sharpeValues := make([]float64, 0, iterations)
 	sample := make([]float64, len(r))
 	for iteration := 0; iteration < iterations; iteration++ {
 		if iteration%bootstrapCancellationCheckInterval == 0 {
@@ -121,15 +121,21 @@ func BootstrapAnalytics(ctx context.Context, values []float64, opts BootstrapOpt
 		}
 		expectancy[iteration] = average(sample)
 		drawdown[iteration] = maxDrawdownOfSeries(sample)
-		sharpeValues[iteration] = sharpeOf(sample)
+		if sharpe, ok := sharpeOf(sample); ok {
+			sharpeValues = append(sharpeValues, sharpe)
+		}
 	}
 
-	return BootstrapResult{
+	result := BootstrapResult{
 		ExpectancyR:  confidenceIntervalOf(expectancy, confidence),
 		MaxDrawdownR: confidenceIntervalOf(drawdown, confidence),
-		Sharpe:       confidenceIntervalOf(sharpeValues, confidence),
 		Iterations:   iterations,
 		Confidence:   confidence,
 		Seed:         opts.Seed,
-	}, nil
+	}
+	if len(sharpeValues) > 0 {
+		interval := confidenceIntervalOf(sharpeValues, confidence)
+		result.TradeRSharpe = &interval
+	}
+	return result, nil
 }

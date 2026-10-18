@@ -10,15 +10,15 @@ func buildExpectancy(stats []*tradeStat) Expectancy {
 	var grossProfitCents, grossLossCents int64 // grossLossCents is a positive magnitude
 
 	for _, st := range stats {
-		switch st.result {
-		case resultWinner:
+		switch {
+		case st.netPnlCents > 0:
 			wins++
 			sumWinCents += st.netPnlCents
 			grossProfitCents += st.netPnlCents
-		case resultLoser:
+		case st.netPnlCents < 0:
 			losses++
 			sumLossCents += st.netPnlCents
-			grossLossCents += -st.netPnlCents
+			grossLossCents -= st.netPnlCents
 		}
 	}
 
@@ -42,6 +42,8 @@ func buildExpectancy(stats []*tradeStat) Expectancy {
 	switch {
 	case total == 0:
 		note = "no_trades"
+	case grossProfitCents == 0 && grossLossCents == 0:
+		note = "no_profits_or_losses"
 	case grossLossCents == 0:
 		note = "no_losses"
 	default:

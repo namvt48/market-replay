@@ -63,13 +63,13 @@ function buildMonthCells(year: number, month: number, entries: Map<string, Calen
 }
 
 function metricValue(entry: CalendarDatum, metric: CalendarMetric): string {
-  if (metric === 'percent') return `${percentage.format(entry.pnlPercent)}%`
+  if (metric === 'percent') return entry.pnlPercent === null ? '—' : `${percentage.format(entry.pnlPercent)}%`
   if (metric === 'riskReward') return entry.riskReward === null ? '—' : `${entry.riskReward.toFixed(2)} RR`
   return currency.format(entry.pnl)
 }
 
 function compactMetricValue(entry: CalendarDatum, metric: CalendarMetric): string {
-  if (metric === 'percent') return `${percentage.format(entry.pnlPercent)}%`
+  if (metric === 'percent') return entry.pnlPercent === null ? '—' : `${percentage.format(entry.pnlPercent)}%`
   if (metric === 'riskReward') return entry.riskReward === null ? '—' : `${entry.riskReward.toFixed(1)}R`
   const absolute = Math.abs(entry.pnl)
   const compact = absolute >= 1_000 ? `${compactNumber.format(absolute / 1_000)}K` : compactNumber.format(absolute)

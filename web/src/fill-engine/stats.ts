@@ -36,7 +36,7 @@ export function calculateTradeStats(trades: EngineTrade[]): TradeStats {
     trades: trades.length,
     winRate: wins / trades.length,
     netCents,
-    expectancyCents: Math.round(netCents / trades.length),
+    expectancyCents: netCents / trades.length,
     averageR: rCount > 0 ? rTotal / rCount : null,
     profitFactor: grossLoss > 0 ? grossProfit / grossLoss : null,
   }

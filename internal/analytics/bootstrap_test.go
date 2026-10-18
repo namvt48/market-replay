@@ -20,7 +20,10 @@ func TestBootstrap_DeterministicForFixedSeedAndOrderedIntervals(t *testing.T) {
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("same seed/input produced different results:\nfirst=%+v\nsecond=%+v", first, second)
 	}
-	for _, interval := range []ConfidenceInterval{first.ExpectancyR, first.MaxDrawdownR, first.Sharpe} {
+	if first.TradeRSharpe == nil {
+		t.Fatal("tradeRSharpe = nil, want a defined interval for variable returns")
+	}
+	for _, interval := range []ConfidenceInterval{first.ExpectancyR, first.MaxDrawdownR, *first.TradeRSharpe} {
 		if interval.Lower > interval.Median {
 			t.Errorf("interval.lower %v > median %v", interval.Lower, interval.Median)
 		}
@@ -40,8 +43,8 @@ func TestBootstrap_EmptySampleIsStableZero(t *testing.T) {
 	if result.ExpectancyR != want {
 		t.Errorf("expectancyR = %+v, want zero interval", result.ExpectancyR)
 	}
-	if result.MaxDrawdownR != want || result.Sharpe != want {
-		t.Errorf("maxDrawdownR/sharpe not zero: %+v / %+v", result.MaxDrawdownR, result.Sharpe)
+	if result.MaxDrawdownR != want || result.TradeRSharpe != nil {
+		t.Errorf("maxDrawdownR/sharpe not zero/null: %+v / %+v", result.MaxDrawdownR, result.TradeRSharpe)
 	}
 }
 
@@ -69,10 +72,25 @@ func TestBootstrap_NoNaNOrInf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BootstrapAnalytics: %v", err)
 	}
-	for _, interval := range []ConfidenceInterval{result.ExpectancyR, result.MaxDrawdownR, result.Sharpe} {
-		if isNaNOrInf(interval.Lower) || isNaNOrInf(interval.Median) || isNaNOrInf(interval.Upper) {
-			t.Errorf("interval has NaN/Inf: %+v", interval)
+	for _, interval := range []*ConfidenceInterval{&result.ExpectancyR, &result.MaxDrawdownR, result.TradeRSharpe} {
+		if interval == nil {
+			continue
 		}
+		if isNaNOrInf(interval.Lower) || isNaNOrInf(interval.Median) || isNaNOrInf(interval.Upper) {
+			t.Errorf("interval has NaN/Inf: %+v", *interval)
+		}
+	}
+}
+func TestSharpeOfUsesSampleDeviationWithoutAnnualizing(t *testing.T) {
+	got, ok := sharpeOf([]float64{1, 2})
+	if !ok {
+		t.Fatal("sharpeOf([1,2]) undefined, want defined")
+	}
+	if got < 2.1213203435-1e-9 || got > 2.1213203435+1e-9 {
+		t.Errorf("Sharpe = %.12f, want mean/sampleStdDev = %.12f", got, 2.1213203435)
+	}
+	if _, ok := sharpeOf([]float64{1, 1}); ok {
+		t.Error("constant returns produced a defined Sharpe; want undefined")
 	}
 }
 

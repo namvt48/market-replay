@@ -8,6 +8,7 @@ import (
 type calendarAccumulator struct {
 	trades, wins, losses, breakeven int
 	pnlCents                        int64
+	startingBalanceCents            int64
 	endingBalanceCents              int64
 }
 
@@ -23,7 +24,7 @@ func buildCalendar(stats []*tradeStat, initialBalanceCents int64, loc *time.Loca
 		key := time.Unix(st.exitTs, 0).In(loc).Format("2006-01-02")
 		a, ok := accs[key]
 		if !ok {
-			a = &calendarAccumulator{}
+			a = &calendarAccumulator{startingBalanceCents: running}
 			accs[key] = a
 			order = append(order, key)
 		}
@@ -45,10 +46,6 @@ func buildCalendar(stats []*tradeStat, initialBalanceCents int64, loc *time.Loca
 	out := make([]CalendarDay, 0, len(order))
 	for _, key := range order {
 		a := accs[key]
-		var pnlPercent float64
-		if initialBalanceCents > 0 {
-			pnlPercent = float64(a.pnlCents) / float64(initialBalanceCents) * 100
-		}
 		out = append(out, CalendarDay{
 			Date:          key,
 			Trades:        a.trades,
@@ -56,7 +53,7 @@ func buildCalendar(stats []*tradeStat, initialBalanceCents int64, loc *time.Loca
 			Losses:        a.losses,
 			Breakeven:     a.breakeven,
 			Pnl:           centsToDollars(a.pnlCents),
-			PnlPercent:    pnlPercent,
+			PnlPercent:    periodReturnPercent(a.pnlCents, a.startingBalanceCents),
 			EndingBalance: centsToDollars(a.endingBalanceCents),
 		})
 	}

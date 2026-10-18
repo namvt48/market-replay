@@ -43,7 +43,7 @@ func TestEdgeStats_DistinguishesEdgeNoEvidenceAndZeroEdge(t *testing.T) {
 	if supportedStats.Verdict != EdgeVerdictEdge {
 		t.Errorf("supported verdict = %q, want edge", supportedStats.Verdict)
 	}
-	if supportedStats.PValue >= 0.05 {
+	if supportedStats.PValue == nil || *supportedStats.PValue >= 0.05 {
 		t.Errorf("supported pValue = %v, want < 0.05", supportedStats.PValue)
 	}
 
@@ -54,7 +54,7 @@ func TestEdgeStats_DistinguishesEdgeNoEvidenceAndZeroEdge(t *testing.T) {
 	}
 
 	winRate, avgWinR, avgLossR := 0.2, 1.0, 1.0
-	belowBreakeven := CalculateEdgeStats(repeat(1, 60), EdgeStatsOverrides{
+	belowBreakeven := CalculateEdgeStats(append(repeat(1, 30), repeat(2, 30)...), EdgeStatsOverrides{
 		WinRate: &winRate, AvgWinR: &avgWinR, AvgLossR: &avgLossR,
 	})
 	if belowBreakeven.Verdict != EdgeVerdictZeroEdge {
@@ -73,8 +73,8 @@ func TestEdgeStats_NoLossesMakesAvgRRAndBreakevenNil(t *testing.T) {
 	if stats.BreakevenRate != nil {
 		t.Errorf("breakevenRate = %v, want nil (no losses)", *stats.BreakevenRate)
 	}
-	if stats.Verdict != EdgeVerdictEdge {
-		t.Errorf("verdict = %q, want edge (zero-edge check skipped, not force-failed)", stats.Verdict)
+	if stats.Verdict != EdgeVerdictNoEvidence {
+		t.Errorf("verdict = %q, want no-evidence (zero variance is not statistical proof)", stats.Verdict)
 	}
 }
 
@@ -93,31 +93,35 @@ func TestEdgeStats_WinRateAndBreakevenRateArePercentScale(t *testing.T) {
 	}
 }
 
-func TestEdgeStats_ZeroStandardDeviationHasNoInfinityInJSON(t *testing.T) {
+func TestEdgeStats_ZeroVarianceHasUndefinedInference(t *testing.T) {
 	stats := CalculateEdgeStats(repeat(1, 60), EdgeStatsOverrides{})
-	// TS reference: tStat === +Infinity, pValue === 0. Go cannot JSON-encode
-	// Infinity, so the zero-variance case is nil+note instead (see
-	// EdgeStats' doc comment) — the report layer turns TStatNote into an
-	// audit warning rather than serializing it on the edge object itself.
-	if stats.TStatistic != nil {
-		t.Errorf("tStatistic = %v, want nil (zero variance)", *stats.TStatistic)
-	}
-	if stats.TStatNote != "zeroVarianceSample" {
-		t.Errorf("tStatNote = %q, want zeroVarianceSample", stats.TStatNote)
-	}
-	if stats.PValue != 0 {
-		t.Errorf("pValue = %v, want 0", stats.PValue)
+	if stats.TStatistic != nil || stats.PValue != nil || stats.TStatNote != "zeroVarianceSample" {
+		t.Errorf("degenerate inference = t:%v p:%v note:%q, want null t/p and warning", stats.TStatistic, stats.PValue, stats.TStatNote)
 	}
 }
 
-func TestEdgeStats_ZeroExpectancyAndZeroVarianceIsTStatisticZero(t *testing.T) {
-	values := repeat(0, 60)
-	stats := CalculateEdgeStats(values, EdgeStatsOverrides{})
-	if stats.TStatistic == nil || *stats.TStatistic != 0 {
-		t.Errorf("tStatistic = %v, want pointer to 0", stats.TStatistic)
+func TestEdgeStats_ZeroExpectancyAndZeroVarianceHasUndefinedInference(t *testing.T) {
+	stats := CalculateEdgeStats(repeat(0, 60), EdgeStatsOverrides{})
+	if stats.TStatistic != nil || stats.PValue != nil || stats.Verdict != EdgeVerdictNoEvidence {
+		t.Errorf("zero sample inference = %+v, want undefined statistics and no-evidence", stats)
 	}
-	if stats.PValue != 1 {
-		t.Errorf("pValue = %v, want 1", stats.PValue)
+}
+
+func TestEdgeStats_ZeroOutcomesUseDecisiveBreakevenShare(t *testing.T) {
+	values := append(append(repeat(1, 60), repeat(-1, 20)...), repeat(0, 120)...)
+	stats := CalculateEdgeStats(values, EdgeStatsOverrides{})
+	if stats.WinRate != 30 || stats.LossRate != 10 || stats.BreakevenRate == nil || *stats.BreakevenRate != 20 {
+		t.Errorf("rates = win:%v loss:%v breakeven:%v, want 30, 10, 20", stats.WinRate, stats.LossRate, stats.BreakevenRate)
+	}
+	if stats.Verdict != EdgeVerdictEdge || stats.PValue == nil || *stats.PValue >= 0.05 {
+		t.Errorf("stats = %+v, want significant positive edge", stats)
+	}
+}
+
+func TestEdgeStats_ZeroExpectancyAndZeroVarianceIsUndefined(t *testing.T) {
+	stats := CalculateEdgeStats(repeat(0, 60), EdgeStatsOverrides{})
+	if stats.TStatistic != nil || stats.PValue != nil || stats.TStatNote != "zeroVarianceSample" || stats.Verdict != EdgeVerdictNoEvidence {
+		t.Errorf("zero sample inference = %+v, want undefined statistics and no-evidence", stats)
 	}
 }
 
@@ -131,8 +135,8 @@ func TestEdgeStats_NoWinsIsZeroEdgeNotNil(t *testing.T) {
 	if stats.BreakevenRate == nil || *stats.BreakevenRate != 100 {
 		t.Errorf("breakevenRate = %v, want pointer to 100", stats.BreakevenRate)
 	}
-	if stats.Verdict != EdgeVerdictZeroEdge {
-		t.Errorf("verdict = %q, want zero-edge", stats.Verdict)
+	if stats.Verdict != EdgeVerdictNoEvidence {
+		t.Errorf("verdict = %q, want no-evidence", stats.Verdict)
 	}
 }
 
@@ -145,7 +149,7 @@ func TestEdgeStats_NoNaNOrInfAcrossVariedSamples(t *testing.T) {
 	}
 	for _, sample := range samples {
 		stats := CalculateEdgeStats(sample, EdgeStatsOverrides{})
-		if isNaNOrInf(stats.ExpectancyR) || isNaNOrInf(stats.PValue) || isNaNOrInf(stats.WinRate) {
+		if isNaNOrInf(stats.ExpectancyR) || (stats.PValue != nil && isNaNOrInf(*stats.PValue)) || isNaNOrInf(stats.WinRate) {
 			t.Errorf("sample len=%d produced NaN/Inf: %+v", len(sample), stats)
 		}
 		if stats.AvgRR != nil && isNaNOrInf(*stats.AvgRR) {

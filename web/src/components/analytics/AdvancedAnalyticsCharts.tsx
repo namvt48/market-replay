@@ -144,8 +144,11 @@ export function DrawdownChart({ points, mode }: DrawdownChartProps) {
   const minimum = Math.min(-1, ...values)
   const axis = domainTicks(minimum, 0)
   const y = (value: number): number => plot.top + (axis.maximum - value) / Math.max(1, axis.maximum - axis.minimum) * (height - plot.top - plot.bottom)
-  const x = (index: number): number => plot.left + index / Math.max(1, points.length - 1) * (width - plot.left - plot.right)
-  const barWidth = Math.max(1.2, (width - plot.left - plot.right) / points.length * 0.62)
+  const plotWidth = width - plot.left - plot.right
+  const x = (index: number): number => points.length === 1
+    ? plot.left + plotWidth / 2
+    : plot.left + index / Math.max(1, points.length - 1) * plotWidth
+  const barWidth = Math.max(1.2, Math.min(28, plotWidth / Math.max(1, points.length) * 0.62))
   const inspect = (ratio: number): TooltipData => {
     const index = Math.round(ratio * Math.max(0, points.length - 1))
     const point = points[index] ?? points[0]
@@ -206,6 +209,9 @@ export function HistogramChart({ bins }: HistogramChartProps) {
   const height = 250
   const inset = { left: 82, right: 16, top: 20, bottom: 46 }
   const maximum = Math.max(1, ...bins.map((bin) => bin.value))
+  const tickStep = Math.max(1, Math.ceil(maximum / 4))
+  const axisMaximum = Math.ceil(maximum / tickStep) * tickStep
+  const yTicks = Array.from({ length: axisMaximum / tickStep + 1 }, (_, index) => axisMaximum - index * tickStep)
   const inspect = (ratio: number): TooltipData => {
     const index = Math.min(bins.length - 1, Math.max(0, Math.floor(ratio * bins.length)))
     const bin = bins[index] ?? bins[0]
@@ -214,14 +220,16 @@ export function HistogramChart({ bins }: HistogramChartProps) {
   return (
     <Inspector className="h-[270px] min-w-[720px] w-full" inspect={(ratio) => inspect(ratio)}>
       <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Maximum adverse excursion distribution. Move the pointer across bars for exact values.">
-        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-          const lineY = inset.top + ratio * (height - inset.top - inset.bottom)
-          return <g key={ratio}><line x1={inset.left} x2={width - inset.right} y1={lineY} y2={lineY} stroke="#5d626a" strokeDasharray="8 7" opacity="0.75" /><text x={inset.left - 12} y={lineY + 4} textAnchor="end" fill="#9ba2ad" fontSize="10">{Math.round(maximum * (1 - ratio))}</text></g>
+        {yTicks.map((value) => {
+          const lineY = inset.top + (1 - value / axisMaximum) * (height - inset.top - inset.bottom)
+          return <g key={value}><line x1={inset.left} x2={width - inset.right} y1={lineY} y2={lineY} stroke="#5d626a" strokeDasharray="8 7" opacity="0.75" /><text x={inset.left - 12} y={lineY + 4} textAnchor="end" fill="#9ba2ad" fontSize="10">{value}</text></g>
         })}
         {bins.map((bin, index) => {
           const slot = (width - inset.left - inset.right) / bins.length
-          const barHeight = bin.value / maximum * (height - inset.top - inset.bottom)
-          return <g key={bin.label}><rect x={inset.left + index * slot + 2} y={height - inset.bottom - barHeight} width={Math.max(2, slot - 5)} height={barHeight} rx="5" fill="#d9685b" stroke="#f0796d" opacity="0.92" /><text x={inset.left + index * slot + slot / 2} y={height - 23} textAnchor="middle" fill="#aab0b9" fontSize="11">{bin.label}</text></g>
+          const barWidth = Math.min(80, Math.max(2, slot - 5))
+          const barHeight = bin.value / axisMaximum * (height - inset.top - inset.bottom)
+          const x = inset.left + index * slot + (slot - barWidth) / 2
+          return <g key={bin.label}><rect x={x} y={height - inset.bottom - barHeight} width={barWidth} height={barHeight} rx="5" fill="#d9685b" stroke="#f0796d" opacity="0.92" /><text x={inset.left + index * slot + slot / 2} y={height - 23} textAnchor="middle" fill="#aab0b9" fontSize="11">{bin.label}</text></g>
         })}
         <text x={width / 2} y={height - 2} textAnchor="middle" fill="#eff1f4" fontSize="12" fontWeight="600">MAE (in R)</text>
       </svg>
