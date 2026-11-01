@@ -1,9 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchChartBarsAt, fetchEconWeek, fetchIndicators, runIndicator } from './client'
+const indicatorMocks = vi.hoisted(() => ({
+  catalog: vi.fn(),
+  run: vi.fn(),
+}))
+
+vi.mock('../replay/local-indicator-engine', () => ({
+  localIndicatorCatalog: indicatorMocks.catalog,
+  runLocalIndicator: indicatorMocks.run,
+}))
 
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  indicatorMocks.catalog.mockReset()
+  indicatorMocks.run.mockReset()
 })
 
 describe('API client transient recovery', () => {
@@ -86,80 +97,77 @@ describe('API client transient recovery', () => {
     })).rejects.toThrow()
   })
 
-  it('loads indicator descriptors and runs one at the spoiler-safe cursor', async () => {
+  it('loads local descriptors and runs against spoiler-safe display bars', async () => {
     const descriptor = [{
-      id: 'gb69-cbmor', name: 'GB69 CBMOR', version: 1,
+      id: 'gb69-cbmor', name: 'GB69 CB MOR Range & Levels', version: 1,
       meta: { onMainPanel: true, format: 'inherit' },
       inputs: [{ kind: 'bool', key: 'show_lines', label: 'Show lines', default: true }],
     }]
+    const result = { draws: [{ id: 1, kind: 'ray' as const, t0: 120, y0: 100, style: {} }], plots: [], onMainPanel: true }
+    indicatorMocks.catalog.mockResolvedValue(descriptor)
+    indicatorMocks.run.mockResolvedValue(result)
+    const symbol = {
+      symbol: 'NQ', name: 'Nasdaq', kind: 'future', tickSize: 0.25, pointValue: 20,
+      currency: 'USD', priceDecimals: 2, sessionTz: 'America/New_York', rollRule: '',
+      commissionPerSide: 0, defaultSlippageTicks: 0, ranges: {},
+    }
+    const bars = [
+      { time: 120, openTicks: 400, highTicks: 404, lowTicks: 396, closeTicks: 402, volume: 10 },
+      { time: 600, openTicks: 401, highTicks: 405, lowTicks: 397, closeTicks: 403, volume: 11 },
+      { time: 660, openTicks: 402, highTicks: 406, lowTicks: 398, closeTicks: 404, volume: 12 },
+    ]
     const fetchMock = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response(JSON.stringify(descriptor), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        draws: [
-          { id: 1, kind: 'ray', label: 'NY EQ', t0: 120, y0: 20_000, style: { linecolor: '#5b8cff' } },
-          { id: 2, kind: 'vline', t0: 180, y0: 0, style: { linecolor: '#898c96' } },
-          { id: 3, kind: 'marker', label: '⮝', t0: 240, y0: 20_100, style: { color: '#ff5563' } },
-        ],
-        plots: [],
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([symbol]), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(bars), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(fetchIndicators()).resolves.toEqual(descriptor)
-    await expect(runIndicator('NQ', '5m', 'gb69-cbmor', 600, { show_lines: false })).resolves.toMatchObject({
-      draws: [{ kind: 'ray' }, { kind: 'vline' }, { kind: 'marker' }],
-    })
+    await expect(runIndicator('NQ', '5m', 'gb69-cbmor', 600, { show_lines: false })).resolves.toEqual(result)
 
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('/api/v1/symbols')
     const request = new URL(String(fetchMock.mock.calls[1]?.[0]), 'http://localhost')
-    expect(request.searchParams.get('symbol')).toBe('NQ')
-    expect(request.searchParams.get('tf')).toBe('5m')
+    expect(request.pathname).toBe('/api/v1/chart-bars/at')
     expect(request.searchParams.get('at')).toBe('600')
     expect(request.searchParams.get('to')).toBe('600')
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ inputs: { show_lines: false } })
+    expect(request.searchParams.get('before')).toBe('1500')
+    expect(indicatorMocks.run).toHaveBeenCalledWith('NQ', '5m', 'gb69-cbmor', bars.slice(0, 2), { show_lines: false }, 0.25, 'America/New_York', [], true, undefined)
+    expect(request.searchParams.get('indicatorWindow')).toBe('1')
   })
 
-  it('deduplicates concurrent identical indicator runs across panes', async () => {
-    let resolveFetch: ((response: Response) => void) | undefined
-    const fetchMock = vi.fn<typeof fetch>().mockImplementation(() => new Promise<Response>((resolve) => {
-      resolveFetch = resolve
-    }))
-    vi.stubGlobal('fetch', fetchMock)
-
-    const first = runIndicator('NQ', '5m', 'gb69-cbmor', 600, { show_lines: false, show_boxes: true })
-    const second = runIndicator('NQ', '5m', 'gb69-cbmor', 600, { show_boxes: true, show_lines: false })
-
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    resolveFetch?.(new Response(JSON.stringify({ draws: [], plots: [] }), {
-      status: 200, headers: { 'Content-Type': 'application/json' },
-    }))
-    await expect(Promise.all([first, second])).resolves.toEqual([
-      { draws: [], plots: [] },
-      { draws: [], plots: [] },
-    ])
-  })
-
-  it('keeps shared indicator work alive while another pane still waits', async () => {
-    let resolveFetch: ((response: Response) => void) | undefined
-    let sharedSignal: AbortSignal | null = null
-    const fetchMock = vi.fn<typeof fetch>().mockImplementation((_input, init) => {
-      sharedSignal = init?.signal ?? null
-      return new Promise<Response>((resolve) => {
-        resolveFetch = resolve
+  it('coalesces concurrent indicator history requests for one replay cursor', async () => {
+    const symbol = {
+      symbol: 'NQ', name: 'Nasdaq', kind: 'future', tickSize: 0.25, pointValue: 20,
+      currency: 'USD', priceDecimals: 2, sessionTz: 'America/New_York', rollRule: '',
+      commissionPerSide: 0, defaultSlippageTicks: 0, ranges: {},
+    }
+    const bars = [{ time: 600, openTicks: 400, highTicks: 404, lowTicks: 396, closeTicks: 402, volume: 10 }]
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const path = new URL(String(input), 'http://localhost').pathname
+      return new Response(JSON.stringify(path === '/api/v1/symbols' ? [symbol] : bars), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
       })
     })
     vi.stubGlobal('fetch', fetchMock)
+    indicatorMocks.run.mockResolvedValue({ draws: [], plots: [] })
 
-    const firstController = new AbortController()
-    const secondController = new AbortController()
-    const first = runIndicator('NQ', '1m', 'killzones', 900, { show_asia: true }, firstController.signal)
-    const second = runIndicator('NQ', '1m', 'killzones', 900, { show_asia: true }, secondController.signal)
+    await Promise.all([
+      runIndicator('NQ', '1m', 'ema', 600, {}),
+      runIndicator('NQ', '1m', 'rsi', 600, {}),
+    ])
 
-    firstController.abort()
-    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
-    expect((sharedSignal as AbortSignal | null)?.aborted).toBe(false)
-    resolveFetch?.(new Response(JSON.stringify({ draws: [], plots: [] }), {
-      status: 200, headers: { 'Content-Type': 'application/json' },
-    }))
-    await expect(second).resolves.toEqual({ draws: [], plots: [] })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const chartRequests = fetchMock.mock.calls.filter(([input]) =>
+      new URL(String(input), 'http://localhost').pathname === '/api/v1/chart-bars/at')
+    expect(chartRequests).toHaveLength(1)
+    expect(indicatorMocks.run).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not start local calculation after the caller has aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(runIndicator('NQ', '1m', 'killzones', 900, {}, controller.signal))
+      .rejects.toMatchObject({ name: 'AbortError' })
+    expect(indicatorMocks.run).not.toHaveBeenCalled()
   })
 })

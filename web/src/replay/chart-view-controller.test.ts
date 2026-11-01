@@ -128,6 +128,32 @@ describe('ChartViewController.pushRawBars', () => {
     expect(mock.setSpacerTimes).not.toHaveBeenCalled()
   })
 
+  it('replaces consumed future whitespace when replay jumps across the NQ maintenance break', async () => {
+    const { mock, view } = makeController('1m')
+    await view.initialize(symbol)
+    const barAt = (ts: number): Bar1m => ({ ...bar1m(0), ts })
+    const beforeBreak = Date.parse('2026-08-11T16:59:00-04:00') / 1000
+    const reopen = Date.parse('2026-08-11T18:00:00-04:00') / 1000
+    view.rebuild([barAt(beforeBreak)], symbol)
+
+    const initialSpacers = mock.setSpacerTimes.mock.calls.at(-1)?.[0] as number[]
+    expect(initialSpacers.slice(0, 60)).toEqual(
+      Array.from({ length: 60 }, (_, index) => beforeBreak + (index + 1) * 60),
+    )
+    const initialCallCount = mock.setSpacerTimes.mock.calls.length
+    view.pushRawBars([barAt(reopen)])
+
+    const transitionSpacers = mock.setSpacerTimes.mock.calls.at(-1)?.[0] as number[]
+    view.rebuild([barAt(beforeBreak), barAt(reopen)], symbol)
+    const rebuiltSpacers = mock.setSpacerTimes.mock.calls.at(-1)?.[0] as number[]
+
+    expect(transitionSpacers).toEqual(rebuiltSpacers)
+    expect(mock.setSpacerTimes).toHaveBeenCalledTimes(initialCallCount + 2)
+    expect(transitionSpacers[0]).toBe(reopen + 60)
+    expect(transitionSpacers).not.toContain(beforeBreak + 60)
+
+  })
+
   it('appends in-order raw bars across multiple frames without duplicating or reordering', async () => {
     const { mock, view } = makeController('1m')
     await view.initialize(symbol)

@@ -1955,29 +1955,49 @@ describe('ReplayEngine indicator playback cadence', () => {
     return { engine, view }
   }
 
-  afterEach(() => { vi.useRealTimers() })
+  function startPlaybackFrames(engine: ReplayEngine): (count: number) => Promise<void> {
+    const callbacks: FrameRequestCallback[] = []
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callbacks.push(callback)
+      return callbacks.length
+    })
+    let now = performance.now()
+    engine.play()
+    return async (count) => {
+      for (let index = 0; index < count; index += 1) {
+        const callback = callbacks.shift()
+        if (!callback) throw new Error('Expected next replay frame')
+        now += 250
+        callback(now)
+        await vi.advanceTimersByTimeAsync(250)
+      }
+    }
+  }
 
-  it('recomputes indicators while playing instead of waiting for the replay to stop', async () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
+
+
+  it('skips duplicate playback refreshes at the same cursor but refreshes after stepping forward', async () => {
     const { engine } = await playableEngineWithIndicator()
 
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
     engineMocks.runIndicator.mockClear()
     engine.play()
-    await vi.advanceTimersByTimeAsync(1_600)
+    await vi.advanceTimersByTimeAsync(600)
 
-    // Three intervals' worth of wall clock. Before this existed the 1s
-    // trailing debounce was reset by every advance() and never fired at all,
-    // so any repeat call at all is the regression this guards.
-    expect(engineMocks.runIndicator.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(engineMocks.runIndicator).not.toHaveBeenCalled()
+
+    engine.stepForward()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(engineMocks.runIndicator).toHaveBeenCalledOnce()
     engine.destroy()
   })
 
-  it('skips a playback tick rather than aborting a run that has not finished', async () => {
+  it('skips playback ticks rather than aborting a run that has not finished', async () => {
     const { engine } = await playableEngineWithIndicator()
-    // A run that never settles is the pathological case: refreshIndicatorGroup
-    // aborts the outstanding controller on entry, so a ticker that restarted
-    // instead of skipping would cancel and relaunch forever and no run would
-    // ever complete.
+    // Drive one committed bar to start a real background refresh, then let a
+    // later timer tick arrive while that refresh is unresolved.
     const signals: AbortSignal[] = []
     engineMocks.runIndicator.mockImplementation((...args: unknown[]) => {
       signals.push(args[5] as AbortSignal)
@@ -1987,12 +2007,11 @@ describe('ReplayEngine indicator playback cadence', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
     engineMocks.runIndicator.mockClear()
     signals.length = 0
-    engine.play()
-    await vi.advanceTimersByTimeAsync(600)
+    const advanceFrames = startPlaybackFrames(engine)
+    await advanceFrames(6)
     const afterFirstTick = engineMocks.runIndicator.mock.calls.length
-    expect(afterFirstTick).toBeGreaterThanOrEqual(1)
-
-    await vi.advanceTimersByTimeAsync(2_500)
+    expect(afterFirstTick).toBe(1)
+    await advanceFrames(2)
 
     expect(engineMocks.runIndicator.mock.calls.length).toBe(afterFirstTick)
     expect(signals.every((signal) => !signal.aborted)).toBe(true)
@@ -2004,10 +2023,9 @@ describe('ReplayEngine indicator playback cadence', () => {
     expect(engine.getSnapshot().indicatorLoading).toBe(false)
 
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
-    engine.play()
-    await vi.advanceTimersByTimeAsync(600)
-    expect(engine.getSnapshot().indicatorLoading).toBe(false)
-    await vi.advanceTimersByTimeAsync(1_200)
+    const advanceFrames = startPlaybackFrames(engine)
+    await advanceFrames(6)
+    expect(engineMocks.runIndicator).toHaveBeenCalled()
     expect(engine.getSnapshot().indicatorLoading).toBe(false)
     engine.destroy()
   })
@@ -2052,9 +2070,9 @@ describe('ReplayEngine indicator playback cadence', () => {
 
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
     signals.length = 0
-    engine.play()
-    await vi.advanceTimersByTimeAsync(600)
-    expect(signals.length).toBeGreaterThanOrEqual(1)
+    const advanceFrames = startPlaybackFrames(engine)
+    await advanceFrames(6)
+    expect(signals.length).toBe(1)
     const background = signals[0]
 
     engine.pause()
@@ -2063,4 +2081,5 @@ describe('ReplayEngine indicator playback cadence', () => {
     expect(background.aborted).toBe(true)
     engine.destroy()
   })
+
 })

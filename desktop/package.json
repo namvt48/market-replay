@@ -1,0 +1,13 @@
+{
+  "name": "market-replay-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local desktop host for Market Replay",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "44.9.3"
+  }
+}

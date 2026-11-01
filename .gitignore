@@ -15,6 +15,10 @@ deploy/duckdns.conf
 # before the Go embed step, so it must never be relied on as committed.
 web/node_modules/
 web/dist/
+desktop/node_modules/
+desktop/**/.npm-cache/
+desktop/.cache/
+/.cache/
 web/*.local
 
 # Generated QA/debug output — keep source tests, never their screenshots,

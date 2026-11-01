@@ -74,6 +74,24 @@ func TestEngine_VerticalLineAndMarkerBindings(t *testing.T) {
 	}
 }
 
+func TestInputBarsUsesRunWindowAnchorAndReplayBoundary(t *testing.T) {
+	start := int64(1_700_000_000)
+	file := openFixtureFile(t, "NQ", "1m", linearSpecs(start, 40), testMeta)
+	maxTs := start + 30*60
+	got := InputBars(file, RunParams{
+		At: start + 29*60, Before: 16, After: 5, MaxTs: maxTs,
+	})
+	if len(got) != 19 {
+		t.Fatalf("bars = %d, want 19 (anchored start through replay boundary)", len(got))
+	}
+	if got[0].Time != start+12*60 {
+		t.Fatalf("first time = %d, want snapped anchor %d", got[0].Time, start+12*60)
+	}
+	if got[len(got)-1].Time != maxTs {
+		t.Fatalf("last time = %d, want replay boundary %d", got[len(got)-1].Time, maxTs)
+	}
+}
+
 func TestEngine_RegisterRejectsSyntaxError(t *testing.T) {
 	e := NewEngine()
 	if err := e.Register("bad", "Bad", 1, []byte(`const x = ;`)); err == nil {

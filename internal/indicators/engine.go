@@ -212,6 +212,25 @@ func clampWindow(file barSeries, at int64, before, after int, maxTs int64) bars.
 	return window
 }
 
+// InputBars returns the raw-bar window consumed by Run, including its snapped
+// session anchor and replay-safe end bound, for local indicator execution.
+func InputBars(file *bars.BarFile, params RunParams) []bars.ChartBar {
+	window := clampWindow(fileSeries{file: file}, params.At, params.Before, params.After, params.MaxTs)
+	output := make([]bars.ChartBar, window.Len())
+	for offset := range output {
+		index := window.From + offset
+		output[offset] = bars.ChartBar{
+			Time:       file.TsAt(index),
+			OpenTicks:  file.OpenAt(index),
+			HighTicks:  file.HighAt(index),
+			LowTicks:   file.LowAt(index),
+			CloseTicks: file.CloseAt(index),
+			Volume:     uint64(file.VolumeAt(index)),
+		}
+	}
+	return output
+}
+
 // Run executes a registered script over a bounded bar window in a fresh
 // Runtime — the module-level `let` state a script accumulates across
 // onTick calls lives only in that Runtime's heap, so it can never leak

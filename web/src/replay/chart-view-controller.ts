@@ -132,12 +132,20 @@ export class ChartViewController {
     const previousTailTime = this.displayHistory.at(-1)?.time
     const batch = this.pendingRawBars.length > 0 ? [...this.pendingRawBars, ...rawBars] : rawBars
     this.pendingRawBars = []
+    const displayInterval = timeframeSeconds(this.timeframe)
+    let lastProcessedDisplayTime = previousTailTime
+    let crossedDisplayGap = false
     const displayBars = [] as ReturnType<DisplayAggregator['push']>['forming'][]
     for (const raw of batch) {
       if (!this.currentSymbol || !marketSessionIncludes(raw.ts, this.marketSession, this.currentSymbol)) continue
       const result = this.aggregator.push(raw)
+      const displayTime = result.forming.time
+      if (lastProcessedDisplayTime !== undefined && displayTime > lastProcessedDisplayTime) {
+        if (displayTime - lastProcessedDisplayTime > displayInterval) crossedDisplayGap = true
+        lastProcessedDisplayTime = displayTime
+      }
       const last = displayBars.at(-1)
-      if (last?.time === result.forming.time) displayBars[displayBars.length - 1] = result.forming
+      if (last?.time === displayTime) displayBars[displayBars.length - 1] = result.forming
       else displayBars.push(result.forming)
     }
     if (displayBars.length === 0) return
@@ -179,7 +187,8 @@ export class ChartViewController {
       this.displayHistory = [...byTime.values()].sort((left, right) => left.time - right.time).slice(-MAX_VIEWPORT_DISPLAY_BARS)
     }
     this.adapter.pushBars(displayBars)
-    if (this.displayHistory.at(-1)?.time !== previousTailTime) this.syncSpacerTimes()
+    // A replay jump can consume reserved blanks; rebase them so only right-side whitespace remains.
+    if (this.displayHistory.at(-1)?.time !== previousTailTime) this.syncSpacerTimes(crossedDisplayGap)
   }
 
   queueRawBars(rawBars: Bar1m[]): void { this.pendingRawBars.push(...rawBars) }

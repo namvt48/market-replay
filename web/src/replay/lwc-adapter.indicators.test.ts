@@ -26,6 +26,7 @@ const chartMocks = vi.hoisted(() => ({
   }>,
   addSeries: vi.fn(),
   removeSeries: vi.fn(),
+  setPaneHeight: vi.fn(),
 }))
 
 vi.mock('lightweight-charts-drawing', () => ({
@@ -65,7 +66,11 @@ vi.mock('lightweight-charts', () => {
     subscribeVisibleLogicalRangeChange: vi.fn(), unsubscribeVisibleLogicalRangeChange: vi.fn(),
     applyOptions: vi.fn(), timeToIndex: (time: number) => time, timeToCoordinate: (time: number) => time,
   }
-  const pane = { getHeight: () => 100, setHeight: vi.fn() }
+  const panes = [
+    { getHeight: () => 100, setHeight: chartMocks.setPaneHeight, paneIndex: () => 0 },
+    { getHeight: () => 100, setHeight: chartMocks.setPaneHeight, paneIndex: () => 1 },
+    { getHeight: () => 100, setHeight: chartMocks.setPaneHeight, paneIndex: () => 2 },
+  ]
   const makeSeries = (kind: string, options: Record<string, unknown>): FakeLineSeries => ({
     kind, options,
     setData: vi.fn(), update: vi.fn(), pop: vi.fn(), applyPrimitive: vi.fn(),
@@ -78,7 +83,7 @@ vi.mock('lightweight-charts', () => {
       applyOptions: vi.fn(),
       coordinateToPrice: (y: number) => y,
       priceToCoordinate: (price: number) => price,
-      getPane: () => pane,
+      getPane: () => panes[Number(chartMocks.addSeries.mock.calls.at(-1)?.[2] ?? 0)] ?? panes[0],
       priceScale: () => ({
         applyOptions: vi.fn(), getVisibleRange: () => ({ from: 90, to: 110 }),
         options: () => ({ autoScale: true, invertScale: false, mode: 0 }),
@@ -91,7 +96,7 @@ vi.mock('lightweight-charts', () => {
   const chart = {
     addSeries: chartMocks.addSeries,
     removeSeries: chartMocks.removeSeries,
-    panes: () => [pane, pane],
+    panes: () => panes.slice(0, 2),
     timeScale: () => timeScale,
     applyOptions: vi.fn(), resize: vi.fn(), remove: vi.fn(),
     subscribeCrosshairMove: vi.fn(), unsubscribeCrosshairMove: vi.fn(),
@@ -360,5 +365,28 @@ describe('LwcAdapter.setIndicators', () => {
     const rebuilt = indicatorSeries()
     expect(rebuilt).toHaveLength(1)
     expect(rebuilt[0].setData).toHaveBeenCalledTimes(1)
+  })
+})
+describe('indicator pane assignment', () => {
+  it('places sub-panel indicator plots in a separate auto-sized pane', async () => {
+    const adapter = await mount()
+    adapter.setIndicators([{ ...result('rsi', plots('rsi', 3)), onMainPanel: false }])
+    const series = indicatorSeries()
+    expect(series).toHaveLength(1)
+    expect(chartMocks.addSeries.mock.calls.at(-1)?.[2]).toBe(2)
+    expect(series[0].setData).toHaveBeenCalledOnce()
+    expect(chartMocks.setPaneHeight).toHaveBeenCalledWith(120)
+  })
+
+  it('recreates the indicator series when its panel assignment changes', async () => {
+    const adapter = await mount()
+    adapter.setIndicators([{ ...result('rsi', plots('rsi', 3)), onMainPanel: false }])
+    chartMocks.removeSeries.mockClear()
+    chartMocks.addSeries.mockClear()
+
+    adapter.setIndicators([result('rsi', plots('rsi', 3))])
+
+    expect(chartMocks.removeSeries).toHaveBeenCalledOnce()
+    expect(chartMocks.addSeries.mock.calls.at(-1)?.[2]).toBe(0)
   })
 })

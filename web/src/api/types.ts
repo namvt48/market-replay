@@ -214,6 +214,7 @@ export interface IndicatorPlotPoint {
 export interface IndicatorRunResult {
   draws: IndicatorDrawIntent[]
   plots: IndicatorPlotPoint[]
+  onMainPanel?: boolean
 }
 
 export interface ActiveIndicator {

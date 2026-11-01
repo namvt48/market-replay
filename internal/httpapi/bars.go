@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"market-replay/internal/bars"
+	"market-replay/internal/indicators"
 	"market-replay/internal/model"
 )
 
@@ -212,6 +213,11 @@ func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, fmt.Errorf("%w: invalid market session", errBadRequest))
 		return
 	}
+	indicatorWindow := query.Get("indicatorWindow")
+	if indicatorWindow != "" && indicatorWindow != "1" {
+		writeError(w, fmt.Errorf("%w: invalid indicator window flag", errBadRequest))
+		return
+	}
 	meta, ok := lookupSymbolMeta(s, symbol)
 	if !ok {
 		writeError(w, fmt.Errorf("%w: unknown symbol %s", bars.ErrUnknownSymbolTF, symbol))
@@ -220,6 +226,19 @@ func (s *Server) handleChartBarsAt(w http.ResponseWriter, r *http.Request) {
 	var output []bars.ChartBar
 	err = s.Registry.WithDataset(symbol, bars.BaseTimeframe(tf), func(file *bars.BarFile, calendar *bars.Calendar, _ string) error {
 		var aggregateErr error
+		if indicatorWindow == "1" {
+			params := indicators.RunParams{At: at, Before: before, After: after, MaxTs: maxTs}
+			if tf != bars.BaseTimeframe(tf) {
+				params, aggregateErr = quantizeToClosedBucket(meta, tf, params)
+				if aggregateErr != nil {
+					return aggregateErr
+				}
+				output, aggregateErr = bars.AggregateChartWindowForSession(file, calendar, meta, tf, params.At, params.Before, params.After, params.MaxTs, marketSession)
+				return aggregateErr
+			}
+			output = indicators.InputBars(file, params)
+			return nil
+		}
 		output, aggregateErr = bars.AggregateChartWindowForSession(file, calendar, meta, tf, at, before, after, maxTs, marketSession)
 		return aggregateErr
 	})

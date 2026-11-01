@@ -222,6 +222,7 @@ interface RenderedIndicator {
   draws: readonly IndicatorDrawIntent[]
   /** Every "<indicatorId>:<plotKey>" series this indicator owns. */
   seriesKeys: Set<string>
+  onMainPanel: boolean
 }
 
 /**
@@ -816,13 +817,18 @@ export class LwcAdapter implements ChartAdapter {
     const present = new Set<string>()
     for (const result of results) {
       present.add(result.indicatorId)
-      const rendered = this.renderedIndicators.get(result.indicatorId)
+      let rendered = this.renderedIndicators.get(result.indicatorId)
+      if (rendered && rendered.onMainPanel !== (result.onMainPanel !== false)) {
+        for (const key of rendered.seriesKeys) this.removeIndicatorSeries(key)
+        this.renderedIndicators.delete(result.indicatorId)
+        rendered = undefined
+      }
       const delta = plotDelta(rendered?.plots, result.plots)
       if (delta.kind === 'identical') {
         // Geometry may still have moved, so the memoized draws have to
         // advance even though no series is touched.
         if (rendered) this.renderedIndicators.set(result.indicatorId, { ...rendered, draws: result.draws })
-        else this.renderedIndicators.set(result.indicatorId, { plots: result.plots, draws: result.draws, seriesKeys: new Set() })
+        else this.renderedIndicators.set(result.indicatorId, { plots: result.plots, draws: result.draws, seriesKeys: new Set(), onMainPanel: result.onMainPanel !== false })
         continue
       }
       if (delta.kind === 'append') this.appendIndicatorPlots(result, delta.from)
@@ -878,7 +884,7 @@ export class LwcAdapter implements ChartAdapter {
       this.indicatorSeriesTail.set(key, Number(points[points.length - 1].time))
       seriesKeys.add(key)
     }
-    this.renderedIndicators.set(result.indicatorId, { plots: result.plots, draws: result.draws, seriesKeys })
+    this.renderedIndicators.set(result.indicatorId, { plots: result.plots, draws: result.draws, seriesKeys, onMainPanel: result.onMainPanel !== false })
   }
 
   /** The cold path: first render, rewind, timeframe change, input change. */
@@ -897,26 +903,31 @@ export class LwcAdapter implements ChartAdapter {
     for (const key of this.renderedIndicators.get(result.indicatorId)?.seriesKeys ?? []) {
       if (!grouped.has(key)) this.removeIndicatorSeries(key)
     }
+    // Resolve from a live series: removing another indicator can renumber panes.
+    const existing = [...grouped.keys()].map((key) => this.indicatorSeries.get(key)).find((series) => series !== undefined)
+    const paneIndex = result.onMainPanel !== false ? 0 : existing?.getPane().paneIndex() ?? this.chart.panes().length
     for (const [key, points] of grouped) {
       const data = [...points.values()].sort((left, right) => Number(left.time) - Number(right.time))
-      this.ensureIndicatorSeries(key).setData(data)
+      this.ensureIndicatorSeries(key, paneIndex).setData(data)
       this.indicatorSeriesTail.set(key, Number(data[data.length - 1].time))
     }
     this.renderedIndicators.set(result.indicatorId, {
-      plots: result.plots, draws: result.draws, seriesKeys: new Set(grouped.keys()),
+      plots: result.plots, draws: result.draws, seriesKeys: new Set(grouped.keys()), onMainPanel: result.onMainPanel !== false,
     })
   }
 
-  private ensureIndicatorSeries(key: string): ISeriesApi<'Line'> {
+  private ensureIndicatorSeries(key: string, paneIndex: number): ISeriesApi<'Line'> {
     const existing = this.indicatorSeries.get(key)
     if (existing) return existing
+    const createsPane = paneIndex >= this.chart!.panes().length
     const series = this.chart!.addSeries(LineSeries, {
       color: INDICATOR_PLOT_COLORS[this.indicatorPlotColorSlot(key)],
       lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
-    })
+    }, paneIndex)
+    if (createsPane) series.getPane().setHeight(120)
     this.indicatorSeries.set(key, series)
     return series
   }

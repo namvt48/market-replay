@@ -60,6 +60,28 @@ func TestHandleChartBarsAt_AggregatesRequestedDisplayTimeframe(t *testing.T) {
 	}
 }
 
+func TestHandleChartBarsAt_IndicatorWindowUsesRunAnchor(t *testing.T) {
+	s := newTestServer(t)
+	at := int64(testFixtureStart) + 14*60
+	req := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/v1/chart-bars/at?symbol=NQ&tf=1m&at=%d&before=8&after=0&to=%d&indicatorWindow=1", at, at), nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got []chartBarResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 9 {
+		t.Fatalf("bars = %d, want 9 (8 requested plus the snapped anchor bar)", len(got))
+	}
+	if got[0].Time != int64(testFixtureStart)+6*60 || got[len(got)-1].Time != at {
+		t.Fatalf("window = [%d,%d], want [%d,%d]", got[0].Time, got[len(got)-1].Time, int64(testFixtureStart)+6*60, at)
+	}
+}
+
 // TestHandleChartBarsAt_SecondsTimeframeReadsFromSecondsDataset registers an
 // NQ/1m fixture and a separate NQ/5s fixture starting far outside the 1m
 // fixture's range, then asserts a "5s" chart-bars request at that far

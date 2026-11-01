@@ -48,7 +48,7 @@ docker compose kill -s HUP app
 Prerequisites:
 
 - Go 1.26+ (`go.mod` targets 1.26.1)
-- Node.js with pnpm, for building the web frontend (the Docker build uses Node 22)
+- Node.js 22.12+ with npm and pnpm; Electron is pinned in `desktop/package-lock.json`.
 
 Build and run:
 
@@ -58,6 +58,18 @@ make run     # builds (if needed) and serves on :8080
 ```
 
 The build order matters: `make build` runs the frontend build (`pnpm install` + `pnpm build` in `web/`) before `go build`, because the Go binary embeds `web/dist` through `web/embed.go`.
+
+### Desktop app
+
+For a standalone local window, without Docker or manually opening a browser:
+
+```sh
+make desktop-run
+```
+
+This builds the embedded frontend and Go server, installs the pinned Electron runtime, then opens the app in a sandboxed desktop window. The Go child binds to an ephemeral `127.0.0.1` port and is stopped when the last app window closes. Runtime data and `config.yaml` are the same as local development. Use `DATA_DIR`, `DB_PATH`, or `CONFIG_FILE` environment overrides when needed; keep the database path separate from any live server using the same data.
+
+Built-in indicator scripts run in a dedicated Web Worker from the same sources under `internal/indicators/scripts/`; forward cursor updates reuse script state while the input-bar prefix is unchanged. Cancelling an obsolete indicator request settles only that request and keeps the worker warm for the next cursor. Playback skips refreshes when the cursor has not advanced and suppresses the trailing foreground debounce, avoiding duplicate work and foreground/background races. Indicator drawing anchors outside the loaded bar range snap to the nearest loaded logical bar so historical session rays and extended zones remain visible. Replay spacer points are rebased only when an advance skips display intervals, so consumed future whitespace cannot remain behind the cursor; ordinary bar advances keep the reserved window. Indicator requests fetch spoiler-safe bars and symbol metadata from the local Go server, but do not call its Goja run endpoint.
 
 Quality gates:
 

@@ -2,6 +2,7 @@ import type {
   IPrimitivePaneRenderer,
   IPrimitivePaneView,
   ISeriesPrimitive,
+  Logical,
   SeriesAttachedParameter,
   Time,
   UTCTimestamp,
@@ -46,7 +47,7 @@ class IndicatorDrawingsRenderer implements IPrimitivePaneRenderer {
     target.useBitmapCoordinateSpace((scope) => {
       const { context, horizontalPixelRatio: hx, verticalPixelRatio: vy, bitmapSize } = scope
       context.save()
-      for (const draw of this.primitive.draws) {
+      for (const draw of this.primitive.visibleDraws()) {
         const x0 = this.primitive.timeCoordinate(draw.t0)
         if (x0 === null) continue
         const style = draw.style
@@ -128,8 +129,34 @@ class IndicatorDrawingsRenderer implements IPrimitivePaneRenderer {
   }
 }
 
+interface VisibleDrawCache {
+  source: readonly IndicatorDrawIntent[]
+  from: number
+  to: number
+  visible: readonly IndicatorDrawIntent[]
+}
+
 export class IndicatorDrawingsPrimitive implements ISeriesPrimitive<Time> {
   draws: readonly IndicatorDrawIntent[] = []
+  private visibleDrawCache: VisibleDrawCache | null = null
+
+  visibleDraws(): readonly IndicatorDrawIntent[] {
+    const range = this.attachedParams?.chart.timeScale().getVisibleRange()
+    if (!range || typeof range.from !== 'number' || typeof range.to !== 'number') return this.draws
+    const from = range.from
+    const to = range.to
+    const cached = this.visibleDrawCache
+    if (cached?.source === this.draws && cached.from === from && cached.to === to) return cached.visible
+    const visible = this.draws.filter((draw) => {
+      if (draw.kind === 'vline' || draw.kind === 'marker') return draw.t0 >= from && draw.t0 <= to
+      if (draw.kind === 'ray') return draw.t0 <= to
+      const extended = draw.style.extendRight === true
+      const end = extended ? to : draw.t1 ?? draw.t0
+      return Math.max(draw.t0, end) >= from && Math.min(draw.t0, end) <= to
+    })
+    this.visibleDrawCache = { source: this.draws, from, to, visible }
+    return visible
+  }
   private attachedParams: SeriesAttachedParameter<Time> | null = null
   private readonly paneView = new IndicatorDrawingsPaneView(this)
 
@@ -139,11 +166,22 @@ export class IndicatorDrawingsPrimitive implements ISeriesPrimitive<Time> {
 
   setDraws(draws: readonly IndicatorDrawIntent[]): void {
     this.draws = draws.filter((draw) => Number.isFinite(draw.t0) && (draw.kind === 'vline' || Number.isFinite(draw.y0)))
+    this.visibleDrawCache = null
     this.attachedParams?.requestUpdate()
   }
 
+  // Historical session rays may start before the chart's loaded bars; snap
+  // those anchors to the nearest available logical bar instead of hiding them.
+
   timeCoordinate(timestamp: number): number | null {
-    return this.attachedParams?.chart.timeScale().timeToCoordinate(timestamp as UTCTimestamp) ?? null
+    const timeScale = this.attachedParams?.chart.timeScale()
+    if (!timeScale) return null
+    const exact = timeScale.timeToCoordinate(timestamp as UTCTimestamp)
+    if (exact !== null) return exact
+    const nearest = timeScale.timeToIndex(timestamp as UTCTimestamp, true)
+    return nearest === null
+      ? null
+      : timeScale.logicalToCoordinate(Number(nearest) as unknown as Logical)
   }
 
   priceCoordinate(price: number): number | null {

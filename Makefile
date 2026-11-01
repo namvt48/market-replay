@@ -7,10 +7,22 @@ DEPLOY_DIR ?= /root/market-replay
 ECON_DUCKDB ?=
 ECON_JSONL ?=
 
-.PHONY: build web-install web-build web-dev vet test test-race run deploy deploy-local econ-import econ-reload clean
+# desktop/ pins Electron and keeps its dependency cache inside the repository.
+.PHONY: build web-install web-build web-dev vet test test-race run deploy deploy-local econ-import econ-reload clean desktop-build desktop-run
 
+WEB_PNPM_STORE := $(CURDIR)/.cache/pnpm
+DESKTOP_NPM_CACHE := $(CURDIR)/desktop/.npm-cache
+DESKTOP_ELECTRON_CACHE := $(CURDIR)/.cache/electron
+
+desktop-build: web-build
+	CGO_ENABLED=0 go build -buildvcs=false -o $(BINARY) ./cmd/server
+	cd desktop && npm ci --cache "$(DESKTOP_NPM_CACHE)"
+	cd desktop && electron_config_cache="$(DESKTOP_ELECTRON_CACHE)" ./node_modules/.bin/install-electron --no
+
+desktop-run: desktop-build
+	cd desktop && npm start
 web-install:
-	cd web && pnpm install
+	cd web && pnpm install --store-dir "$(WEB_PNPM_STORE)"
 
 web-build: web-install
 	cd web && pnpm build

@@ -6,7 +6,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,6 +26,12 @@ import (
 	"market-replay/internal/storage/sqlite"
 	"market-replay/web"
 )
+
+type desktopReady struct {
+	URL string `json:"url"`
+}
+
+const desktopReadyPrefix = "MARKET_REPLAY_DESKTOP_READY "
 
 func main() {
 	cfg, err := config.Load()
@@ -105,13 +115,29 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	var listener net.Listener
+	if os.Getenv("MARKET_REPLAY_DESKTOP") == "1" {
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
+	} else {
+		listener, err = net.Listen("tcp", cfg.HTTPAddr)
+	}
+	if err != nil {
+		log.Fatalf("http listen: %v", err)
+	}
 	go func() {
 		log.Printf("market-replay listening on %s (data=%s) after %s",
-			cfg.HTTPAddr, cfg.DataDir, time.Since(boot).Round(time.Millisecond))
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			listener.Addr(), cfg.DataDir, time.Since(boot).Round(time.Millisecond))
+		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http server: %v", err)
 		}
 	}()
+	if os.Getenv("MARKET_REPLAY_DESKTOP") == "1" {
+		ready, err := json.Marshal(desktopReady{URL: "http://" + listener.Addr().String()})
+		if err != nil {
+			log.Fatalf("desktop ready: %v", err)
+		}
+		fmt.Printf("%s%s\n", desktopReadyPrefix, ready)
+	}
 
 	// SIGHUP triggers a zero-downtime data reload (docs §6.3): the owner
 	// rsyncs new .bin files then signals the running process. A failed

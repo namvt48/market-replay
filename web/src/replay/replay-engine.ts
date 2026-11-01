@@ -658,14 +658,32 @@ export class ReplayEngine {
     }
     if (this.snapshot.status !== 'ready' || this.snapshot.indicatorsHidden) return
     if (this.snapshot.indicators.every((indicator) => !indicator.visible)) return
+    const cursorTs = this.snapshot.cursorTs
     const idle = this.indicatorRefreshGroups()
       .filter((views) => views.every((view) => !this.indicatorControllers.has(view.id)))
+      .filter((views) => views.some((view) => {
+        const symbol = view.symbol()
+        const previous = this.indicatorResultCursors.get(view.id)
+        return !symbol || !previous || previous.cursorTs !== cursorTs
+          || previous.symbol !== symbol.symbol || previous.timeframe !== view.timeframe
+      }))
     await Promise.all(idle.map((views) => this.refreshIndicatorGroup(views, { background: true })))
   }
 
+  private clearIndicatorRefresh(): void {
+    if (this.indicatorRefreshTimer === null) return
+    clearTimeout(this.indicatorRefreshTimer)
+    this.indicatorRefreshTimer = null
+  }
+
+  // Playback has its own refresh cadence; a trailing timer can race a
+  // background run and abort it after the frame stream slows or pauses.
   private scheduleIndicatorRefresh(delay = 1_000): void {
-    if (this.snapshot.indicators.every((indicator) => !indicator.visible)) return
-    if (this.indicatorRefreshTimer) clearTimeout(this.indicatorRefreshTimer)
+    if (this.snapshot.playing || this.snapshot.indicators.every((indicator) => !indicator.visible)) {
+      this.clearIndicatorRefresh()
+      return
+    }
+    this.clearIndicatorRefresh()
     this.indicatorRefreshTimer = setTimeout(() => {
       this.indicatorRefreshTimer = null
       void this.refreshIndicators()
@@ -902,7 +920,7 @@ export class ReplayEngine {
       if (isEvalActive()) this.playRequestedWhileEvaluationResumes = true
       return
     }
-    this.playRequestedWhileEvaluationResumes = false
+    this.clearIndicatorRefresh()
     this.ensureCursorViewport()
     this.lastFrameAt = performance.now()
     this.setSnapshot({ playing: true }, true)

@@ -1,6 +1,9 @@
-import { defineConfig } from 'vite'
+import { defineConfig, searchForWorkspaceRoot } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { fileURLToPath } from 'node:url'
+
+const indicatorScriptRoot = fileURLToPath(new URL('../internal/indicators/scripts', import.meta.url))
 
 // https://vite.dev/config/
 // The Go server (internal/httpapi) is the only backend the frontend ever
@@ -18,7 +21,11 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['lightweight-charts-drawing'],
   },
+  // The worker imports bundled source scripts from internal/; allow only that directory outside web/.
   server: {
+    fs: {
+      allow: [searchForWorkspaceRoot(process.cwd()), indicatorScriptRoot],
+    },
     proxy: {
       '/api': 'http://localhost:8080',
       '/healthz': 'http://localhost:8080',

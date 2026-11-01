@@ -1,3 +1,4 @@
+import { localIndicatorCatalog, runLocalIndicator } from '../replay/local-indicator-engine'
 import { z } from 'zod'
 import { decodeBarFrame, type BarFrame } from './binary-frame'
 import type { CalendarEntry, ChartBarTicks, ClosedTrade, EconMeta, EconWeek, EconWeekQuery, IndicatorDescriptor, IndicatorRunResult, IndicatorInputValue, PersistedDrawing, PersistedDrawingTemplate, ReplaySession, SymbolMeta, Timeframe, WorkspaceSnapshotAck, WorkspaceSnapshotEnvelope } from './types'
@@ -63,39 +64,6 @@ const econWeekSchema = z.object({
   weekStart: z.number().int(), weekEnd: z.number().int(), timeZone: z.string(),
   cursorTs: z.number().int(), events: z.array(econEventViewSchema),
 })
-const indicatorColorSchema = z.object({
-  r: z.number().int().min(0).max(255), g: z.number().int().min(0).max(255),
-  b: z.number().int().min(0).max(255), a: z.number().min(0).max(1),
-})
-const indicatorInputValueSchema = z.union([z.string(), z.number(), z.boolean(), indicatorColorSchema])
-const indicatorInputSchema = z.object({
-  kind: z.enum(['session', 'time', 'str', 'float', 'int', 'bool', 'color']),
-  key: z.string(), label: z.string(), group: z.string().optional(), tooltip: z.string().optional(),
-  default: indicatorInputValueSchema, min: z.number().optional(), max: z.number().optional(),
-  step: z.number().optional(), options: z.array(z.string()).optional(),
-})
-const indicatorDescriptorSchema = z.object({
-  id: z.string(), name: z.string(), version: z.number().int(),
-  meta: z.object({ onMainPanel: z.boolean(), format: z.string().optional() }),
-  inputs: z.array(indicatorInputSchema),
-})
-const indicatorDrawSchema = z.object({
-  id: z.number().int(), kind: z.enum(['ray', 'rectangle', 'vline', 'marker']), label: z.string().optional(),
-  t0: z.number(), y0: z.number(), t1: z.number().optional(), y1: z.number().optional(),
-  style: z.record(z.string(), z.unknown()),
-})
-const indicatorPlotSchema = z.object({ key: z.string(), time: z.number(), value: z.number() })
-const indicatorRunSchema = z.object({ draws: z.array(indicatorDrawSchema), plots: z.array(indicatorPlotSchema) })
-
-interface IndicatorRunFlight {
-  controller: AbortController
-  promise: Promise<IndicatorRunResult>
-  waiters: number
-  settled: boolean
-}
-
-const indicatorRunFlights = new Map<string, IndicatorRunFlight>()
-
 const TRANSIENT_GET_RETRY_DELAYS_MS = [150, 450, 900] as const
 
 function abortError(): DOMException {
@@ -172,10 +140,12 @@ export async function fetchChartBarsAt(
   to: number,
   signal?: AbortSignal,
   marketSession: MarketSession = 'eth',
+  indicatorWindow = false,
 ): Promise<ChartBarTicks[]> {
   const query = new URLSearchParams({
     symbol, tf, at: String(at), before: String(before), after: String(after), to: String(to), session: marketSession,
   })
+  if (indicatorWindow) query.set('indicatorWindow', '1')
   const response = await checkedFetch(`/api/v1/chart-bars/at?${query}`, { signal })
   return z.array(chartBarSchema).parse(await response.json()) as ChartBarTicks[]
 }
@@ -203,10 +173,29 @@ export async function fetchEconWeek(query: EconWeekQuery, signal?: AbortSignal):
 }
 
 export async function fetchIndicators(signal?: AbortSignal): Promise<IndicatorDescriptor[]> {
-  const response = await checkedFetch('/api/v1/indicators', { signal })
-  return z.array(indicatorDescriptorSchema).parse(await response.json()) as IndicatorDescriptor[]
+  return localIndicatorCatalog(signal)
+}
+const indicatorBarsInFlight = new Map<AbortSignal | undefined, Map<string, Promise<ChartBarTicks[]>>>()
+
+function fetchIndicatorBarsAt(symbol: string, tf: Timeframe, at: number, signal?: AbortSignal): Promise<ChartBarTicks[]> {
+  let cursors = indicatorBarsInFlight.get(signal)
+  if (!cursors) {
+    cursors = new Map()
+    indicatorBarsInFlight.set(signal, cursors)
+  }
+  const key = JSON.stringify([symbol, tf, at])
+  const cached = cursors.get(key)
+  if (cached) return cached
+  const pending = fetchChartBarsAt(symbol, tf, at, 1500, 0, at, signal, 'eth', true).finally(() => {
+    if (cursors?.get(key) === pending) cursors.delete(key)
+    if (cursors?.size === 0) indicatorBarsInFlight.delete(signal)
+  })
+  cursors.set(key, pending)
+  return pending
 }
 
+
+let indicatorSymbols: Promise<SymbolMeta[]> | undefined
 export async function runIndicator(
   symbol: string,
   tf: Timeframe,
@@ -216,71 +205,21 @@ export async function runIndicator(
   signal?: AbortSignal,
 ): Promise<IndicatorRunResult> {
   if (signal?.aborted) throw abortError()
-  const sortedInputs = Object.keys(inputs).sort().map((key) => {
-    const value = inputs[key]
-    return [key, typeof value === 'object' ? { r: value.r, g: value.g, b: value.b, a: value.a } : value]
+  indicatorSymbols ??= fetchSymbols().catch((error: unknown) => {
+    indicatorSymbols = undefined
+    throw error
   })
-  const key = JSON.stringify([symbol, tf, script, at, sortedInputs])
-  let flight = indicatorRunFlights.get(key)
-  if (!flight) {
-    const controller = new AbortController()
-    const promise = requestIndicator(symbol, tf, script, at, inputs, controller.signal)
-    flight = { controller, promise, waiters: 0, settled: false }
-    indicatorRunFlights.set(key, flight)
-    const createdFlight = flight
-    void promise.then(
-      () => settleIndicatorFlight(key, createdFlight),
-      () => settleIndicatorFlight(key, createdFlight),
-    )
-  }
-  flight.waiters += 1
-  return waitForIndicatorFlight(key, flight, signal)
-}
-
-async function requestIndicator(
-  symbol: string,
-  tf: Timeframe,
-  script: string,
-  at: number,
-  inputs: Record<string, IndicatorInputValue>,
-  signal: AbortSignal,
-): Promise<IndicatorRunResult> {
-  const query = new URLSearchParams({ symbol, tf, script, at: String(at), before: '1500', after: '0', to: String(at) })
-  const response = await checkedFetch(`/api/v1/indicators/run?${query}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ inputs }), signal,
-  })
-  return indicatorRunSchema.parse(await response.json()) as IndicatorRunResult
-}
-
-function settleIndicatorFlight(key: string, flight: IndicatorRunFlight): void {
-  flight.settled = true
-  if (indicatorRunFlights.get(key) === flight) indicatorRunFlights.delete(key)
-}
-
-function waitForIndicatorFlight(key: string, flight: IndicatorRunFlight, signal?: AbortSignal): Promise<IndicatorRunResult> {
-  return new Promise((resolve, reject) => {
-    let finished = false
-    const release = (): void => {
-      flight.waiters -= 1
-      if (flight.waiters === 0 && !flight.settled) {
-        if (indicatorRunFlights.get(key) === flight) indicatorRunFlights.delete(key)
-        flight.controller.abort()
-      }
-    }
-    const finish = (callback: () => void): void => {
-      if (finished) return
-      finished = true
-      signal?.removeEventListener('abort', handleAbort)
-      release()
-      callback()
-    }
-    const handleAbort = (): void => finish(() => reject(abortError()))
-    signal?.addEventListener('abort', handleAbort, { once: true })
-    flight.promise.then(
-      (result) => finish(() => resolve(result)),
-      (error: unknown) => finish(() => reject(error)),
-    )
-  })
+  const symbols = await indicatorSymbols
+  if (signal?.aborted) throw abortError()
+  const meta = symbols.find((item) => item.symbol === symbol)
+  if (!meta) throw new Error(`Unknown symbol: ${symbol}`)
+  const bars = await fetchIndicatorBarsAt(symbol, tf, at, signal)
+  if (signal?.aborted) throw abortError()
+  const dailyBars = script === 'ipda-ranges'
+    ? await fetchChartBarsAt(symbol, '1d', at, 62, 0, at, signal)
+    : []
+  if (signal?.aborted) throw abortError()
+  return runLocalIndicator(symbol, tf, script, bars.filter((bar) => bar.time <= at), inputs, meta.tickSize, meta.sessionTz, dailyBars, meta.kind === 'future', signal)
 }
 
 export async function fetchWatchlist(): Promise<string[]> {
