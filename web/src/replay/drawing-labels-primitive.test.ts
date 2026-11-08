@@ -3,6 +3,7 @@ import type { IPrimitivePaneRenderer, SeriesAttachedParameter, Time } from 'ligh
 import type { IDrawing } from 'lightweight-charts-drawing'
 import { drawLineWithLabelGap, inlineLabelPosition } from '../../vendor/lightweight-charts-drawing/src/rendering/canvas-utils'
 import { extendLineToViewport } from '../../vendor/lightweight-charts-drawing/src/core/geometry'
+import { TrendLine } from '../../vendor/lightweight-charts-drawing/src/tools/lines/trend-line'
 import { DEFAULT_DRAWING_METADATA, DEFAULT_FIBONACCI_LEVELS, LINE_TOOL_TYPES } from './drawing-appearance'
 import { DrawingLabelsPrimitive, drawingPriceLevels, priceAxisTextColor } from './drawing-labels-primitive'
 
@@ -461,6 +462,103 @@ describe('drawLineWithLabelGap positioning', () => {
     )
 
     expect(rotate).toHaveBeenCalledWith(Math.atan2(-60, 160))
+  })
+
+  it('strokes diagonal line coordinates before rotating the label transform', () => {
+    const stack: number[][] = [];
+    let transform = [1, 0, 0, 1, 0, 0];
+    const points: Array<{ x: number; y: number }> = [];
+    const transformPoint = (x: number, y: number) => ({
+      x: transform[0] * x + transform[2] * y + transform[4],
+      y: transform[1] * x + transform[3] * y + transform[5],
+    });
+    const context = {
+      font: '12px sans-serif',
+      fillStyle: '#fff',
+      save: vi.fn(() => stack.push([...transform])),
+      restore: vi.fn(() => { transform = stack.pop()!; }),
+      beginPath: vi.fn(),
+      moveTo: vi.fn((x: number, y: number) => points.push(transformPoint(x, y))),
+      lineTo: vi.fn((x: number, y: number) => points.push(transformPoint(x, y))),
+      stroke: vi.fn(),
+      translate: vi.fn((x: number, y: number) => {
+        transform[4] += transform[0] * x + transform[2] * y;
+        transform[5] += transform[1] * x + transform[3] * y;
+      }),
+      rotate: vi.fn((angle: number) => {
+        const [a, b, c, d, e, f] = transform;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        transform = [a * cos + c * sin, b * cos + d * sin, c * cos - a * sin, d * cos - b * sin, e, f];
+      }),
+      measureText: vi.fn(() => ({ width: 40 })),
+      fillText: vi.fn(),
+      set textAlign(_value: CanvasTextAlign) {},
+      set textBaseline(_value: CanvasTextBaseline) {},
+    } as unknown as CanvasRenderingContext2D;
+
+    drawLineWithLabelGap(
+      context,
+      { x: 20, y: 80 },
+      { x: 180, y: 20 },
+      { text: 'test', center: { x: 100, y: 50 } },
+    );
+
+    expect(points[0]).toEqual({ x: 20, y: 80 });
+    expect(points.at(-1)).toEqual({ x: 180, y: 20 });
+  });
+
+  it('strokes a trend line only once when its inline statistics are enabled', () => {
+    const drawing = TrendLine.create(
+      'trend',
+      { time: 20 as unknown as Time, price: 80 },
+      { time: 180 as unknown as Time, price: 20 },
+      {},
+      { showAngle: true },
+    )
+    const timeScale = {
+      width: () => 200,
+      timeToCoordinate: (time: Time) => Number(time),
+      coordinateToTime: (x: number) => x as unknown as Time,
+      timeToIndex: () => 0,
+      logicalToCoordinate: (logical: number) => logical,
+    }
+    drawing.attached({
+      chart: { timeScale: () => timeScale },
+      series: {
+        priceToCoordinate: (price: number) => price,
+        coordinateToPrice: (y: number) => y,
+      },
+      requestUpdate: vi.fn(),
+    } as never)
+
+    const context = {
+      save: vi.fn(),
+      restore: vi.fn(),
+      setLineDash: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+      measureText: vi.fn(() => ({ width: 40 })),
+      fillText: vi.fn(),
+      translate: vi.fn(),
+      rotate: vi.fn(),
+    } as unknown as CanvasRenderingContext2D
+    const target = {
+      useBitmapCoordinateSpace: (draw: (scope: unknown) => void) => draw({
+        context,
+        horizontalPixelRatio: 1,
+        verticalPixelRatio: 1,
+        bitmapSize: { width: 200, height: 400 },
+      }),
+    }
+
+    drawing.paneViews()[0]?.renderer()?.draw(target as never)
+
+    expect(context.stroke).toHaveBeenCalledTimes(1)
+    expect(context.moveTo).toHaveBeenCalledTimes(2)
+    expect(context.lineTo).toHaveBeenCalledTimes(2)
   })
 
   it('extends a reverse-drawn line without dropping its original segment', () => {
