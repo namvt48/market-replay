@@ -15,6 +15,7 @@ deploy/duckdns.conf
 # before the Go embed step, so it must never be relied on as committed.
 web/node_modules/
 web/dist/
+web/src/replay/chart-engine.wasm
 desktop/node_modules/
 desktop/**/.npm-cache/
 desktop/.cache/

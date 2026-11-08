@@ -8,12 +8,14 @@ import {
   PriceScaleMode,
   createChart,
   createSeriesMarkers,
+  type ChartOptions,
   type CandlestickData,
   type HistogramData,
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type LineData,
+  type DeepPartial,
   type LogicalRange,
   type MouseEventParams,
   type SeriesMarker,
@@ -285,6 +287,7 @@ function sameIndicatorDraws(next: readonly IndicatorDrawIntent[], previous: read
 }
 
 type PlotDelta = { kind: 'identical' } | { kind: 'append'; from: number } | { kind: 'replace' }
+type ChartFactory = (container: HTMLElement, options: DeepPartial<ChartOptions>) => IChartApi | Promise<IChartApi>
 
 function samePlotPoint(a: IndicatorPlotPoint, b: IndicatorPlotPoint): boolean {
   return a === b || (a.time === b.time && a.value === b.value && a.key === b.key)
@@ -427,9 +430,14 @@ export class LwcAdapter implements ChartAdapter {
   private volumePaneHeight = 100
   private hoverUnsubscribe: (() => void) | null = null
   private readonly hoverStore: HoverBarStore
+  private readonly chartFactory: ChartFactory
 
-  constructor(hoverStore: HoverBarStore = new HoverBarStore()) {
+  constructor(
+    hoverStore: HoverBarStore = new HoverBarStore(),
+    chartFactory: ChartFactory = createChart,
+  ) {
     this.hoverStore = hoverStore
+    this.chartFactory = chartFactory
   }
 
   async init(element: HTMLElement, symbol: SymbolMeta, timeframe: Timeframe): Promise<void> {
@@ -466,7 +474,7 @@ export class LwcAdapter implements ChartAdapter {
       }
     }
     const existingChildren = new Set(element.children)
-    this.chart = createChart(element, {
+    this.chart = await this.chartFactory(element, {
       // This adapter already owns one guarded ResizeObserver below. Keeping
       // Lightweight Charts autoSize enabled creates a second observer whose
       // queued callback can outlive a chart moved back from a pop-out window.

@@ -34,7 +34,7 @@ vi.mock('../../replay/use-replay', () => ({
   useReplaySelector: (select: (value: typeof replayMocks.snapshot) => unknown) => select(replayMocks.snapshot),
 }))
 vi.mock('../../replay/replay-engine', () => ({ replayEngine: replayMocks }))
-vi.mock('../../replay/lwc-adapter', () => ({ LwcAdapter: class { syncContainerSize = lwcAdapterMocks.syncContainerSize } }))
+vi.mock('../../replay/rust-chart-adapter', () => ({ RustChartAdapter: class { syncContainerSize = lwcAdapterMocks.syncContainerSize } }))
 vi.mock('./OhlcLegend', () => ({ OhlcLegend: () => null }))
 vi.mock('../timeframe/use-timeframe-preferences', () => ({ useTimeframePreferences: () => timeframeMocks.snapshot }))
 

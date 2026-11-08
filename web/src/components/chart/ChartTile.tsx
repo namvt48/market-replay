@@ -67,10 +67,10 @@ export function ChartTile({ pane, active, removable, maximized, onActivate, onTo
     if (!host) return
     let mounted = true
     let registeredAdapter: ChartAdapter | null = null
-    void import('../../replay/lwc-adapter').then(({ LwcAdapter }) => {
+    void import('../../replay/rust-chart-adapter').then(({ RustChartAdapter }) => {
       if (!mounted) return
       const initial = latestPaneRef.current
-      const adapter = new LwcAdapter(hoverStore)
+      const adapter = new RustChartAdapter(hoverStore)
       registeredAdapter = adapter
       adapterRef.current = adapter
       void replayEngine.registerChartView(initial.id, host, adapter, initial.timeframe, initial.settings, hoverStore, initial.symbol ?? undefined)

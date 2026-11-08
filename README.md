@@ -18,6 +18,7 @@ market-replay replays pre-compiled bar data bar by bar on your own machine. It n
 - **Sub-minute timeframes** from 5s to 55s in 5s steps, aggregated on request from the base dataset via `BaseTimeframe` routing (seconds-unit timeframes read the `5s` dataset; everything else rolls up from `1m`).
 - **Workspace-level timezone** selection, including fixed UTC offsets alongside named zones.
 - **Per-chart price style**: Candles (default) or a close-price Line; the ET timezone preset uses `America/New_York` and follows UTC−5/UTC−4 daylight-saving transitions.
+- **Rust/WebAssembly chart core** handles OHLCV history, viewport and price transforms; the browser Canvas host renders candles/line, volume and secondary indicator panes while existing drawing tools and trading overlays remain on the `ChartAdapter` seam.
 - **Economic calendar synced to the chart**, fed by a DuckDB to JSONL export pipeline.
 - **Trading journal**: sessions, trades, and a watchlist, with restore, delete, and permanent-delete lifecycle for sessions.
 - **Analytics**: performance, drawdown, stop-loss / risk-reward / Monte-Carlo simulations, edge, and execution discipline.
@@ -52,6 +53,7 @@ Prerequisites:
 
 - Go 1.26+ (`go.mod` targets 1.26.1)
 - Node.js 22.12+ with npm and pnpm; Electron is pinned in `desktop/package-lock.json`.
+- Rust 1.85+ (Edition 2024) with the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`).
 
 Build and run:
 
@@ -64,7 +66,7 @@ make run        # builds and serves on :8080
 
 `./market-replay` runs the embedded frontend through the Go server, not the Vite development server. It is kept inside this repository and does not add a shell-wide alias.
 
-The build order matters: `make build` runs the frontend build (`pnpm install` + `pnpm build` in `web/`) before `go build`, because the Go binary embeds `web/dist` through `web/embed.go`.
+The build order matters: `make build` runs the frontend build (`pnpm install` + `pnpm build` in `web/`); `pnpm build` compiles `rust/chart-engine` for `wasm32-unknown-unknown`, typechecks and builds Vite. The Go build then embeds `web/dist` through `web/embed.go`.
 
 ### Desktop app
 

@@ -32,9 +32,9 @@ export function ChartPanel() {
   useEffect(() => {
     let active = true
     let registeredAdapter: ChartAdapter | null = null
-    void import('../../replay/lwc-adapter').then(({ LwcAdapter }) => {
+    void import('../../replay/rust-chart-adapter').then(({ RustChartAdapter }) => {
       if (!active) return
-      const adapter = new LwcAdapter(hoverStore)
+      const adapter = new RustChartAdapter(hoverStore)
       registeredAdapter = adapter
       adapterRef.current = adapter
       const element = document.querySelector<HTMLElement>('[data-chart-host="primary"]')
