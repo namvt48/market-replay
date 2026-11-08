@@ -187,10 +187,11 @@ describe('chart layout', () => {
     expect(chartSyncFlagsSchema.safeParse({ crosshair: true, dateRange: 'yes', lockZoom: false }).success).toBe(false)
   })
 
-  it('restores layout geometry but starts a fresh app at the default 1m timeframe', () => {
+  it('restores each pane timeframe from the latest persisted home layout', () => {
     const target = storage()
-    const resized = layoutReducer(createLayoutPreset('4', '5m'), { type: 'resize', splitId: 'split-root', ratio: 0.62, totalSize: 1000 })
-    const state = layoutReducer(resized, { type: 'set-sync-flags', syncFlags: { lockZoom: true } })
+    let state = layoutReducer(createLayoutPreset('4', '5m'), { type: 'resize', splitId: 'split-root', ratio: 0.62, totalSize: 1000 })
+    state = layoutReducer(state, { type: 'set-pane-timeframe', paneId: 'pane-2', timeframe: '15m' })
+    state = layoutReducer(state, { type: 'set-sync-flags', syncFlags: { lockZoom: true } })
     persistChartLayout(state, target)
     expect(target.getItem('market-replay:chart-layout')).toContain('"version":6')
     const restored = loadChartLayout(target)
@@ -198,7 +199,10 @@ describe('chart layout', () => {
     expect(restored.preset).toBe('4')
     expect(restored.syncFlags.lockZoom).toBe(true)
     expect(restored.timezone).toEqual(state.timezone)
-    expect(Object.values(restored.panes).every((pane) => pane.timeframe === '1m')).toBe(true)
+    expect(restored.panes['pane-1']?.timeframe).toBe('5m')
+    expect(restored.panes['pane-2']?.timeframe).toBe('15m')
+    expect(restored.panes['pane-3']?.timeframe).toBe('5m')
+    expect(restored.panes['pane-4']?.timeframe).toBe('5m')
     target.setItem('x', '{bad')
     expect(loadChartLayout(target).preset).toBe('single')
   })

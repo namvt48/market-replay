@@ -5,11 +5,23 @@ const epoch = (iso: string): number => Date.parse(iso) / 1000
 const preset = (id: 'ET' | 'CT' | 'MT' | 'PT' | 'UTC'): ChartTimezone => ({ kind: 'preset', id })
 
 describe('chart timezone formatting', () => {
-  it('handles US daylight-saving spring and fall boundaries', () => {
-    expect(formatChartTime(epoch('2024-03-10T06:30:00Z'), preset('ET'))).toContain('01:30')
-    expect(formatChartTime(epoch('2024-03-10T07:30:00Z'), preset('ET'))).toContain('03:30')
-    expect(formatChartTime(epoch('2024-11-03T05:30:00Z'), preset('ET'))).not.toMatch(/EDT|EST|:\d{2}:\d{2}/)
-    expect(formatChartTime(epoch('2024-11-03T06:30:00Z'), preset('ET'))).toContain('2024')
+  it('automatically changes ET between UTC-5 and UTC-4 across both DST transitions', () => {
+    const et = preset('ET')
+    const zone = chartTimezoneIntlContext(et).timeZone
+    const offsetAt = (iso: string): string | undefined => {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: zone, timeZoneName: 'longOffset',
+      }).formatToParts(new Date(iso))
+      return parts.find((part) => part.type === 'timeZoneName')?.value
+    }
+
+    expect(chartTimezoneQueryValue(et)).toBe('America/New_York')
+    expect(offsetAt('2024-03-10T06:30:00Z')).toBe('GMT-05:00')
+    expect(offsetAt('2024-03-10T07:30:00Z')).toBe('GMT-04:00')
+    expect(offsetAt('2024-11-03T05:30:00Z')).toBe('GMT-04:00')
+    expect(offsetAt('2024-11-03T06:30:00Z')).toBe('GMT-05:00')
+    expect(formatChartTime(epoch('2024-11-03T05:30:00Z'), et)).toContain('01:30')
+    expect(formatChartTime(epoch('2024-11-03T06:30:00Z'), et)).toContain('01:30')
   })
 
   it.each([

@@ -18,7 +18,10 @@ export function ChartWorkspaceProvider({ children }: ChartWorkspaceProviderProps
   const stateRef = useRef(state)
   stateRef.current = state
 
-  useEffect(() => { persistChartLayout(state) }, [state])
+  useEffect(() => {
+    persistChartLayout(state)
+    replayEngine.workspaceChanged()
+  }, [state])
   useEffect(() => { replayEngine.setMarketSession(state.marketSession) }, [state.marketSession])
   useEffect(() => { replayEngine.setSyncFlags(state.syncFlags) }, [state.syncFlags])
   useEffect(() => {
@@ -58,10 +61,14 @@ export function ChartWorkspaceProvider({ children }: ChartWorkspaceProviderProps
     dispatch({ type: 'replace', state: structuredClone(next) })
   }, [])
 
-  useEffect(() => registerChartWorkspaceSnapshotBridge({
-    capture: () => stateRef.current,
-    restore: loadLayout,
-  }), [loadLayout])
+  useEffect(() => {
+    const unregister = registerChartWorkspaceSnapshotBridge({
+      capture: () => stateRef.current,
+      restore: loadLayout,
+    })
+    replayEngine.workspaceChanged()
+    return unregister
+  }, [loadLayout])
 
   // Every consumer re-renders whenever this context value changes identity
   // — without memoizing it, ChartWorkspaceProvider re-rendering for any

@@ -57,6 +57,8 @@ func wireReasonToCanonical(reason string) (string, bool) {
 		return model.WorkspaceSnapshotReasonTradeClose, true
 	case "explicit-exit":
 		return model.WorkspaceSnapshotReasonExplicitExit, true
+	case "home-autosave":
+		return model.WorkspaceSnapshotReasonHomeAutosave, true
 	default:
 		return "", false
 	}
@@ -100,6 +102,11 @@ func (s *Server) validateWorkspaceSnapshotOwner(r *http.Request, ownerType, owne
 		}
 		return nil
 	case "eval":
+		return nil
+	case "home":
+		if ownerID != "home" {
+			return fmt.Errorf("%w: invalid home owner id", errBadRequest)
+		}
 		return nil
 	default:
 		return fmt.Errorf("%w: unknown owner type %q", errBadRequest, ownerType)
@@ -205,8 +212,12 @@ func (s *Server) handleDeleteWorkspaceSnapshot(w http.ResponseWriter, r *http.Re
 		writeError(w, fmt.Errorf("%w: invalid owner id", errBadRequest))
 		return
 	}
-	if ownerType != "replay" && ownerType != "eval" {
+	if ownerType != "replay" && ownerType != "eval" && ownerType != "home" {
 		writeError(w, fmt.Errorf("%w: unknown owner type %q", errBadRequest, ownerType))
+		return
+	}
+	if ownerType == "home" && ownerID != "home" {
+		writeError(w, fmt.Errorf("%w: invalid home owner id", errBadRequest))
 		return
 	}
 	if err := s.Store.DeleteWorkspaceSnapshot(r.Context(), localUserID, ownerType, ownerID); err != nil {

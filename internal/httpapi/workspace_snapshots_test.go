@@ -310,6 +310,32 @@ func TestWorkspaceSnapshots_Delete(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSnapshots_HomeOwnerRoundTrip(t *testing.T) {
+	s := newTestServer(t)
+	body := workspaceSnapshotBody("home", "home", "home-autosave", 1000, 500)
+	putRec := putWorkspaceSnapshot(t, s, "home", "home", body)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("home put status = %d, body = %s", putRec.Code, putRec.Body.String())
+	}
+
+	getRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/v1/workspace-snapshots/home/home", nil))
+	if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), `"home-autosave"`) {
+		t.Fatalf("home get status = %d, body = %s", getRec.Code, getRec.Body.String())
+	}
+
+	deleteRec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/api/v1/workspace-snapshots/home/home", nil))
+	if deleteRec.Code != http.StatusNoContent {
+		t.Fatalf("home delete status = %d, body = %s", deleteRec.Code, deleteRec.Body.String())
+	}
+
+	badOwner := putWorkspaceSnapshot(t, s, "home", "other", workspaceSnapshotBody("home", "other", "home-autosave", 2000, 1000))
+	if badOwner.Code != http.StatusBadRequest {
+		t.Fatalf("unknown home owner status = %d, want 400, body = %s", badOwner.Code, badOwner.Body.String())
+	}
+}
+
 func TestWorkspaceSnapshots_ReplayAndEvalIsolationOverHTTP(t *testing.T) {
 	s := newTestServer(t)
 	sessionID := createTestSession(t, s)

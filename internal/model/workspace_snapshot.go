@@ -3,12 +3,13 @@ package model
 import "encoding/json"
 
 // Reason values for WorkspaceSnapshot — the DB/API canonical spelling.
-// The frontend's own SessionWorkspaceSnapshot type spells these with
-// hyphens ("trade-close"/"explicit-exit"); the httpapi layer translates at
-// the boundary.
+// The frontend uses hyphenated wire values; httpapi translates at the
+// boundary. Home autosaves have their own owner and do not replace replay
+// trade-close or explicit-exit recovery points.
 const (
 	WorkspaceSnapshotReasonTradeClose   = "trade_close"
 	WorkspaceSnapshotReasonExplicitExit = "explicit_exit"
+	WorkspaceSnapshotReasonHomeAutosave  = "home_autosave"
 )
 
 // WorkspaceSnapshot is the durable, one-per-owner recovery point for a

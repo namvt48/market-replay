@@ -3,11 +3,9 @@ import { LwcAdapter } from './lwc-adapter'
 import type { IndicatorDrawIntent, IndicatorPlotPoint, SymbolMeta } from '../api/types'
 import type { IndicatorRenderResult } from './chart-adapter'
 
-// A dedicated mock rather than lwc-adapter.test.ts's: that file's addSeries
-// returns one shared `spacer` object for every LineSeries call, so two
-// indicator series would be indistinguishable from each other. Here every
-// LineSeries call gets a fresh spy object recorded alongside the options it
-// was created with, which is what lets these tests assert per-series.
+// A dedicated mock rather than lwc-adapter.test.ts's: that file tracks only
+// its price line and spacer. Here every LineSeries call gets a fresh spy
+// object recorded alongside its options so these tests can assert per-series.
 interface FakeLineSeries {
   kind: string
   options: Record<string, unknown>
@@ -110,7 +108,7 @@ vi.mock('lightweight-charts', () => {
       element.appendChild(document.createElement('div'))
       return chart
     },
-    createSeriesMarkers: () => ({ setMarkers: vi.fn() }),
+    createSeriesMarkers: () => ({ setMarkers: vi.fn(), detach: vi.fn() }),
   }
 })
 
@@ -120,9 +118,9 @@ const symbol: SymbolMeta = {
   commissionPerSide: 0, defaultSlippageTicks: 0, ranges: {},
 }
 
-/** Every LineSeries created after the adapter's own internal spacer. */
+/** Every LineSeries created after the adapter's price line and internal spacer. */
 function indicatorSeries(): typeof chartMocks.series {
-  return chartMocks.series.filter((series) => series.kind === 'LineSeries').slice(1)
+  return chartMocks.series.filter((series) => series.kind === 'LineSeries').slice(2)
 }
 
 function plots(key: string, count: number, startTime = 1_700_000_000, startValue = 100): IndicatorPlotPoint[] {
@@ -320,6 +318,26 @@ describe('LwcAdapter.setIndicators', () => {
 
     adapter.setIndicators([result('rsi', points, [ray(1, 100, { linecolor: { r: 9, g: 2, b: 3, a: 1 } })])])
 
+    expect(setDraws).toHaveBeenCalledTimes(1)
+  })
+
+  it('repaints finite drawings when their logical offsets or rendered label change', async () => {
+    const adapter = await mount()
+    const setDraws = vi.spyOn(adapter.indicatorDrawingsPrimitive, 'setDraws')
+    const points = plots('fast', 3)
+    const draw: IndicatorDrawIntent = { id: 1, kind: 'line', t0: 1_700_000_000, y0: 100, t1: 1_700_000_000, y1: 110, xOffset0: 1, xOffset1: 2, style: { text: 'open' } }
+    adapter.setIndicators([result('rsi', points, [draw])])
+    setDraws.mockClear()
+
+    adapter.setIndicators([result('rsi', points, [{ ...draw, xOffset0: 3, style: { text: 'open' } }])])
+    expect(setDraws).toHaveBeenCalledTimes(1)
+    setDraws.mockClear()
+
+    adapter.setIndicators([result('rsi', points, [{ ...draw, style: { text: 'close' } }])])
+    expect(setDraws).toHaveBeenCalledTimes(1)
+    setDraws.mockClear()
+
+    adapter.setIndicators([result('rsi', points, [{ ...draw, style: { text: 'close', labelPosition: 'right' } }])])
     expect(setDraws).toHaveBeenCalledTimes(1)
   })
 

@@ -13,7 +13,8 @@ import {
   upsertDrawings,
 } from '../api/client'
 import type { ActiveIndicator, ClosedTrade, IndicatorDescriptor, IndicatorInputValue, PersistedDrawing, ReplaySession, SymbolMeta, Timeframe } from '../api/types'
-import { DEFAULT_CHART_SYNC_FLAGS, type ChartSyncFlags } from '../chart-workspace/types'
+import { loadIndicatorInputs, mergeIndicatorInputs, saveIndicatorInputs } from './indicator-input-settings'
+import { DEFAULT_CHART_SYNC_FLAGS, type ChartSyncFlags, type ChartWorkspaceState } from '../chart-workspace/types'
 import {
   amendOrder,
   cancelAllOrders,
@@ -81,24 +82,16 @@ function replayBaseTimeframe(symbol: SymbolMeta): Timeframe {
 }
 const TIMEFRAME_SWITCH_SETTLE_MS = 48
 /**
- * How often indicators recompute while the replay is playing.
- *
- * Every built-in script anchors its output to session or display-bucket
- * boundaries, so the content only actually changes at a bucket rollover —
- * two passes a second is comfortably inside "follows the replay" without
- * pretending to more resolution than the data has. It is also close to free:
- * on a coarse timeframe the server quantises every cursor inside a bucket to
- * the same request and answers from its LRU, and on the base timeframe the
- * suspended-Runtime session advances only the bars newly crossed rather than
- * replaying the window. For comparison, scheduleSecondsPaneRefresh already
- * accepted a 1s interval for the heavier job of refetching a whole viewport.
+ * Replay polling is independent of chart animation. A 10 Hz cadence bounds
+ * polling delay to 100 ms; unchanged cursor values and in-flight groups are
+ * skipped. Higher-timeframe bar requests are quantized to closed buckets,
+ * while seconds panes retain the slower 1 s refresh.
  */
-const INDICATOR_PLAYBACK_REFRESH_MS = 500
-const MAX_REPLAY_CONTRACTS = 1_000
-// The fill engine's fixed paper bankroll ($10,000). Now also reported to the
-// server as a session's initialBalanceCents, so the two must not drift.
+const INDICATOR_PLAYBACK_REFRESH_MS = 100
 const REPLAY_STARTING_EQUITY_CENTS = 1_000_000
+const MAX_REPLAY_CONTRACTS = 1_000
 const TRANSIENT_ERROR_TIMEOUT_MS = 20_000
+const HOME_REMOTE_SYNC_INTERVAL_MS = 5_000
 const FRAME_SAMPLE_WINDOW = 120
 const MAX_FILL_SNAPSHOTS = MAX_VIEWPORT_RAW_BARS
 const EMPTY_STATS: TradeStats = { trades: 0, winRate: 0, netCents: 0, expectancyCents: 0, averageR: null, profitFactor: null }
@@ -222,6 +215,15 @@ export class ReplayEngine {
   private pendingDrawingViewId: string | null = null
   private drawingDocuments = new Map<string, DrawingDocument>()
   private pendingWorkspaceRestore: SessionWorkspaceSnapshot | null = null
+  private homeSaveTimer: ReturnType<typeof setTimeout> | null = null
+  private homeRemoteSyncTimer: ReturnType<typeof setTimeout> | null = null
+  private lastHomeRemoteSyncAt = 0
+  private homeRestorePromise: Promise<void> | null = null
+  private homeRestoreChecked = false
+  private homeReady = false
+  private homeRestoring = false
+  private homeDestroyed = false
+  private homeRecovery: SessionWorkspaceSnapshot | null = null
   private syncingDrawings = false
   /**
    * Fill-engine state as of each replay bar index, so stepping the cursor
@@ -313,6 +315,144 @@ export class ReplayEngine {
   }
   getSnapshot = (): ReplaySnapshot => this.snapshot
 
+  /** Called after bridge registration and layout commits, not during render. */
+  workspaceChanged(): void {
+    void this.restoreHomeWorkspace()
+    this.scheduleHomeSave()
+  }
+
+  async restoreHomeWorkspace(): Promise<void> {
+    if (this.homeDestroyed || this.homeReady || this.currentSnapshotOwner() || isEvalActive()) return
+    if (this.homeRestorePromise) return this.homeRestorePromise
+    if (!captureChartWorkspaceState() || this.snapshot.status !== 'ready') return
+    const restore = this.restoreHomeWhenReady()
+    this.homeRestorePromise = restore
+    try {
+      await restore
+    } catch (error) {
+      this.homeRestoring = false
+      const detail = error instanceof Error ? error.message : 'unknown error'
+      this.setSnapshot({ error: `Home workspace could not be restored: ${detail}` }, true)
+    } finally {
+      this.homeRestorePromise = null
+    }
+  }
+
+  private async restoreHomeWhenReady(): Promise<void> {
+    if (!this.homeRestoreChecked) {
+      this.homeRestoring = true
+      this.homeRecovery = await this.resolveWorkspaceRecoveryPoint({ kind: 'home', id: 'home' })
+      this.homeRestoreChecked = true
+      if (this.homeDestroyed || this.currentSnapshotOwner() || isEvalActive()) {
+        this.homeRestoring = false
+        return
+      }
+      if (this.homeRecovery) this.prepareWorkspaceRestore(this.homeRecovery)
+    }
+    const saved = this.homeRecovery
+    const layout = captureChartWorkspaceState()
+    if (!layout) return
+    if (saved && !this.homeLayoutReady(layout, saved)) return
+    if (!saved && !this.homeLayoutReady(layout)) return
+    if (!saved) {
+      this.homeReady = true
+      this.homeRestoring = false
+      this.scheduleHomeSave()
+      return
+    }
+    const symbol = this.snapshot.symbols.find((item) => item.symbol === saved.symbol)
+    if (!symbol) throw new Error(`Saved Home symbol ${saved.symbol} is unavailable`)
+    const initialTimestamp = saved.replayMode === 'active'
+      ? saved.replayStartTs ?? saved.cursorTs
+      : saved.cursorTs
+    await this.loadSymbol(symbol, initialTimestamp)
+    if (this.homeDestroyed || this.currentSnapshotOwner() || isEvalActive()) {
+      this.homeRestoring = false
+      return
+    }
+    if (saved.replayMode === 'active') {
+      this.beginReplaySelection({ createSession: false })
+      await this.selectReplayBar(initialTimestamp)
+      if (saved.cursorTs !== this.snapshot.cursorTs) await this.seek(saved.cursorTs)
+    }
+    if (this.homeDestroyed || this.currentSnapshotOwner() || isEvalActive()) {
+      this.homeRestoring = false
+      return
+    }
+    this.activateChartView(saved.layout.activePaneId)
+    this.setSnapshot({ playing: false }, true)
+    this.restoreWorkspaceRuntime(saved)
+    await this.refreshIndicators()
+    this.homeReady = true
+    this.homeRestoring = false
+    this.emitSnapshot(true)
+  }
+
+  private homeLayoutReady(layout: ChartWorkspaceState, saved?: SessionWorkspaceSnapshot): boolean {
+    const expectedPanes = saved?.layout.panes ?? layout.panes
+    if (Object.keys(expectedPanes).length !== Object.keys(layout.panes).length) return false
+    return Object.entries(expectedPanes).every(([id, pane]) => {
+      const currentPane = layout.panes[id]
+      const view = this.views.get(id)
+      const expectedSymbol = pane.symbol ?? saved?.symbol ?? this.snapshot.symbol?.symbol
+      return currentPane?.symbol === pane.symbol
+        && currentPane.timeframe === pane.timeframe
+        && view?.isInitialized() === true
+        && view.timeframe === pane.timeframe
+        && view.symbol()?.symbol === expectedSymbol
+    })
+  }
+
+  private async returnToHomeWorkspace(): Promise<void> {
+    this.homeReady = false
+    this.homeRestoring = false
+    const pendingRestore = this.homeRestorePromise
+    if (pendingRestore) await pendingRestore
+    await this.restoreHomeWorkspace()
+  }
+
+  private scheduleHomeSave(): void {
+    if (!this.homeReady || this.homeRestoring || this.homeDestroyed || this.homeSaveTimer !== null
+      || this.currentSnapshotOwner() || isEvalActive() || this.snapshot.status !== 'ready'
+      || this.snapshot.replayMode === 'selecting') return
+    this.homeSaveTimer = setTimeout(() => {
+      this.homeSaveTimer = null
+      this.flushHomeSave()
+    }, 1_000)
+  }
+
+  private flushHomeSave(forceRemote = false): void {
+    if (this.homeSaveTimer !== null) {
+      clearTimeout(this.homeSaveTimer)
+      this.homeSaveTimer = null
+    }
+    if (!this.homeReady || this.homeRestoring || this.currentSnapshotOwner() || isEvalActive()
+      || this.snapshot.status !== 'ready' || this.snapshot.replayMode === 'selecting') return
+    this.saveWorkspaceRecoveryPoint({ kind: 'home', id: 'home' }, 'home-autosave', undefined, forceRemote)
+  }
+
+  private syncHomeWorkspaceSnapshot(snapshot: SessionWorkspaceSnapshot, force: boolean): void {
+    const now = Date.now()
+    if (force || now - this.lastHomeRemoteSyncAt >= HOME_REMOTE_SYNC_INTERVAL_MS) {
+      if (this.homeRemoteSyncTimer !== null) {
+        clearTimeout(this.homeRemoteSyncTimer)
+        this.homeRemoteSyncTimer = null
+      }
+      this.lastHomeRemoteSyncAt = now
+      syncWorkspaceSnapshot(snapshot)
+      return
+    }
+    if (this.homeRemoteSyncTimer !== null) return
+    this.homeRemoteSyncTimer = setTimeout(() => {
+      this.homeRemoteSyncTimer = null
+      const latest = this.homeRecovery
+      if (!latest) return
+      this.lastHomeRemoteSyncAt = Date.now()
+      syncWorkspaceSnapshot(latest)
+    }, HOME_REMOTE_SYNC_INTERVAL_MS - (now - this.lastHomeRemoteSyncAt))
+  }
+
+
   async registerChartView(id: string, element: HTMLElement, adapter: ChartAdapter, timeframe: Timeframe, settings: ChartPaneSettings, hoverStore: HoverBarStore, symbolCode?: string): Promise<void> {
     const view = new ChartViewController({ id, element, adapter, timeframe, settings, marketSession: this.marketSession, hoverStore, followsReplaySymbol: !symbolCode })
     const isCurrentView = (): boolean => this.views.get(id) === view
@@ -346,6 +486,7 @@ export class ReplayEngine {
     if (!isCurrentView()) return
     await this.refreshIndicatorView(view)
     this.applyWorkspaceRestoreToView(view)
+    await this.restoreHomeWorkspace()
   }
 
   unregisterChartView(id: string, expectedAdapter?: ChartAdapter): void {
@@ -413,7 +554,7 @@ export class ReplayEngine {
       if (!current.visible) this.setIndicatorVisibility(current.id, true)
       return
     }
-    const inputs = Object.fromEntries(descriptor.inputs.map((input) => [input.key, input.default])) as Record<string, IndicatorInputValue>
+    const inputs = mergeIndicatorInputs(descriptor, loadIndicatorInputs(descriptor.id))
     const indicator: ActiveIndicator = { id: descriptor.id, scriptId: descriptor.id, name: descriptor.name, visible: !this.snapshot.indicatorsHidden, inputs }
     if (this.snapshot.indicatorsHidden) this.indicatorVisibilityBeforeHide.set(indicator.id, true)
     this.setSnapshot({ indicators: [...this.snapshot.indicators, indicator], indicatorError: null }, true)
@@ -429,9 +570,12 @@ export class ReplayEngine {
     this.scheduleSessionPersist()
     if (visible) void this.refreshIndicators()
   }
-
   updateIndicatorInputs(id: string, inputs: Record<string, IndicatorInputValue>): void {
-    const indicators = this.snapshot.indicators.map((indicator) => indicator.id === id ? { ...indicator, inputs: { ...inputs } } : indicator)
+
+    const indicator = this.snapshot.indicators.find((candidate) => candidate.id === id)
+    if (!indicator) return
+    saveIndicatorInputs(indicator.scriptId, inputs)
+    const indicators = this.snapshot.indicators.map((candidate) => candidate.id === id ? { ...candidate, inputs: { ...inputs } } : candidate)
     this.setSnapshot({ indicators, indicatorError: null }, true)
     this.scheduleSessionPersist()
     void this.refreshIndicators()
@@ -642,11 +786,11 @@ export class ReplayEngine {
    *
    * A group whose previous run is still in flight is skipped, not preempted.
    * refreshIndicatorGroup aborts the outstanding controller on entry, so
-   * restarting every 500 ms against a symbol whose runs take longer than that
-   * would mean no run ever completes — the same freeze as before, now with
-   * continuous server load. Output is a pure function of the cursor, so a
-   * skipped tick costs one interval of staleness and the next tick asks for a
-   * strictly fresher cursor. User actions still preempt instantly, because
+   * restarting on every poll against a symbol whose runs take longer than
+   * that would mean no run ever completes — the same freeze as before, now
+   * with continuous server load. Output is a pure function of the cursor, so
+   * a skipped tick costs one interval of staleness and the next tick asks for
+   * a strictly fresher cursor. User actions still preempt instantly, because
    * the foreground paths keep their unconditional abort.
    */
   private async refreshIndicatorsForPlayback(): Promise<void> {
@@ -760,6 +904,11 @@ export class ReplayEngine {
   }
 
   destroy(): void {
+    this.flushHomeSave(true)
+    if (this.homeRemoteSyncTimer !== null && this.homeRecovery) {
+      this.syncHomeWorkspaceSnapshot(this.homeRecovery, true)
+    }
+    this.homeDestroyed = true
     cancelAnimationFrame(this.animationFrame)
     this.abortViewportLoads()
     this.abortSourcePrefetch()
@@ -1013,6 +1162,7 @@ export class ReplayEngine {
   beginReplaySelection(options: ReplaySelectionOptions = {}): void {
     if (isEvalActive()) return
     if (!this.source || !this.snapshot.symbol || (this.snapshot.status !== 'ready' && this.snapshot.status !== 'buffering')) return
+    if (!this.currentSnapshotOwner()) this.flushHomeSave(true)
     this.pause()
     this.setDrawingTool(null)
     this.deselectDrawing()
@@ -1097,11 +1247,17 @@ export class ReplayEngine {
 
   exitReplay(): void {
     if (isEvalActive()) return
-    void this.deactivateReplaySession('paused', { returnToLatest: true, snapshotOnExit: true })
+    void this.deactivateReplaySession('paused', { returnToLatest: true, snapshotOnExit: true, restoreHomeAfterExit: true })
   }
 
-  pauseReplaySession(): Promise<void> { return this.deactivateReplaySession('paused', { returnToLatest: true, snapshotOnExit: true }) }
-  stopReplaySession(): Promise<void> { return this.deactivateReplaySession('stopped', { returnToLatest: true, snapshotOnExit: true }) }
+  pauseReplaySession(): Promise<void> {
+    return this.deactivateReplaySession('paused', { returnToLatest: true, snapshotOnExit: true, restoreHomeAfterExit: true })
+  }
+
+  stopReplaySession(): Promise<void> {
+    return this.deactivateReplaySession('stopped', { returnToLatest: true, snapshotOnExit: true, restoreHomeAfterExit: true })
+  }
+
   async exitEvaluation(): Promise<void> {
     if (!isEvalActive()) return
     if (!await this.flushDrawingPersistence()) {
@@ -1111,7 +1267,12 @@ export class ReplayEngine {
     this.captureWorkspaceRecoveryPoint('explicit-exit')
     this.cancelActiveOrders()
     getEvalState().exitEvaluation()
-    await this.deactivateReplaySession('paused', { returnToLatest: true, drawingsFlushed: true })
+    await this.deactivateReplaySession('paused', {
+      returnToLatest: true,
+      drawingsFlushed: true,
+      restoreHomeAfterExit: true,
+      forceHomeRestore: true,
+    })
   }
 
   async seek(timestamp: number, alignment: 'floor' | 'ceil' = 'floor'): Promise<void> {
@@ -1367,6 +1528,7 @@ export class ReplayEngine {
       // active. Never overlap sources when the old owner could not exit.
       if (isEvalActive()) return
     }
+    this.flushHomeSave(true)
     await this.deactivateReplaySession('paused')
     const recoveryPoint = await this.resolveWorkspaceRecoveryPoint({ kind: 'replay', id: session.id })
     if (recoveryPoint) this.prepareWorkspaceRestore(recoveryPoint)
@@ -1599,8 +1761,8 @@ export class ReplayEngine {
     view.adapter.onViewportDemand((demand) => { void this.handleViewportDemand(view.id, demand) })
     view.adapter.onCrosshairSync((state) => { if (this.syncFlags.crosshair) this.views.syncCrosshair(view.id, state) })
     view.adapter.onViewportSync((state) => {
-      if (!this.syncFlags.dateRange) return
-      this.views.syncViewport(view.id, this.syncFlags.lockZoom ? state : { time: state.time })
+      this.scheduleHomeSave()
+      if (this.syncFlags.dateRange) this.views.syncViewport(view.id, this.syncFlags.lockZoom ? state : { time: state.time })
     })
     view.adapter.onReplayBarSelect((timestamp) => { void this.selectReplayBar(timestamp) })
     view.setReplaySelection(this.currentReplaySelectionState())
@@ -1713,9 +1875,18 @@ export class ReplayEngine {
     checkpoint?: { cursorTs: number; fills: Map<string, FillEngineState> },
   ): void {
     const owner = this.currentSnapshotOwner()
+    if (owner) this.saveWorkspaceRecoveryPoint(owner, reason, checkpoint)
+  }
+
+  private saveWorkspaceRecoveryPoint(
+    owner: SessionSnapshotOwner,
+    reason: SessionWorkspaceSnapshot['reason'],
+    checkpoint?: { cursorTs: number; fills: Map<string, FillEngineState> },
+    forceRemote = false,
+  ): void {
     const layout = captureChartWorkspaceState()
     const symbol = this.snapshot.symbol
-    if (!owner || !layout || !symbol) return
+    if (!layout || !symbol) return
 
     const drawings: Record<string, SerializedDrawing[]> = {}
     for (const [drawingSymbol, document] of this.drawingDocuments) drawings[drawingSymbol] = structuredClone(document.drawings)
@@ -1727,12 +1898,17 @@ export class ReplayEngine {
     const fills = Object.fromEntries(
       [...(checkpoint?.fills ?? this.symbolFills)].map(([fillSymbol, fill]) => [fillSymbol, structuredClone(fill)]),
     )
+    const capturedAt = owner.kind === 'home'
+      ? Math.max(Date.now(), (this.homeRecovery?.capturedAt ?? 0) + 1)
+      : Date.now()
     const recoveryPoint: SessionWorkspaceSnapshot = {
       version: 1,
       owner,
       reason,
-      capturedAt: Date.now(),
+      capturedAt,
       cursorTs: checkpoint?.cursorTs ?? this.snapshot.cursorTs,
+      replayMode: this.snapshot.replayMode === 'active' ? 'active' : 'inactive',
+      replayStartTs: this.snapshot.replayStartTs,
       symbol: symbol.symbol,
       layout,
       viewports,
@@ -1750,13 +1926,15 @@ export class ReplayEngine {
         indicatorsHidden: this.snapshot.indicatorsHidden,
       },
     }
+    if (owner.kind === 'home') {
+      this.homeRecovery = recoveryPoint
+      this.homeRestoreChecked = true
+    }
     if (!saveSessionWorkspaceSnapshot(recoveryPoint)) {
       this.setSnapshot({ error: 'The local recovery snapshot could not be saved. Check browser site-storage permissions.' }, true)
     }
-    // Local write is already the source of truth for this browser; the
-    // backend mirror is a best-effort durable copy for other browsers/a
-    // reinstall, fired regardless of whether the local save above succeeded.
-    syncWorkspaceSnapshot(recoveryPoint)
+    if (owner.kind === 'home') this.syncHomeWorkspaceSnapshot(recoveryPoint, forceRemote)
+    else syncWorkspaceSnapshot(recoveryPoint)
   }
 
   private prepareWorkspaceRestore(recoveryPoint: SessionWorkspaceSnapshot): void {
@@ -1770,7 +1948,7 @@ export class ReplayEngine {
       existing.previousIds = new Set(drawings.map((drawing) => drawing.id))
       const bucket = recoveryPoint.owner.kind === 'replay'
         ? `session:${recoveryPoint.owner.id}`
-        : `eval:${recoveryPoint.owner.id}`
+        : recoveryPoint.owner.kind === 'eval' ? `eval:${recoveryPoint.owner.id}` : 'home'
       existing.buckets = new Map(drawings.map((drawing) => [drawing.id, bucket]))
       this.drawingDocuments.set(this.drawingDocumentKey(symbol), existing)
     }
@@ -1810,8 +1988,12 @@ export class ReplayEngine {
 
   private applyWorkspaceRestoreToView(view: ChartViewController): void {
     const recoveryPoint = this.pendingWorkspaceRestore
+    if (!recoveryPoint) return
     const owner = this.currentSnapshotOwner()
-    if (!recoveryPoint || !owner || owner.kind !== recoveryPoint.owner.kind || owner.id !== recoveryPoint.owner.id) return
+    const ownerMatches = owner
+      ? owner.kind === recoveryPoint.owner.kind && owner.id === recoveryPoint.owner.id
+      : recoveryPoint.owner.kind === 'home'
+    if (!ownerMatches) return
     const symbol = view.symbol()
     const drawings = symbol ? recoveryPoint.drawings[symbol.symbol] : undefined
     if (drawings) {
@@ -1819,7 +2001,9 @@ export class ReplayEngine {
       view.adapter.loadDrawings(structuredClone(drawings))
       this.syncingDrawings = false
     }
-    view.resetView()
+    const viewport = recoveryPoint.owner.kind === 'home' ? recoveryPoint.viewports[view.id] : undefined
+    if (viewport) view.adapter.setViewportSync(viewport)
+    else view.resetView()
   }
 
   private resetAllChartViews(): void {
@@ -2575,6 +2759,7 @@ export class ReplayEngine {
   }
 
   private handlePageHide = (): void => {
+    this.flushHomeSave(true)
     void this.checkpointSession('paused')
   }
 
@@ -2605,7 +2790,13 @@ export class ReplayEngine {
 
   private async deactivateReplaySession(
     status: 'paused' | 'stopped',
-    options: { returnToLatest?: boolean; drawingsFlushed?: boolean; snapshotOnExit?: boolean } = {},
+    options: {
+      returnToLatest?: boolean
+      drawingsFlushed?: boolean
+      snapshotOnExit?: boolean
+      restoreHomeAfterExit?: boolean
+      forceHomeRestore?: boolean
+    } = {},
   ): Promise<void> {
     cancelAnimationFrame(this.animationFrame)
     this.views.flushRawBars()
@@ -2629,6 +2820,9 @@ export class ReplayEngine {
       this.setSnapshot({ sessionId: null, sessionName: null, sessionStatus: null, persistencePending: false }, true)
     }
     if (options.returnToLatest) await this.resetChartToLatest()
+    if (options.restoreHomeAfterExit && (hadSession || options.forceHomeRestore)) {
+      await this.returnToHomeWorkspace()
+    }
   }
 
   private async resetChartToLatest(): Promise<void> {
@@ -2743,6 +2937,7 @@ export class ReplayEngine {
     }
     this.syncingDrawings = false
     this.scheduleDrawingPersist(viewId)
+    this.scheduleHomeSave()
   }
 
   private scheduleDrawingPersist(viewId: string): void {
@@ -2867,6 +3062,7 @@ export class ReplayEngine {
     this.emitSnapshot(immediate)
   }
   private emitSnapshot(immediate: boolean): void {
+    this.scheduleHomeSave()
     const now = performance.now()
     if (!immediate && now - this.lastEmitAt < 100) return
     this.lastEmitAt = now

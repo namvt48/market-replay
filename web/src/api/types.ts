@@ -196,12 +196,15 @@ export interface IndicatorDescriptor {
 
 export interface IndicatorDrawIntent {
   id: number
-  kind: 'ray' | 'rectangle' | 'vline' | 'marker'
+  kind: 'ray' | 'line' | 'rectangle' | 'vline' | 'marker' | 'screenText'
   label?: string
   t0: number
   y0: number
   t1?: number
   y1?: number
+  /** Logical-bar offsets from the t0/t1 anchors; enables Pine-style right offset without future timestamps. */
+  xOffset0?: number
+  xOffset1?: number
   style: Record<string, unknown>
 }
 

@@ -27,6 +27,22 @@ describe('ChartSettingsDialog', () => {
     expect(onPreview).toHaveBeenCalled()
     expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ appearance: expect.objectContaining({ showGrid: false, showVolume: false }) }))
   })
+  it('previews and applies the selected chart type', async () => {
+    const user = userEvent.setup()
+    const onPreview = vi.fn()
+    const onApply = vi.fn()
+    render(<ChartSettingsDialog value={DEFAULT_CHART_PANE_SETTINGS} onPreview={onPreview} onApply={onApply} onCancel={vi.fn()} />)
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Chart type' }), 'line')
+    expect(onPreview).toHaveBeenLastCalledWith(expect.objectContaining({
+      appearance: expect.objectContaining({ chartType: 'line' }),
+    }))
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(onApply).toHaveBeenCalledWith(expect.objectContaining({
+      appearance: expect.objectContaining({ chartType: 'line' }),
+    }))
+  })
+
 
   it('keeps global timezone controls out of per-chart settings and preserves the timezone on reset', async () => {
     const user = userEvent.setup()

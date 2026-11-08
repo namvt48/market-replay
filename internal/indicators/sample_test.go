@@ -3,6 +3,7 @@ package indicators
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -286,6 +287,77 @@ func TestSampleScript_Gb69Cbmor_EndToEnd(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestSampleScript_Gb69Cbmor_IncludesOpeningBarInPoc(t *testing.T) {
+	nyLoc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	day := time.Date(2024, 1, 15, 0, 0, 0, 0, nyLoc)
+	specs := buildSampleFixtureSpecs(day)
+	specs[360].volume = 10_000
+	meta := model.SymbolMeta{TickSize: 1, PointValue: 1, SessionTz: "America/New_York"}
+	file := openFixtureFile(t, "NQ", "1m", specs, meta)
+
+	e := NewEngine()
+	if err := RegisterBuiltins(e); err != nil {
+		t.Fatalf("RegisterBuiltins: %v", err)
+	}
+	lastTs := specs[len(specs)-1].ts
+	result, err := e.Run(context.Background(), "gb69-cbmor", file, nil, meta, RunParams{
+		At: lastTs, Before: len(specs), MaxTs: lastTs,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	poc, ok := findByLabel(result.Draws, "POC")
+	if !ok {
+		t.Fatal("POC ray not found")
+	}
+	const openingBarPrice4 = (1000.0 + 1005.0 + 995.0 + 1001.0) / 4.0
+	if !approxEqual(poc.Y0, openingBarPrice4) {
+		t.Fatalf("opening bar POC = %v, want %v", poc.Y0, openingBarPrice4)
+	}
+}
+
+func TestSampleScript_Gb69Cbmor_IncludesOpeningBarInStdDev(t *testing.T) {
+	nyLoc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	day := time.Date(2024, 1, 15, 0, 0, 0, 0, nyLoc)
+	specs := buildSampleFixtureSpecs(day)
+	meta := model.SymbolMeta{TickSize: 1, PointValue: 1, SessionTz: "America/New_York"}
+	file := openFixtureFile(t, "NQ", "1m", specs, meta)
+	e := NewEngine()
+	if err := RegisterBuiltins(e); err != nil {
+		t.Fatalf("RegisterBuiltins: %v", err)
+	}
+	lastTs := specs[len(specs)-1].ts
+	result, err := e.Run(context.Background(), "gb69-cbmor", file, nil, meta, RunParams{
+		At: lastTs, Before: len(specs), MaxTs: lastTs,
+		Overrides: map[string]any{"i_calc_type": "Std Dev"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	const (
+		rangeHigh = 1184.0
+		samples   = 180.0
+	)
+	want := rangeHigh + math.Sqrt((samples*samples-1)/12)*10
+	sessionEnd := specs[540].ts
+	for _, drawing := range result.Draws {
+		if drawing.Kind == "rectangle" && drawing.T0 == sessionEnd && approxEqual(drawing.Y1, rangeHigh) {
+			if !approxEqual(drawing.Y0, want) {
+				t.Fatalf("opening-bar Std Dev upper boundary = %v, want %v", drawing.Y0, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("Std Dev projection box starting at %d was not found", sessionEnd)
 }
 
 func TestSampleScript_Gb69Cbmor_InvalidOverrideRejected(t *testing.T) {

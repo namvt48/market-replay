@@ -5,6 +5,7 @@ import type { SerializedDrawing } from 'lightweight-charts-drawing'
 import type { UTCTimestamp } from 'lightweight-charts'
 import type { OrderLine } from './chart-adapter'
 import { DEFAULT_DRAWING_METADATA } from './drawing-appearance'
+import { DEFAULT_CHART_APPEARANCE } from './chart-settings'
 
 interface FakeAnchor { time: number; price: number }
 interface FakeDrawing {
@@ -88,39 +89,131 @@ const drawingMocks = vi.hoisted(() => {
 const chartMocks = vi.hoisted(() => {
   const priceScaleState = { autoScale: true, range: { from: 90, to: 110 }, invertScale: false, mode: 0 }
   return {
-  chartApplyOptions: vi.fn(),
-  chartResize: vi.fn(),
-  candleApplyOptions: vi.fn(),
-  volumeApplyOptions: vi.fn(),
-  paneSetHeight: vi.fn(),
-  paneCount: 1,
-  addSeries: vi.fn(),
-  removeSeries: vi.fn(),
-  candleSetData: vi.fn(),
-  candleUpdate: vi.fn(),
-  volumeSetData: vi.fn(),
-  volumeUpdate: vi.fn(),
-  candles: null as object | null,
-  crosshairHandler: null as ((params: { time?: number; point?: { x: number; y: number } | null; seriesData: Map<object, unknown> }) => void) | null,
-  logicalRangeHandler: null as ((range: { from: number; to: number } | null) => void) | null,
-  timeRangeHandler: null as ((range: { from: number; to: number } | null) => void) | null,
-  setVisibleLogicalRange: vi.fn(),
-  setVisibleRange: vi.fn(),
-  timeScaleApplyOptions: vi.fn(),
-  priceScaleState,
-  priceScaleApplyOptions: vi.fn((options: { autoScale?: boolean; invertScale?: boolean; mode?: number }) => {
-    if (typeof options.autoScale === 'boolean') priceScaleState.autoScale = options.autoScale
-    if (typeof options.invertScale === 'boolean') priceScaleState.invertScale = options.invertScale
-    if (typeof options.mode === 'number') priceScaleState.mode = options.mode
-  }),
-  priceScaleSetAutoScale: vi.fn((enabled: boolean) => { priceScaleState.autoScale = enabled }),
-  priceScaleSetVisibleRange: vi.fn((range: { from: number; to: number }) => { priceScaleState.range = range }),
-  setCrosshairPosition: vi.fn(),
-  clearCrosshairPosition: vi.fn(),
-  fitContent: vi.fn(),
-  takeScreenshot: vi.fn(),
-  createChartOptions: null as Record<string, unknown> | null,
-  chartRoot: null as HTMLDivElement | null,
+    chartApplyOptions: vi.fn(),
+    chartResize: vi.fn(),
+    candleApplyOptions: vi.fn(),
+    lineApplyOptions: vi.fn(),
+    volumeApplyOptions: vi.fn(),
+    paneSetHeight: vi.fn(),
+    paneCount: 1,
+    lineSeriesAdds: 0,
+    addSeries: vi.fn(),
+    removeSeries: vi.fn(),
+    candleSetData: vi.fn(),
+    candleUpdate: vi.fn(),
+    lineSetData: vi.fn(),
+    lineUpdate: vi.fn(),
+    volumeSetData: vi.fn(),
+    volumeUpdate: vi.fn(),
+    candles: null as object | null,
+    linePrice: null as object | null,
+    crosshairHandler: null as ((params: { time?: number; point?: { x: number; y: number } | null; seriesData: Map<object, unknown> }) => void) | null,
+    logicalRangeHandler: null as ((range: { from: number; to: number } | null) => void) | null,
+    timeRangeHandler: null as ((range: { from: number; to: number } | null) => void) | null,
+    setVisibleLogicalRange: vi.fn(),
+    setVisibleRange: vi.fn(),
+    timeScaleApplyOptions: vi.fn(),
+    priceScaleState,
+    priceScaleApplyOptions: vi.fn((options: { autoScale?: boolean; invertScale?: boolean; mode?: number }) => {
+      if (typeof options.autoScale === 'boolean') priceScaleState.autoScale = options.autoScale
+      if (typeof options.invertScale === 'boolean') priceScaleState.invertScale = options.invertScale
+      if (typeof options.mode === 'number') priceScaleState.mode = options.mode
+    }),
+    priceScaleSetAutoScale: vi.fn((enabled: boolean) => { priceScaleState.autoScale = enabled }),
+    priceScaleSetVisibleRange: vi.fn((range: { from: number; to: number }) => { priceScaleState.range = range }),
+    setCrosshairPosition: vi.fn(),
+    clearCrosshairPosition: vi.fn(),
+    fitContent: vi.fn(),
+    takeScreenshot: vi.fn(),
+    createChartOptions: null as Record<string, unknown> | null,
+    chartRoot: null as HTMLDivElement | null,
+  }
+})
+
+vi.mock('lightweight-charts', () => {
+  const timeScale = {
+    width: () => 600,
+    coordinateToTime: (x: number) => Math.round(x),
+    coordinateToLogical: (x: number) => x,
+    getVisibleRange: () => ({ from: 0, to: 100 }),
+    getVisibleLogicalRange: () => ({ from: 10, to: 20 }),
+    fitContent: chartMocks.fitContent,
+    setVisibleLogicalRange: chartMocks.setVisibleLogicalRange,
+    setVisibleRange: chartMocks.setVisibleRange,
+    subscribeVisibleTimeRangeChange: vi.fn((handler: typeof chartMocks.timeRangeHandler) => { chartMocks.timeRangeHandler = handler }),
+    unsubscribeVisibleTimeRangeChange: vi.fn(),
+    subscribeVisibleLogicalRangeChange: vi.fn((handler: typeof chartMocks.logicalRangeHandler) => { chartMocks.logicalRangeHandler = handler }),
+    unsubscribeVisibleLogicalRangeChange: vi.fn(),
+    applyOptions: chartMocks.timeScaleApplyOptions,
+    timeToIndex: (time: number) => time,
+    timeToCoordinate: (time: number) => time,
+  }
+  const pane = { getHeight: () => 100, setHeight: chartMocks.paneSetHeight }
+  const baseSeries = {
+    attachPrimitive: vi.fn(),
+    detachPrimitive: vi.fn(),
+    setData: vi.fn(),
+    update: vi.fn(),
+    pop: vi.fn(),
+    coordinateToPrice: (y: number) => y,
+    priceToCoordinate: (price: number) => price,
+    getPane: () => pane,
+    priceScale: () => ({
+      applyOptions: chartMocks.priceScaleApplyOptions,
+      getVisibleRange: () => chartMocks.priceScaleState.range,
+      options: () => ({ autoScale: chartMocks.priceScaleState.autoScale, invertScale: chartMocks.priceScaleState.invertScale, mode: chartMocks.priceScaleState.mode }),
+      setAutoScale: chartMocks.priceScaleSetAutoScale,
+      setVisibleRange: chartMocks.priceScaleSetVisibleRange,
+    }),
+  }
+  const candles = { ...baseSeries, setData: chartMocks.candleSetData, update: chartMocks.candleUpdate, applyOptions: chartMocks.candleApplyOptions }
+  const linePrice = { ...baseSeries, setData: chartMocks.lineSetData, update: chartMocks.lineUpdate, applyOptions: chartMocks.lineApplyOptions }
+  chartMocks.linePrice = linePrice
+  const volume = { ...baseSeries, setData: chartMocks.volumeSetData, update: chartMocks.volumeUpdate, applyOptions: chartMocks.volumeApplyOptions }
+  const spacer = { ...baseSeries, applyOptions: vi.fn() }
+  chartMocks.addSeries.mockImplementation((kind: string) => {
+    if (kind === 'HistogramSeries') {
+      chartMocks.paneCount = 2
+      return volume
+    }
+    if (kind === 'CandlestickSeries') return candles
+    if (kind === 'LineSeries') {
+      chartMocks.lineSeriesAdds += 1
+      return chartMocks.lineSeriesAdds === 1 ? linePrice : spacer
+    }
+    return spacer
+  })
+  chartMocks.removeSeries.mockImplementation(() => { chartMocks.paneCount = 1 })
+  chartMocks.candles = candles
+  const chart = {
+    addSeries: chartMocks.addSeries,
+    removeSeries: chartMocks.removeSeries,
+    panes: () => Array.from({ length: chartMocks.paneCount }),
+    timeScale: () => timeScale,
+    applyOptions: chartMocks.chartApplyOptions,
+    resize: chartMocks.chartResize,
+    remove: vi.fn(),
+    subscribeCrosshairMove: vi.fn((handler: typeof chartMocks.crosshairHandler) => { chartMocks.crosshairHandler = handler }),
+    unsubscribeCrosshairMove: vi.fn(),
+    setCrosshairPosition: chartMocks.setCrosshairPosition,
+    clearCrosshairPosition: chartMocks.clearCrosshairPosition,
+    takeScreenshot: chartMocks.takeScreenshot,
+  }
+  return {
+    CandlestickSeries: 'CandlestickSeries',
+    HistogramSeries: 'HistogramSeries',
+    LineSeries: 'LineSeries',
+    ColorType: { Solid: 'solid' },
+    CrosshairMode: { Normal: 0 },
+    LineStyle: { Dashed: 2 },
+    PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2 },
+    createChart: (element: HTMLElement, options: Record<string, unknown>) => {
+      chartMocks.createChartOptions = options
+      chartMocks.chartRoot = document.createElement('div')
+      element.appendChild(chartMocks.chartRoot)
+      return chart
+    },
+    createSeriesMarkers: () => ({ setMarkers: vi.fn(), detach: vi.fn() }),
   }
 })
 
@@ -141,69 +234,6 @@ vi.mock('lightweight-charts-drawing', () => ({
   }),
 }))
 
-vi.mock('lightweight-charts', () => {
-  const timeScale = {
-    width: () => 600,
-    coordinateToTime: (x: number) => Math.round(x),
-    coordinateToLogical: (x: number) => x,
-    getVisibleRange: () => ({ from: 0, to: 100 }), getVisibleLogicalRange: () => ({ from: 10, to: 20 }),
-    fitContent: chartMocks.fitContent, setVisibleLogicalRange: chartMocks.setVisibleLogicalRange,
-    setVisibleRange: chartMocks.setVisibleRange,
-    subscribeVisibleTimeRangeChange: vi.fn((handler: typeof chartMocks.timeRangeHandler) => { chartMocks.timeRangeHandler = handler }),
-    unsubscribeVisibleTimeRangeChange: vi.fn(),
-    subscribeVisibleLogicalRangeChange: vi.fn((handler: typeof chartMocks.logicalRangeHandler) => { chartMocks.logicalRangeHandler = handler }),
-    unsubscribeVisibleLogicalRangeChange: vi.fn(), applyOptions: chartMocks.timeScaleApplyOptions, timeToIndex: (time: number) => time, timeToCoordinate: (time: number) => time,
-  }
-  const pane = { getHeight: () => 100, setHeight: chartMocks.paneSetHeight }
-  const baseSeries = {
-    attachPrimitive: vi.fn(), setData: vi.fn(), update: vi.fn(), pop: vi.fn(),
-    coordinateToPrice: (y: number) => y,
-    priceToCoordinate: (price: number) => price,
-    getPane: () => pane,
-    priceScale: () => ({
-      applyOptions: chartMocks.priceScaleApplyOptions,
-      getVisibleRange: () => chartMocks.priceScaleState.range,
-      options: () => ({ autoScale: chartMocks.priceScaleState.autoScale, invertScale: chartMocks.priceScaleState.invertScale, mode: chartMocks.priceScaleState.mode }),
-      setAutoScale: chartMocks.priceScaleSetAutoScale,
-      setVisibleRange: chartMocks.priceScaleSetVisibleRange,
-    }),
-  }
-  const candles = { ...baseSeries, setData: chartMocks.candleSetData, update: chartMocks.candleUpdate, applyOptions: chartMocks.candleApplyOptions }
-  const volume = { ...baseSeries, setData: chartMocks.volumeSetData, update: chartMocks.volumeUpdate, applyOptions: chartMocks.volumeApplyOptions }
-  const spacer = { ...baseSeries, applyOptions: vi.fn() }
-  chartMocks.addSeries.mockImplementation((kind: string) => {
-    if (kind === 'HistogramSeries') {
-      chartMocks.paneCount = 2
-      return volume
-    }
-    return kind === 'CandlestickSeries' ? candles : spacer
-  })
-  chartMocks.removeSeries.mockImplementation(() => { chartMocks.paneCount = 1 })
-  chartMocks.candles = candles
-  const chart = {
-    addSeries: chartMocks.addSeries,
-    removeSeries: chartMocks.removeSeries,
-    panes: () => Array.from({ length: chartMocks.paneCount }),
-    timeScale: () => timeScale,
-    applyOptions: chartMocks.chartApplyOptions, resize: chartMocks.chartResize, remove: vi.fn(),
-    subscribeCrosshairMove: vi.fn((handler: typeof chartMocks.crosshairHandler) => { chartMocks.crosshairHandler = handler }),
-    unsubscribeCrosshairMove: vi.fn(),
-    setCrosshairPosition: chartMocks.setCrosshairPosition,
-    clearCrosshairPosition: chartMocks.clearCrosshairPosition,
-    takeScreenshot: chartMocks.takeScreenshot,
-  }
-  return {
-    CandlestickSeries: 'CandlestickSeries', HistogramSeries: 'HistogramSeries', LineSeries: 'LineSeries',
-    ColorType: { Solid: 'solid' }, CrosshairMode: { Normal: 0 }, LineStyle: { Dashed: 2 }, PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2 },
-    createChart: (element: HTMLElement, options: Record<string, unknown>) => {
-      chartMocks.createChartOptions = options
-      chartMocks.chartRoot = document.createElement('div')
-      element.appendChild(chartMocks.chartRoot)
-      return chart
-    },
-    createSeriesMarkers: () => ({ setMarkers: vi.fn() }),
-  }
-})
 
 const symbol: SymbolMeta = {
   symbol: 'ES', name: 'E-mini S&P', kind: 'future', tickSize: 0.25, pointValue: 50,
@@ -226,8 +256,7 @@ beforeEach(() => {
   chartMocks.priceScaleState.range = { from: 90, to: 110 }
   chartMocks.priceScaleState.invertScale = false
   chartMocks.priceScaleState.mode = 0
-  chartMocks.paneCount = 1
-  chartMocks.createChartOptions = null
+  chartMocks.lineSeriesAdds = 0
   chartMocks.chartRoot = null
   chartMocks.chartResize.mockImplementation((width: number, height: number) => {
     if (!chartMocks.chartRoot) return
@@ -288,6 +317,77 @@ describe('LwcAdapter lifecycle', () => {
     await adapter.init(document.createElement('div'), symbol, '1m')
 
     expect(chartMocks.createChartOptions).toMatchObject({ autoSize: false, layout: { fontSize: 14 } })
+    adapter.destroy()
+  })
+
+  it('switches the active price series between candles and close-only line data', async () => {
+    const frame: { callback: FrameRequestCallback | null } = { callback: null }
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { frame.callback = callback; return 1 })
+    const adapter = new LwcAdapter()
+    await adapter.init(document.createElement('div'), symbol, '1m')
+    const bars = [
+      { time: 60, open: 100, high: 104, low: 98, close: 103, volume: 10 },
+      { time: 120, open: 103, high: 106, low: 101, close: 105, volume: 12 },
+    ]
+    adapter.setHistory(bars)
+    chartMocks.lineSetData.mockClear()
+    chartMocks.candleApplyOptions.mockClear()
+    chartMocks.lineApplyOptions.mockClear()
+
+    adapter.applyAppearance({ ...DEFAULT_CHART_APPEARANCE, chartType: 'line' })
+
+    expect(chartMocks.lineSetData).toHaveBeenLastCalledWith([
+      { time: 60, value: 103 },
+      { time: 120, value: 105 },
+    ])
+    expect(chartMocks.candleApplyOptions).toHaveBeenCalledWith(expect.objectContaining({ visible: false }))
+    expect(chartMocks.lineApplyOptions).toHaveBeenCalledWith(expect.objectContaining({ visible: true }))
+    const linePrice = chartMocks.linePrice
+    if (!linePrice || !chartMocks.crosshairHandler) throw new Error('line series was not initialized')
+    adapter.setCrosshairSync({ time: 120, price: 105 })
+    expect(chartMocks.setCrosshairPosition).toHaveBeenLastCalledWith(105, 120, linePrice)
+    const hovered = vi.fn()
+    adapter.onHoveredBar(hovered)
+    chartMocks.crosshairHandler({
+      time: 120,
+      point: { x: 120, y: 105 },
+      seriesData: new Map([[linePrice, { time: 120, value: 105 }]]),
+    })
+    const flushHover = frame.callback
+    if (!flushHover) throw new Error('hover update was not scheduled')
+    flushHover(0)
+    expect(hovered).toHaveBeenLastCalledWith(expect.objectContaining({
+      time: 120, open: 103, high: 106, low: 101, close: 105, hovered: true,
+    }))
+
+
+    adapter.applyAppearance({ ...DEFAULT_CHART_APPEARANCE, chartType: 'candles' })
+    expect(chartMocks.candleApplyOptions).toHaveBeenCalledWith(expect.objectContaining({ visible: true }))
+    expect(chartMocks.candleSetData).toHaveBeenLastCalledWith([
+      { time: 60, open: 100, high: 104, low: 98, close: 103 },
+      { time: 120, open: 103, high: 106, low: 101, close: 105 },
+    ])
+    adapter.destroy()
+  })
+
+  it('clears inactive price-series history across a chart switch and replay rewind', async () => {
+    const adapter = new LwcAdapter()
+    await adapter.init(document.createElement('div'), symbol, '1m')
+    adapter.setHistory([
+      { time: 60, open: 100, high: 104, low: 98, close: 103, volume: 10 },
+      { time: 120, open: 103, high: 106, low: 101, close: 105, volume: 12 },
+    ])
+
+    adapter.applyAppearance({ ...DEFAULT_CHART_APPEARANCE, chartType: 'line' })
+    expect(chartMocks.candleSetData).toHaveBeenLastCalledWith([])
+    adapter.setHistory([{ time: 600, open: 110, high: 112, low: 109, close: 111, volume: 20 }], { resetView: true })
+    expect(chartMocks.lineSetData).toHaveBeenLastCalledWith([{ time: 600, value: 111 }])
+
+    adapter.applyAppearance({ ...DEFAULT_CHART_APPEARANCE, chartType: 'candles' })
+    expect(chartMocks.lineSetData).toHaveBeenLastCalledWith([])
+    expect(chartMocks.candleSetData).toHaveBeenLastCalledWith([
+      { time: 600, open: 110, high: 112, low: 109, close: 111 },
+    ])
     adapter.destroy()
   })
 
@@ -1351,12 +1451,13 @@ describe('LwcAdapter drawing preview', () => {
     await adapter.init(document.createElement('div'), symbol, '1m')
     const createdSeries = chartMocks.addSeries.mock.calls.length
     const hiddenAppearance = {
+      chartType: 'candles',
       upColor: '#111111', downColor: '#222222', wickUpColor: '#333333', wickDownColor: '#444444',
       borderUpColor: '#555555', borderDownColor: '#666666', borderVisible: true,
       backgroundColor: '#777777', textColor: '#aaaaaa', showGrid: false, verticalGridColor: '#888888', horizontalGridColor: '#999999', showVolume: false,
     } as const
     adapter.applyAppearance(hiddenAppearance)
-    expect(chartMocks.candleApplyOptions).toHaveBeenLastCalledWith(expect.objectContaining({ upColor: '#111111', borderVisible: true }))
+    expect(chartMocks.candleApplyOptions).toHaveBeenCalledWith(expect.objectContaining({ upColor: '#111111', borderVisible: true }))
     expect(chartMocks.chartApplyOptions).toHaveBeenLastCalledWith(expect.objectContaining({ grid: expect.any(Object), layout: expect.objectContaining({ textColor: '#aaaaaa' }) }))
     expect(chartMocks.volumeApplyOptions).toHaveBeenLastCalledWith({ visible: false })
     expect(chartMocks.removeSeries).toHaveBeenCalledOnce()

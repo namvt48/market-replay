@@ -4,7 +4,9 @@ import killzones from '../../../internal/indicators/scripts/killzones.js?raw'
 import openPriceMarkers from '../../../internal/indicators/scripts/open-price-markers.js?raw'
 import fractals from '../../../internal/indicators/scripts/fractals.js?raw'
 import ipdaRanges from '../../../internal/indicators/scripts/ipda-ranges.js?raw'
-import type { ChartBarTicks, IndicatorDescriptor, IndicatorDrawIntent, IndicatorInputValue, IndicatorRunResult } from '../api/types'
+import { tradingSessionsDescriptor, calculateTradingSessions } from './trading-sessions'
+import { imDuyDescriptor, calculateImDuy } from './im-duy'
+import type { ChartBarTicks, IndicatorDescriptor, IndicatorDrawIntent, IndicatorInputValue, IndicatorRunResult, Timeframe } from '../api/types'
 import { calculateLocalPlot } from './local-indicator-math'
 import { isIndicatorHistoryPrefix, zonedDateParts } from './local-indicator-session'
 
@@ -17,6 +19,7 @@ const SOURCES: Record<string, { name: string; source: string }> = {
   'ipda-ranges': { name: 'IPDA Ranges', source: ipdaRanges },
 }
 
+const NATIVE_INDICATOR_IDS = new Set([tradingSessionsDescriptor.id, imDuyDescriptor.id])
 const descriptorCache = new Map<string, IndicatorDescriptor>()
 type Draw = IndicatorDrawIntent
 interface MomentValue {
@@ -150,7 +153,9 @@ function createScriptRunner(scriptId: string, initialBars: ChartBarTicks[], inpu
   }
 }
 
-function runScript(scriptId: string, bars: ChartBarTicks[], inputs: Record<string, IndicatorInputValue>, tickSize: number, dailyBars: ChartBarTicks[]): IndicatorRunResult {
+function runScript(scriptId: string, bars: ChartBarTicks[], inputs: Record<string, IndicatorInputValue>, tickSize: number, dailyBars: ChartBarTicks[], timeframe: Timeframe = '1m', sessionTz = 'UTC', isFuture = false, symbol = ''): IndicatorRunResult {
+  if (scriptId === tradingSessionsDescriptor.id) return calculateTradingSessions(bars, inputs, tickSize, timeframe, sessionTz, isFuture)
+  if (scriptId === imDuyDescriptor.id) return calculateImDuy(bars, inputs, tickSize, timeframe, sessionTz, isFuture, dailyBars, symbol)
   if (scriptId === 'ema' || scriptId === 'rsi') {
     const descriptor: IndicatorDescriptor = {
       id: scriptId,
@@ -167,6 +172,8 @@ function runScript(scriptId: string, bars: ChartBarTicks[], inputs: Record<strin
 
 
 const descriptors = (): IndicatorDescriptor[] => {
+  descriptorCache.set(tradingSessionsDescriptor.id, tradingSessionsDescriptor)
+  descriptorCache.set(imDuyDescriptor.id, imDuyDescriptor)
   for (const id of [...Object.keys(SOURCES), 'ema', 'rsi']) {
     if (!descriptorCache.has(id)) runScript(id, [], {}, 1, [])
   }
@@ -191,9 +198,9 @@ self.addEventListener('message', (event: MessageEvent<{ id: number; type: string
     if (type === 'list') {
       value = descriptors()
     } else if (type === 'run') {
-      const [symbol, timeframe, scriptId, bars, inputs, tickSize, sessionTz, dailyBars, isFuture] = payload as [string, string, string, ChartBarTicks[], Record<string, IndicatorInputValue>, number, string, ChartBarTicks[], boolean]
-      if (scriptId === 'ema' || scriptId === 'rsi') {
-        value = runScript(scriptId, bars, inputs, tickSize, dailyBars)
+      const [symbol, timeframe, scriptId, bars, inputs, tickSize, sessionTz, dailyBars, isFuture] = payload as [string, Timeframe, string, ChartBarTicks[], Record<string, IndicatorInputValue>, number, string, ChartBarTicks[], boolean]
+      if (NATIVE_INDICATOR_IDS.has(scriptId) || scriptId === 'ema' || scriptId === 'rsi') {
+        value = runScript(scriptId, bars, inputs, tickSize, dailyBars, timeframe, sessionTz, isFuture, symbol)
       } else {
         const normalizedInputs = Object.keys(inputs).sort().map((key) => [key, inputs[key]])
         sessionKey = JSON.stringify([symbol, timeframe, scriptId, normalizedInputs, tickSize, sessionTz, isFuture, bars[0]?.time ?? 0])

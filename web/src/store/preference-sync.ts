@@ -21,6 +21,7 @@ export const SYNCED_PREFERENCE_KEYS = [
   'market-replay:saved-chart-layouts',
   'market-replay:timeframe-preferences',
   'market-replay:drawing-favorites:v1',
+  'market-replay:indicator-settings:v1',
   'market-replay:trade-review:v1',
   'market-replay:workspace-settings:v1',
   'replay:eval',

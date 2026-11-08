@@ -13,7 +13,7 @@ function WorkspaceHarness() {
   return <ChartWorkspaceProvider><LayoutMenu /><ChartWorkspace /></ChartWorkspaceProvider>
 }
 
-const engineMocks = vi.hoisted(() => ({ activateChartView: vi.fn(), setMarketSession: vi.fn(), setSyncFlags: vi.fn() }))
+const engineMocks = vi.hoisted(() => ({ activateChartView: vi.fn(), setMarketSession: vi.fn(), setSyncFlags: vi.fn(), workspaceChanged: vi.fn() }))
 const workspaceReplay = vi.hoisted(() => ({ snapshot: { status: 'ready', replayMode: 'inactive' } }))
 const popoutMocks = vi.hoisted(() => ({
   window: { closed: false, close: vi.fn(), focus: vi.fn() },
@@ -107,15 +107,15 @@ describe('ChartWorkspace', () => {
     expect(screen.getAllByTestId('chart-tile')).toHaveLength(4)
   })
 
-  it('starts at 1m even when the autosaved workspace ended on another timeframe', async () => {
+  it('restores the saved pane timeframe from the autosaved workspace', async () => {
     const persisted = createLayoutPreset('single')
     persisted.panes['pane-1'].timeframe = '45m'
     persistChartLayout(persisted)
 
     render(<ChartWorkspaceProvider><ChartWorkspace /></ChartWorkspaceProvider>)
 
-    await waitFor(() => expect(useUiStore.getState().activeTf).toBe('1m'))
-    expect(screen.getByTestId('chart-tile')).toHaveTextContent('pane-1 1m')
+    await waitFor(() => expect(useUiStore.getState().activeTf).toBe('45m'))
+    expect(screen.getByTestId('chart-tile')).toHaveTextContent('pane-1 45m')
   })
 
   it('moves a pane into a linked window and restores it when requested', async () => {

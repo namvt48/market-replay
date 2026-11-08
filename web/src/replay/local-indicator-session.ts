@@ -8,13 +8,24 @@ export function zonedDateParts(seconds: number, zone: string): number[] {
     formatter = new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
     zoneFormatters.set(zone, formatter)
   }
-  const parts = formatter.formatToParts(new Date(seconds * 1000))
-  const part = (key: string): number => Number(parts.find((item) => item.type === key)?.value ?? 0)
-  return [part('year'), part('month'), part('day'), part('hour'), part('minute')]
+  let year = 0
+  let month = 0
+  let day = 0
+  let hour = 0
+  let minute = 0
+  for (const part of formatter.formatToParts(new Date(seconds * 1000))) {
+    const value = Number(part.value)
+    if (part.type === 'year') year = value
+    else if (part.type === 'month') month = value
+    else if (part.type === 'day') day = value
+    else if (part.type === 'hour') hour = value
+    else if (part.type === 'minute') minute = value
+  }
+  return [year, month, day, hour, minute]
 }
 
-export function sessionDayKey(seconds: number, zone: string, isFuture: boolean): number {
-  let [year, month, day, hour] = zonedDateParts(seconds, zone)
+export function sessionDayKeyFromParts(parts: readonly number[], isFuture: boolean): number {
+  let [year, month, day, hour] = parts
   if (isFuture && hour >= 18) {
     const nextDay = new Date(Date.UTC(year, month - 1, day + 1))
     year = nextDay.getUTCFullYear()
@@ -23,6 +34,11 @@ export function sessionDayKey(seconds: number, zone: string, isFuture: boolean):
   }
   return year * 10_000 + month * 100 + day
 }
+
+export function sessionDayKey(seconds: number, zone: string, isFuture: boolean): number {
+  return sessionDayKeyFromParts(zonedDateParts(seconds, zone), isFuture)
+}
+
 
 function sameBarPrefix(prefix: ChartBarTicks[], bars: ChartBarTicks[]): boolean {
   if (prefix.length > bars.length) return false

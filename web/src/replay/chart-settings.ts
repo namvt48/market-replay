@@ -3,6 +3,7 @@ import { z } from 'zod'
 const hexColorSchema = z.string().regex(/^#[0-9a-f]{6}$/i)
 
 export const chartAppearanceSchema = z.object({
+  chartType: z.enum(['candles', 'line']).default('candles'),
   upColor: hexColorSchema,
   downColor: hexColorSchema,
   wickUpColor: hexColorSchema,
@@ -21,6 +22,7 @@ export const chartAppearanceSchema = z.object({
 export type ChartAppearanceSettings = z.infer<typeof chartAppearanceSchema>
 
 export const DEFAULT_CHART_APPEARANCE: ChartAppearanceSettings = {
+  chartType: 'candles',
   upColor: '#089981',
   downColor: '#f23645',
   wickUpColor: '#089981',

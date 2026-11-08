@@ -95,14 +95,15 @@ function migrateLegacyChartWorkspaceState(legacy: LegacyChartWorkspaceState): Ch
   const panes: ChartWorkspaceState['panes'] = Object.fromEntries(Object.entries(legacy.panes).map(([id, pane]) => [id, {
     id: pane.id,
     symbol: null,
-    timeframe: pane.timeframe,
+    timeframe: '1m',
     settings: { appearance: pane.settings.appearance, timezone: pane.settings.timezone },
   }]))
   return withWorkspaceTimezone({ preset: legacy.preset, root: legacy.root, panes, activePaneId: legacy.activePaneId, marketSession, syncFlags: { ...DEFAULT_CHART_SYNC_FLAGS } })
 }
 
 function migrateChartWorkspaceStateV2(state: ChartWorkspaceStateV2): ChartWorkspaceState {
-  return withPaneSymbols({ ...state, syncFlags: { ...DEFAULT_CHART_SYNC_FLAGS } })
+  const panes: ChartWorkspaceStateV2['panes'] = Object.fromEntries(Object.entries(state.panes).map(([id, pane]) => [id, { ...pane, timeframe: '1m' }]))
+  return withPaneSymbols({ ...state, panes, syncFlags: { ...DEFAULT_CHART_SYNC_FLAGS } })
 }
 
 function migrateChartWorkspaceStateV3(state: ChartWorkspaceStateV3): ChartWorkspaceState {
@@ -143,8 +144,7 @@ export function loadChartLayout(storage: Pick<Storage, 'getItem'> = preferenceSt
               : parseChartWorkspaceState(persisted)
     const ids = paneIds(parsed.root)
     if (!ids.every((id) => parsed.panes[id]) || !parsed.panes[parsed.activePaneId]) return createLayoutPreset('single')
-    const panes: ChartWorkspaceState['panes'] = Object.fromEntries(Object.entries(parsed.panes).map(([id, pane]) => [id, { ...pane, timeframe: '1m' as const }]))
-    return { preset: parsed.preset, root: parsed.root, panes, activePaneId: parsed.activePaneId, timezone: parsed.timezone, marketSession: parsed.marketSession, syncFlags: parsed.syncFlags }
+    return parsed
   } catch {
     return createLayoutPreset('single')
   }

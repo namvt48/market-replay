@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BarFrame } from '../api/binary-frame'
-import type { ClosedTrade, IndicatorRunResult, ReplaySession, SymbolMeta } from '../api/types'
+import type { ClosedTrade, IndicatorDescriptor, IndicatorRunResult, ReplaySession, SymbolMeta } from '../api/types'
 import type { ChartAdapter, ChartCrosshairSync, ChartViewportSync, OrderLine, OrderLineAction, ReplaySelectionState, TradeMarker, ViewportDemand } from './chart-adapter'
 import { aggregateRange } from './aggregate'
 import { DEFAULT_CHART_PANE_SETTINGS } from './chart-settings-store'
@@ -192,6 +192,39 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(second.setIndicators).toHaveBeenLastCalledWith([expect.objectContaining({ indicatorId: 'gb69-cbmor' })])
     engine.destroy()
   })
+  it('restores edited indicator inputs after hiding, removal, and engine recreation', () => {
+    const storageKey = 'market-replay:indicator-settings:v1'
+    const previousSettings = window.localStorage.getItem(storageKey)
+    window.localStorage.removeItem(storageKey)
+    const descriptor: IndicatorDescriptor = {
+      id: 'gb69-cbmor', name: 'GB69 CBMOR', version: 1, meta: { onMainPanel: true },
+      inputs: [{ kind: 'bool', key: 'show_lines', label: 'Show lines', default: true }],
+    }
+
+    try {
+      const firstEngine = new ReplayEngine()
+      firstEngine.addIndicator(descriptor)
+      const indicator = firstEngine.getSnapshot().indicators[0]
+      expect(indicator?.inputs).toEqual({ show_lines: true })
+      if (!indicator) throw new Error('expected indicator to be added')
+
+      firstEngine.updateIndicatorInputs(indicator.id, { show_lines: false })
+      firstEngine.setIndicatorVisibility(indicator.id, false)
+      firstEngine.setIndicatorVisibility(indicator.id, true)
+      expect(firstEngine.getSnapshot().indicators[0]?.inputs).toEqual({ show_lines: false })
+      firstEngine.removeIndicator(indicator.id)
+      firstEngine.destroy()
+
+      const secondEngine = new ReplayEngine()
+      secondEngine.addIndicator(descriptor)
+      expect(secondEngine.getSnapshot().indicators[0]?.inputs).toEqual({ show_lines: false })
+      secondEngine.destroy()
+    } finally {
+      if (previousSettings === null) window.localStorage.removeItem(storageKey)
+      else window.localStorage.setItem(storageKey, previousSettings)
+    }
+  })
+
 
   it('executes one indicator request for panes sharing symbol, timeframe, cursor, and inputs', async () => {
     const engine = new ReplayEngine()
@@ -879,7 +912,14 @@ describe('ReplayEngine multi-view invariant', () => {
     // backend (e.g. saved from a different browser) — it must win over the
     // local trade-close snapshot even though local loads synchronously.
     const remoteSnapshot = { ...localSnapshot, cursorTs: 240, capturedAt: localSnapshot.capturedAt + 10_000, reason: 'explicit-exit' as const }
-    engineMocks.fetchWorkspaceSnapshot.mockResolvedValueOnce({ revision: 9, capturedAt: remoteSnapshot.capturedAt, snapshot: remoteSnapshot })
+    engineMocks.fetchWorkspaceSnapshot.mockReset()
+    engineMocks.fetchWorkspaceSnapshot.mockResolvedValue(null)
+    engineMocks.fetchWorkspaceSnapshot.mockResolvedValueOnce(null)
+    engineMocks.fetchWorkspaceSnapshot.mockResolvedValueOnce({
+      revision: 9,
+      capturedAt: remoteSnapshot.capturedAt,
+      snapshot: remoteSnapshot,
+    })
 
     engine.destroy()
     const resumedEngine = new ReplayEngine()
@@ -893,6 +933,96 @@ describe('ReplayEngine multi-view invariant', () => {
     expect(resumedEngine.getSnapshot().cursorTs).toBe(240)
     unregisterBridge()
     resumedEngine.destroy()
+  })
+  it('restores the latest Home workspace without creating a named session', async () => {
+    const workspace = createLayoutPreset('single')
+    const restoreLayout = vi.fn()
+    const unregisterBridge = registerChartWorkspaceSnapshotBridge({ capture: () => workspace, restore: restoreLayout })
+    const drawing: SerializedDrawing = {
+      id: 'home-line',
+      type: 'trend-line',
+      anchors: [{ time: 120 as UTCTimestamp, price: 100 }, { time: 180 as UTCTimestamp, price: 101 }],
+      style: { lineColor: '#22c55e', lineWidth: 2 },
+      options: { visible: true, locked: false },
+    }
+    const descriptor: IndicatorDescriptor = {
+      id: 'gb69-cbmor', name: 'GB69 CBMOR', version: 1, meta: { onMainPanel: true },
+      inputs: [{ kind: 'bool', key: 'show_lines', label: 'Show lines', default: true }],
+    }
+    let engine: ReplayEngine | null = null
+    try {
+      engine = new ReplayEngine()
+      const view = adapter([drawing])
+      view.visibleRange.mockReturnValue({ from: 60, to: 180 })
+      await engine.registerChartView('pane-1', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+      await engine.restoreHomeWorkspace()
+      engine.beginReplaySelection()
+      view.fireReplayBarSelect(60)
+      await expect.poll(() => engine?.getSnapshot().replayMode).toBe('active')
+      await engine.seek(180)
+      engine.addIndicator(descriptor)
+      const indicator = engine.getSnapshot().indicators[0]
+      if (!indicator) throw new Error('expected Home indicator to be added')
+      engine.updateIndicatorInputs(indicator.id, { show_lines: false })
+      view.fireDrawingChanged()
+      view.fireViewportSync({ time: { from: 60, to: 180 } })
+      engine.setQty(3)
+      window.dispatchEvent(new Event('pagehide'))
+      expect(engineMocks.createSession).not.toHaveBeenCalled()
+      engine.destroy()
+      engine = null
+
+      engine = new ReplayEngine()
+      const restoredView = adapter()
+      await engine.registerChartView('pane-1', document.createElement('div'), restoredView.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+      await engine.restoreHomeWorkspace()
+
+      expect(engineMocks.createSession).not.toHaveBeenCalled()
+      expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', replayStartTs: 60, cursorTs: 180, qty: 3, sessionId: null })
+      expect(engine.getSnapshot().indicators).toEqual([expect.objectContaining({ scriptId: 'gb69-cbmor', inputs: { show_lines: false } })])
+      expect(restoredView.loadDrawings).toHaveBeenLastCalledWith([expect.objectContaining({ id: 'home-line' })])
+      expect(restoredView.setViewportSync).toHaveBeenCalledWith({ time: { from: 60, to: 180 } })
+      expect(restoreLayout).toHaveBeenCalledWith(expect.objectContaining({ activePaneId: 'pane-1' }))
+    } finally {
+      engine?.destroy()
+      unregisterBridge()
+      localStorage.clear()
+    }
+  })
+
+  it('preserves Home across a named replay pagehide and restores it when the session exits', async () => {
+    const workspace = createLayoutPreset('single')
+    const unregisterBridge = registerChartWorkspaceSnapshotBridge({ capture: () => workspace, restore: vi.fn() })
+    let engine: ReplayEngine | null = null
+    try {
+      engine = new ReplayEngine()
+      const view = adapter()
+      await engine.registerChartView('pane-1', document.createElement('div'), view.value, '1m', DEFAULT_CHART_PANE_SETTINGS, new HoverBarStore())
+      await engine.restoreHomeWorkspace()
+
+      engine.beginReplaySelection()
+      view.fireReplayBarSelect(60)
+      await expect.poll(() => engine?.getSnapshot().replayMode).toBe('active')
+      await engine.seek(180)
+      engine.setQty(3)
+      window.dispatchEvent(new Event('pagehide'))
+
+      engine.beginReplaySelection({ createSession: true, sessionName: 'named replay' })
+      const homeBeforeSession = loadSessionWorkspaceSnapshot({ kind: 'home', id: 'home' })
+      expect(homeBeforeSession).toMatchObject({ replayMode: 'active', replayStartTs: 60, cursorTs: 180, preferences: { qty: 3 } })
+      view.fireReplayBarSelect(240)
+      await expect.poll(() => engine?.getSnapshot().sessionId).toBe('session-1')
+      window.dispatchEvent(new Event('pagehide'))
+      expect(loadSessionWorkspaceSnapshot({ kind: 'home', id: 'home' })).toEqual(homeBeforeSession)
+
+      await engine.pauseReplaySession()
+      expect(engine.getSnapshot()).toMatchObject({ replayMode: 'active', replayStartTs: 60, cursorTs: 180, qty: 3, sessionId: null })
+      expect(loadSessionWorkspaceSnapshot({ kind: 'home', id: 'home' })).toEqual(homeBeforeSession)
+    } finally {
+      engine?.destroy()
+      unregisterBridge()
+      localStorage.clear()
+    }
   })
 
   it('falls back to the local snapshot when the backend fetch rejects', async () => {

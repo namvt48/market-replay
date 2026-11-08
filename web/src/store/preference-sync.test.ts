@@ -67,12 +67,14 @@ describe('hydratePreferences', () => {
     api.fetchPreferences.mockResolvedValue({
       'market-replay:chart-layout': '{"version":1,"preset":"3"}',
       'market-replay:timeframe-preferences': '{"starred":["5m"]}',
+      'market-replay:indicator-settings:v1': '{"version":1,"indicators":{"gb69-cbmor":{"show_lines":false}}}',
     })
 
     await hydratePreferences(storage)
 
     expect(storage.getItem('market-replay:chart-layout')).toBe('{"version":1,"preset":"3"}')
     expect(storage.getItem('market-replay:timeframe-preferences')).toBe('{"starred":["5m"]}')
+    expect(storage.getItem('market-replay:indicator-settings:v1')).toBe('{"version":1,"indicators":{"gb69-cbmor":{"show_lines":false}}}')
   })
 
   it('ignores keys outside the synced set', async () => {
@@ -103,6 +105,7 @@ describe('hydratePreferences', () => {
       'market-replay:saved-chart-layouts',
       'market-replay:timeframe-preferences',
       'market-replay:drawing-favorites:v1',
+      'market-replay:indicator-settings:v1',
       'market-replay:trade-review:v1',
       'replay:eval',
       'replay:eval:accounts',

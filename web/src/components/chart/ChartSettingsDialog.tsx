@@ -53,6 +53,24 @@ export function ChartSettingsDialog({ value, onPreview, onApply, onCancel }: Cha
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <div className="space-y-5">
+              <SettingsSection title="Chart type">
+                <label className="flex min-h-9 items-center justify-between gap-3 text-ui-body text-muted">
+                  <span>Price chart</span>
+                  <select
+                    aria-label="Chart type"
+                    value={draft.appearance.chartType}
+                    onChange={(event) => {
+                      const chartType = event.target.value
+                      if (chartType === 'candles' || chartType === 'line') updateAppearance({ chartType })
+                    }}
+                    className="h-8 rounded-control border border-line bg-surface-0 px-2 text-ink"
+                  >
+                    <option value="candles">Candles</option>
+                    <option value="line">Line</option>
+                  </select>
+                </label>
+              </SettingsSection>
+
               <SettingsSection title="Candle body"><div className="grid grid-cols-2 gap-3"><HexColorField label="Body up" value={draft.appearance.upColor} onChange={(upColor) => updateAppearance({ upColor })} /><HexColorField label="Body down" value={draft.appearance.downColor} onChange={(downColor) => updateAppearance({ downColor })} /></div></SettingsSection>
               <SettingsSection title="Wick"><div className="grid grid-cols-2 gap-3"><HexColorField label="Wick up" value={draft.appearance.wickUpColor} onChange={(wickUpColor) => updateAppearance({ wickUpColor })} /><HexColorField label="Wick down" value={draft.appearance.wickDownColor} onChange={(wickDownColor) => updateAppearance({ wickDownColor })} /></div></SettingsSection>
               <SettingsSection title="Border"><Toggle label="Show border" checked={draft.appearance.borderVisible} onChange={(borderVisible) => updateAppearance({ borderVisible })} /><div className="mt-3 grid grid-cols-2 gap-3"><HexColorField label="Border up" value={draft.appearance.borderUpColor} onChange={(borderUpColor) => updateAppearance({ borderUpColor })} /><HexColorField label="Border down" value={draft.appearance.borderDownColor} onChange={(borderDownColor) => updateAppearance({ borderDownColor })} /></div></SettingsSection>

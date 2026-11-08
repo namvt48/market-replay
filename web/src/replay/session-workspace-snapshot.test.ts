@@ -92,6 +92,57 @@ describe('session workspace snapshot storage', () => {
     expect(loadSessionWorkspaceSnapshot(evaluation.owner)?.cursorTs).toBe(240)
   })
 
+  it('round-trips the home workspace with temporary replay metadata', async () => {
+    const home = {
+      ...snapshot({ kind: 'home', id: 'home' }, 360),
+      reason: 'home-autosave' as const,
+      replayMode: 'active' as const,
+      replayStartTs: 300,
+    }
+    expect(saveSessionWorkspaceSnapshot(home)).toBe(true)
+    expect(loadSessionWorkspaceSnapshot(home.owner)).toMatchObject({
+      owner: { kind: 'home', id: 'home' },
+      reason: 'home-autosave',
+      replayMode: 'active',
+      replayStartTs: 300,
+    })
+
+    api.fetchWorkspaceSnapshot.mockResolvedValue({
+      revision: 2,
+      capturedAt: home.capturedAt,
+      snapshot: home,
+    })
+    await expect(fetchRemoteWorkspaceSnapshot(home.owner)).resolves.toMatchObject({
+      snapshot: { owner: home.owner, replayMode: 'active', replayStartTs: 300 },
+    })
+  })
+
+  it('defaults replay metadata when loading a v1 snapshot written before those fields existed', () => {
+    const oldSnapshot = snapshot({ kind: 'replay', id: 'legacy-session' }, 120)
+    localStorage.setItem('market-replay:session-workspace-snapshots:v1', JSON.stringify({
+      version: 1,
+      snapshots: { 'replay:legacy-session': oldSnapshot },
+    }))
+
+    expect(loadSessionWorkspaceSnapshot(oldSnapshot.owner)).toMatchObject({
+      replayMode: 'inactive',
+      replayStartTs: null,
+    })
+  })
+
+  it('rejects a home owner whose id is not the home singleton', () => {
+    const invalid = {
+      ...snapshot({ kind: 'home', id: 'home' }, 120),
+      owner: { kind: 'home', id: 'not-home' },
+    }
+    localStorage.setItem('market-replay:session-workspace-snapshots:v1', JSON.stringify({
+      version: 1,
+      snapshots: { 'home:home': invalid },
+    }))
+
+    expect(loadSessionWorkspaceSnapshot({ kind: 'home', id: 'home' })).toBeNull()
+  })
+
   it('overwrites the recovery point only for the same owner', () => {
     const owner = { kind: 'replay', id: 'session-1' } as const
     expect(saveSessionWorkspaceSnapshot(snapshot(owner, 120))).toBe(true)
@@ -177,6 +228,13 @@ describe('fetchRemoteWorkspaceSnapshot', () => {
     api.fetchWorkspaceSnapshot.mockResolvedValue({ revision: 1, capturedAt: 0, snapshot: { bad: true } })
     expect(await fetchRemoteWorkspaceSnapshot(owner)).toBeNull()
   })
+
+  it('rejects a remote snapshot returned for a different owner', async () => {
+    const mismatched = snapshot({ kind: 'home', id: 'home' }, 300)
+    api.fetchWorkspaceSnapshot.mockResolvedValue({ revision: 4, capturedAt: mismatched.capturedAt, snapshot: mismatched })
+
+    expect(await fetchRemoteWorkspaceSnapshot(owner)).toBeNull()
+  })
 })
 
 describe('syncWorkspaceSnapshot', () => {
@@ -191,6 +249,17 @@ describe('syncWorkspaceSnapshot', () => {
     syncWorkspaceSnapshot(toSync)
 
     await vi.waitFor(() => expect(api.putWorkspaceSnapshot).toHaveBeenCalledWith('eval', 'account-1', toSync))
+  })
+
+  it('fires a home snapshot PUT to the singleton owner', async () => {
+    const home = {
+      ...snapshot({ kind: 'home', id: 'home' }, 120),
+      reason: 'home-autosave' as const,
+      replayMode: 'active' as const,
+      replayStartTs: 60,
+    }
+    syncWorkspaceSnapshot(home)
+    await vi.waitFor(() => expect(api.putWorkspaceSnapshot).toHaveBeenCalledWith('home', 'home', home))
   })
 
   it('does not throw when the backend rejects the write', () => {

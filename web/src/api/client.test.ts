@@ -116,22 +116,30 @@ describe('API client transient recovery', () => {
       { time: 600, openTicks: 401, highTicks: 405, lowTicks: 397, closeTicks: 403, volume: 11 },
       { time: 660, openTicks: 402, highTicks: 406, lowTicks: 398, closeTicks: 404, volume: 12 },
     ]
+    const dailyBars = [{ time: 120, openTicks: 390, highTicks: 410, lowTicks: 380, closeTicks: 405, volume: 100 }]
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify([symbol]), { status: 200, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify(bars), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(bars), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(dailyBars), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(fetchIndicators()).resolves.toEqual(descriptor)
     await expect(runIndicator('NQ', '5m', 'gb69-cbmor', 600, { show_lines: false })).resolves.toEqual(result)
+    await expect(runIndicator('NQ', '5m', 'im-duy', 600, {})).resolves.toEqual(result)
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe('/api/v1/symbols')
     const request = new URL(String(fetchMock.mock.calls[1]?.[0]), 'http://localhost')
     expect(request.pathname).toBe('/api/v1/chart-bars/at')
     expect(request.searchParams.get('at')).toBe('600')
     expect(request.searchParams.get('to')).toBe('600')
     expect(request.searchParams.get('before')).toBe('1500')
-    expect(indicatorMocks.run).toHaveBeenCalledWith('NQ', '5m', 'gb69-cbmor', bars.slice(0, 2), { show_lines: false }, 0.25, 'America/New_York', [], true, undefined)
+    const dailyRequest = new URL(String(fetchMock.mock.calls[3]?.[0]), 'http://localhost')
+    expect(dailyRequest.searchParams.get('tf')).toBe('1d')
+    expect(dailyRequest.searchParams.get('before')).toBe('62')
+    expect(indicatorMocks.run).toHaveBeenNthCalledWith(1, 'NQ', '5m', 'gb69-cbmor', bars.slice(0, 2), { show_lines: false }, 0.25, 'America/New_York', [], true, undefined)
+    expect(indicatorMocks.run).toHaveBeenNthCalledWith(2, 'NQ', '5m', 'im-duy', bars.slice(0, 2), {}, 0.25, 'America/New_York', dailyBars, true, undefined)
     expect(request.searchParams.get('indicatorWindow')).toBe('1')
   })
 

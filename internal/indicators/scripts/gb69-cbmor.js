@@ -561,8 +561,9 @@ onTick = (length, _moment, _, ta, inputs) => {
   if (sessionChanged) {
     rangeHigh = h;
     rangeLow = l;
-    barPrices = [];
-    barVolumes = [];
+    // The opening candle contributes to both the POC volume and Std Dev price samples.
+    barPrices = [price4];
+    barVolumes = [v];
     sessionStartTime = getSessionStartTimestamp(_moment, t0, parseSession(inputs.i_session1));
     sessionEndTime = null;
     hasDrawnForSession = false;

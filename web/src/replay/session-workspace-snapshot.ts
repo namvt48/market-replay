@@ -17,12 +17,15 @@ const MAX_SNAPSHOTS = 20
 export type SessionSnapshotOwner =
   | { kind: 'replay'; id: string }
   | { kind: 'eval'; id: string }
+  | { kind: 'home'; id: 'home' }
 
 export interface SessionWorkspaceSnapshot {
   version: 1
   owner: SessionSnapshotOwner
-  reason: 'trade-close' | 'explicit-exit'
+  reason: 'trade-close' | 'explicit-exit' | 'home-autosave'
   capturedAt: number
+  replayMode?: 'inactive' | 'active'
+  replayStartTs?: number | null
   cursorTs: number
   symbol: string
   layout: ChartWorkspaceState
@@ -56,6 +59,7 @@ const finiteNumber = z.number().finite()
 const ownerSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('replay'), id: z.string().min(1) }),
   z.object({ kind: z.literal('eval'), id: z.string().min(1) }),
+  z.object({ kind: z.literal('home'), id: z.literal('home') }),
 ])
 const protectionAdjustmentSchema = z.object({
   role: z.enum(['stopLoss', 'takeProfit']),
@@ -156,7 +160,9 @@ const snapshotWorkspaceSchema = z.preprocess((value) => {
 const snapshotSchema = z.object({
   version: z.literal(1),
   owner: ownerSchema,
-  reason: z.enum(['trade-close', 'explicit-exit']),
+  replayMode: z.enum(['inactive', 'active']).default('inactive'),
+  replayStartTs: finiteNumber.nullable().default(null),
+  reason: z.enum(['trade-close', 'explicit-exit', 'home-autosave']),
   capturedAt: finiteNumber,
   cursorTs: finiteNumber.nonnegative(),
   symbol: z.string().min(1),
@@ -284,6 +290,7 @@ export async function fetchRemoteWorkspaceSnapshot(owner: SessionSnapshotOwner):
     if (!envelope) return null
     const parsed = snapshotSchema.safeParse(envelope.snapshot)
     if (!parsed.success) return null
+    if (parsed.data.owner.kind !== owner.kind || parsed.data.owner.id !== owner.id) return null
     return { snapshot: parsed.data, revision: envelope.revision, capturedAt: envelope.capturedAt }
   } catch {
     return null

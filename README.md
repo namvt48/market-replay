@@ -10,11 +10,14 @@ market-replay replays pre-compiled bar data bar by bar on your own machine. It n
 ## Features
 
 - **Bar-by-bar market replay** over pre-compiled OHLCV bar data, with no live feed and no external data dependency.
-- **Multi-chart workspace** per working session.
+- **Multi-chart workspace** with an automatically saved Home snapshot for layout, pane timeframes, viewport, drawings, indicators, fill state, and replay cursor—without a named Session or Eval; named Session and Eval state remain separate.
 - **Drawing tools** from a vendored fork of `lightweight-charts-drawing` (`web/vendor/lightweight-charts-drawing`, wired in as a `file:` dependency with its build output committed, so no extra build step).
 - **Indicator engine** that runs JS scripts on [goja](https://github.com/dop251/goja), with builtin indicators, an LRU cache of run results (default 64 entries), and a 5-second wall-clock timeout per script run.
+- **Local replay indicators** include DST-aware Trading Sessions with configurable regional windows and the Im Duy chart overlay (HTF candles, gaps/imbalances, fractals, macros, killzones, opening levels, custom ranges, IPDA and screen-anchored labels). They run as typed native calculators in the local Web Worker. The Pine source is converted at build time; replay crossings are visual markers, not alert delivery.
+- **Indicator input preferences** keep applied values per indicator script across hide, removal/re-add, and reload using local-first synchronized preferences; new or incompatible inputs use current descriptor defaults.
 - **Sub-minute timeframes** from 5s to 55s in 5s steps, aggregated on request from the base dataset via `BaseTimeframe` routing (seconds-unit timeframes read the `5s` dataset; everything else rolls up from `1m`).
 - **Workspace-level timezone** selection, including fixed UTC offsets alongside named zones.
+- **Per-chart price style**: Candles (default) or a close-price Line; the ET timezone preset uses `America/New_York` and follows UTC−5/UTC−4 daylight-saving transitions.
 - **Economic calendar synced to the chart**, fed by a DuckDB to JSONL export pipeline.
 - **Trading journal**: sessions, trades, and a watchlist, with restore, delete, and permanent-delete lifecycle for sessions.
 - **Analytics**: performance, drawdown, stop-loss / risk-reward / Monte-Carlo simulations, edge, and execution discipline.
@@ -53,9 +56,13 @@ Prerequisites:
 Build and run:
 
 ```sh
-make build   # builds web/dist first, then embeds it into the binary via web/embed.go
-make run     # builds (if needed) and serves on :8080
+./market-replay # named local launcher; builds and serves on 127.0.0.1:8080
+make local      # equivalent project-scoped shortcut
+make build      # builds web/dist, then embeds it into the Go binary
+make run        # builds and serves on :8080
 ```
+
+`./market-replay` runs the embedded frontend through the Go server, not the Vite development server. It is kept inside this repository and does not add a shell-wide alias.
 
 The build order matters: `make build` runs the frontend build (`pnpm install` + `pnpm build` in `web/`) before `go build`, because the Go binary embeds `web/dist` through `web/embed.go`.
 

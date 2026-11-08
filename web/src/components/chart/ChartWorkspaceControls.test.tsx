@@ -5,7 +5,7 @@ import { ChartWorkspaceProvider } from '../../chart-workspace/ChartWorkspaceCont
 import { useUiStore } from '../../store/ui-store'
 import { ChartWorkspaceControls } from './ChartWorkspaceControls'
 
-const engineMocks = vi.hoisted(() => ({ activateChartView: vi.fn(), setMarketSession: vi.fn(), setSyncFlags: vi.fn() }))
+const engineMocks = vi.hoisted(() => ({ activateChartView: vi.fn(), setMarketSession: vi.fn(), setSyncFlags: vi.fn(), workspaceChanged: vi.fn() }))
 vi.mock('../../replay/replay-engine', () => ({ replayEngine: engineMocks }))
 
 beforeEach(() => {

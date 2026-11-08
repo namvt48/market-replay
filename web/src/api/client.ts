@@ -215,10 +215,9 @@ export async function runIndicator(
   if (!meta) throw new Error(`Unknown symbol: ${symbol}`)
   const bars = await fetchIndicatorBarsAt(symbol, tf, at, signal)
   if (signal?.aborted) throw abortError()
-  const dailyBars = script === 'ipda-ranges'
+  const dailyBars = script === 'ipda-ranges' || script === 'im-duy'
     ? await fetchChartBarsAt(symbol, '1d', at, 62, 0, at, signal)
     : []
-  if (signal?.aborted) throw abortError()
   return runLocalIndicator(symbol, tf, script, bars.filter((bar) => bar.time <= at), inputs, meta.tickSize, meta.sessionTz, dailyBars, meta.kind === 'future', signal)
 }
 
